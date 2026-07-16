@@ -23,8 +23,10 @@ from auth import (
 )
 from db import new_id, utc_now_iso
 from models import (
+    AIBot, AIBotIn, AIBotUpdate,
     Booking, BookingIn, BookingUpdate,
     ChatMessage, ChatSendRequest, Conversation,
+    IntentCatalogItem, IntentIn,
     KB_CATEGORIES, KnowledgeItem, KnowledgeItemIn,
     LoginRequest, LoginResponse,
     MenuItem, MenuItemIn,
@@ -32,11 +34,14 @@ from models import (
     Room, RoomIn,
     ServiceRequest, ServiceRequestIn, ServiceRequestUpdate,
     Settings, SettingsIn,
+    ToolCatalogItem, ToolIn,
     User,
+    Workflow, WorkflowIn, WorkflowStep,
 )
 from ai_service import (
     DEFAULT_SYSTEM_PROMPT, ai_reply, compact_history,
-    build_context_block, parse_tool_call,
+    build_context_block, build_dynamic_prompt, parse_tool_call,
+    SERVICE_MAP,
 )
 from cloudinary_service import upload_image, upload_raw, delete_asset
 from rag_service import extract_text, chunk_text, bm25_search, build_rag_context
@@ -428,10 +433,29 @@ async def _load_active_prompt() -> str:
     return (doc or {}).get("content") or DEFAULT_SYSTEM_PROMPT
 
 
-async def _build_context(query: Optional[str] = None) -> str:
+async def _load_bot(bot_id: Optional[str], bot_code: Optional[str]) -> dict:
+    """Load a bot config; falls back to booking_marketing."""
+    if bot_id:
+        doc = await db.ai_bots.find_one({"_id": bot_id})
+        if doc:
+            return doc
+    if bot_code:
+        doc = await db.ai_bots.find_one({"code": bot_code})
+        if doc:
+            return doc
+    doc = await db.ai_bots.find_one({"code": "booking_marketing"})
+    if doc:
+        return doc
+    return await db.ai_bots.find_one({}) or {}
+
+
+async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None) -> str:
     rooms = await db.rooms.find({}).to_list(200)
     menu = await db.menu.find({}).to_list(500)
-    kb = await db.knowledge_base.find({"is_active": True}).to_list(500)
+    kb_q = {"is_active": True}
+    if bot and bot.get("knowledge_categories"):
+        kb_q["category"] = {"$in": bot["knowledge_categories"]}
+    kb = await db.knowledge_base.find(kb_q).to_list(500)
     settings = await db.settings.find_one({"_id": "singleton"}) or {}
     base = build_context_block(rooms, menu, kb, settings)
 
@@ -591,9 +615,17 @@ async def chat_message(body: ChatSendRequest, user=Depends(get_current_user)):
     user_msg = {"role": "user", "content": body.message, "timestamp": utc_now_iso()}
     conv["messages"].append(user_msg)
 
+    # Load bot + build dynamic prompt
+    bot = await _load_bot(body.bot_id, body.bot_code)
+    if bot:
+        conv["bot_id"] = bot.get("_id")
+        conv["bot_code"] = bot.get("code")
+    allowed_tool_codes = set(bot.get("tool_codes", [])) if bot else set()
+    allowed_services = set(bot.get("allowed_service_types", [])) if bot else set()
+
     # Build prompt inputs
-    system_prompt = await _load_active_prompt()
-    context = await _build_context(query=body.message)
+    system_prompt = build_dynamic_prompt(bot) if bot else await _load_active_prompt()
+    context = await _build_context(query=body.message, bot=bot)
     history_text = compact_history(conv["messages"][:-1], max_turns=12)
 
     # First AI turn
@@ -602,7 +634,24 @@ async def chat_message(body: ChatSendRequest, user=Depends(get_current_user)):
 
     tool_result = None
     if tool:
-        tool_result = await _handle_tool(tool, args or {}, conv)
+        # Permission gating
+        ai_tool_to_capability = {
+            "check_availability": {"check_availability"},
+            "create_booking": {"create_booking"},
+            "lookup_booking": {"lookup_booking"},
+            "cancel_booking": {"cancel_booking"},
+            "request_handover": {"request_handover"},
+            "create_service_request": {"restaurant_order", "laundry_request", "housekeeping_request",
+                                       "maintenance_request", "complaint_ticket", "room_service",
+                                       "airport_pickup", "motor_rental"},
+        }
+        allowed_caps = ai_tool_to_capability.get(tool, set())
+        if allowed_tool_codes and not (allowed_caps & allowed_tool_codes):
+            tool_result = {"ok": False, "tool": tool, "error": f"tool '{tool}' tidak diizinkan untuk bot ini"}
+        elif tool == "create_service_request" and allowed_services and args.get("service_type") not in allowed_services:
+            tool_result = {"ok": False, "tool": tool, "error": f"service_type '{args.get('service_type')}' tidak diizinkan untuk bot ini"}
+        else:
+            tool_result = await _handle_tool(tool, args or {}, conv)
         # give AI a chance to acknowledge tool result with a second turn
         follow_up_user = (
             f"[SISTEM] Hasil tool `{tool}`: {tool_result}. "
@@ -892,6 +941,167 @@ async def rag_search(q: str, k: int = 5, user=Depends(get_current_user)):
     norm = [{"id": c["_id"], "doc_id": c["doc_id"], "doc_title": c.get("doc_title", "doc"), "text": c["text"]} for c in chunks]
     hits = bm25_search(q, norm, k=k)
     return {"query": q, "hits": hits}
+
+
+# ---------------------------------------------------------------------------
+# AI BOTS (V2)
+# ---------------------------------------------------------------------------
+def _slugify(s: str) -> str:
+    return "".join(c if c.isalnum() else "_" for c in s.lower()).strip("_")
+
+
+@api.get("/bots")
+async def bots_list(user=Depends(get_current_user)):
+    docs = await db.ai_bots.find({}).sort("created_at", 1).to_list(200)
+    return [{**d, "id": d.pop("_id")} for d in docs]
+
+
+@api.get("/bots/{bot_id}")
+async def bots_get(bot_id: str, user=Depends(get_current_user)):
+    doc = await db.ai_bots.find_one({"_id": bot_id})
+    if not doc:
+        raise HTTPException(404, "Not found")
+    return {**doc, "id": doc.pop("_id")}
+
+
+@api.post("/bots")
+async def bots_create(body: AIBotIn, user=Depends(get_current_user)):
+    code = body.code or _slugify(body.name)
+    if await db.ai_bots.find_one({"code": code}):
+        raise HTTPException(400, f"Bot code '{code}' sudah dipakai")
+    doc = {
+        "_id": new_id(), **body.model_dump(),
+        "code": code,
+        "created_at": utc_now_iso(), "updated_at": utc_now_iso(),
+    }
+    await db.ai_bots.insert_one(doc)
+    return {**doc, "id": doc.pop("_id")}
+
+
+@api.patch("/bots/{bot_id}")
+async def bots_update(bot_id: str, body: AIBotUpdate, user=Depends(get_current_user)):
+    upd = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not upd:
+        raise HTTPException(400, "Empty update")
+    upd["updated_at"] = utc_now_iso()
+    res = await db.ai_bots.update_one({"_id": bot_id}, {"$set": upd})
+    if not res.matched_count:
+        raise HTTPException(404, "Not found")
+    doc = await db.ai_bots.find_one({"_id": bot_id})
+    return {**doc, "id": doc.pop("_id")}
+
+
+@api.delete("/bots/{bot_id}")
+async def bots_delete(bot_id: str, user=Depends(require_super_admin)):
+    await db.ai_bots.delete_one({"_id": bot_id})
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# TOOLS CATALOG
+# ---------------------------------------------------------------------------
+@api.get("/tools")
+async def tools_list(user=Depends(get_current_user)):
+    docs = await db.tools.find({}).sort("category", 1).to_list(200)
+    return [{**d, "id": d.pop("_id")} for d in docs]
+
+
+@api.post("/tools")
+async def tools_create(body: ToolIn, user=Depends(get_current_user)):
+    code = body.code or _slugify(body.name)
+    if await db.tools.find_one({"code": code}):
+        raise HTTPException(400, f"Tool code '{code}' sudah dipakai")
+    doc = {"_id": new_id(), **body.model_dump(), "code": code, "created_at": utc_now_iso()}
+    await db.tools.insert_one(doc)
+    return {**doc, "id": doc.pop("_id")}
+
+
+@api.patch("/tools/{tool_id}")
+async def tools_update(tool_id: str, body: ToolIn, user=Depends(get_current_user)):
+    upd = {k: v for k, v in body.model_dump().items() if v is not None}
+    res = await db.tools.update_one({"_id": tool_id}, {"$set": upd})
+    if not res.matched_count:
+        raise HTTPException(404, "Not found")
+    doc = await db.tools.find_one({"_id": tool_id})
+    return {**doc, "id": doc.pop("_id")}
+
+
+@api.delete("/tools/{tool_id}")
+async def tools_delete(tool_id: str, user=Depends(require_super_admin)):
+    await db.tools.delete_one({"_id": tool_id})
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# INTENTS CATALOG
+# ---------------------------------------------------------------------------
+@api.get("/intents")
+async def intents_list(user=Depends(get_current_user)):
+    docs = await db.intents.find({}).sort("code", 1).to_list(200)
+    return [{**d, "id": d.pop("_id")} for d in docs]
+
+
+@api.post("/intents")
+async def intents_create(body: IntentIn, user=Depends(get_current_user)):
+    code = body.code or _slugify(body.name).upper()
+    if await db.intents.find_one({"code": code}):
+        raise HTTPException(400, f"Intent code '{code}' sudah dipakai")
+    doc = {"_id": new_id(), **body.model_dump(), "code": code, "created_at": utc_now_iso()}
+    await db.intents.insert_one(doc)
+    return {**doc, "id": doc.pop("_id")}
+
+
+@api.patch("/intents/{intent_id}")
+async def intents_update(intent_id: str, body: IntentIn, user=Depends(get_current_user)):
+    upd = {k: v for k, v in body.model_dump().items() if v is not None}
+    res = await db.intents.update_one({"_id": intent_id}, {"$set": upd})
+    if not res.matched_count:
+        raise HTTPException(404, "Not found")
+    doc = await db.intents.find_one({"_id": intent_id})
+    return {**doc, "id": doc.pop("_id")}
+
+
+@api.delete("/intents/{intent_id}")
+async def intents_delete(intent_id: str, user=Depends(require_super_admin)):
+    await db.intents.delete_one({"_id": intent_id})
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# WORKFLOWS
+# ---------------------------------------------------------------------------
+@api.get("/workflows")
+async def workflows_list(user=Depends(get_current_user)):
+    docs = await db.workflows.find({}).sort("name", 1).to_list(200)
+    return [{**d, "id": d.pop("_id")} for d in docs]
+
+
+@api.post("/workflows")
+async def workflows_create(body: WorkflowIn, user=Depends(get_current_user)):
+    code = body.code or _slugify(body.name)
+    doc = {"_id": new_id(), **body.model_dump(),
+           "code": code, "created_at": utc_now_iso()}
+    # convert WorkflowStep pydantic to dict
+    doc["steps"] = [s.model_dump() if hasattr(s, "model_dump") else s for s in doc["steps"]]
+    await db.workflows.insert_one(doc)
+    return {**doc, "id": doc.pop("_id")}
+
+
+@api.patch("/workflows/{workflow_id}")
+async def workflows_update(workflow_id: str, body: WorkflowIn, user=Depends(get_current_user)):
+    upd = body.model_dump()
+    upd["steps"] = [s.model_dump() if hasattr(s, "model_dump") else s for s in upd["steps"]]
+    res = await db.workflows.update_one({"_id": workflow_id}, {"$set": upd})
+    if not res.matched_count:
+        raise HTTPException(404, "Not found")
+    doc = await db.workflows.find_one({"_id": workflow_id})
+    return {**doc, "id": doc.pop("_id")}
+
+
+@api.delete("/workflows/{workflow_id}")
+async def workflows_delete(workflow_id: str, user=Depends(require_super_admin)):
+    await db.workflows.delete_one({"_id": workflow_id})
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------

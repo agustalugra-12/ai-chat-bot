@@ -61,6 +61,89 @@ Tulis balasan alami untuk tamu terlebih dahulu (1-4 kalimat), lalu marker [[IMG:
 """
 
 
+TOOL_DOCS = {
+    "check_availability": '- check_availability : args {"check_in":"YYYY-MM-DD","check_out":"YYYY-MM-DD","room_type":"..." (opsional)}',
+    "create_booking": '- create_booking : args {"guest_name":"...","whatsapp":"...","check_in":"YYYY-MM-DD","check_out":"YYYY-MM-DD","room_type":"...","num_rooms":1,"num_guests":1}',
+    "lookup_booking": '- lookup_booking : args {"whatsapp":"..."}',
+    "cancel_booking": '- cancel_booking : args {"booking_id":"..."}',
+    "create_service_request": '- create_service_request : args {"guest_name":"...","whatsapp":"...","service_type":"extra_bed|extra_towel|mineral_water|cleaning|laundry|motor_rental|airport_pickup|extra_breakfast","quantity":1,"notes":"..."}',
+    "request_handover": '- request_handover : args {"reason":"..."}',
+}
+
+# Map catalog tool_codes → actual backend tool name used by AI
+SERVICE_MAP = {
+    "restaurant_order": None,  # info-only for now
+    "laundry_request": "laundry",
+    "housekeeping_request": "cleaning",
+    "maintenance_request": "cleaning",  # reuse cleaning until dedicated
+    "complaint_ticket": None,
+    "room_service": "extra_bed",  # generic
+    "airport_pickup": "airport_pickup",
+    "motor_rental": "motor_rental",
+}
+
+
+def build_dynamic_prompt(bot: dict) -> str:
+    """Build the runtime system prompt from a bot config."""
+    tool_codes = bot.get("tool_codes", [])
+    # Which AI-tools to expose
+    exposed = set()
+    if "check_availability" in tool_codes:
+        exposed.add("check_availability")
+    if "create_booking" in tool_codes:
+        exposed.add("create_booking")
+    if "lookup_booking" in tool_codes:
+        exposed.add("lookup_booking")
+    if "cancel_booking" in tool_codes:
+        exposed.add("cancel_booking")
+    if "request_handover" in tool_codes:
+        exposed.add("request_handover")
+    # any service-request-like tool → expose create_service_request
+    service_like = {"restaurant_order", "laundry_request", "housekeeping_request",
+                    "maintenance_request", "complaint_ticket", "room_service",
+                    "airport_pickup", "motor_rental"}
+    if service_like.intersection(tool_codes):
+        exposed.add("create_service_request")
+
+    tool_docs = "\n".join(TOOL_DOCS[t] for t in exposed if t in TOOL_DOCS) or "(tidak ada tool)"
+
+    allowed_services = bot.get("allowed_service_types") or []
+    service_note = ""
+    if "create_service_request" in exposed and allowed_services:
+        service_note = f"\nUntuk create_service_request, service_type HARUS salah satu dari: {', '.join(allowed_services)}."
+
+    guardrails = bot.get("guardrail_rules") or []
+    guard_block = "\n".join(f"- {g}" for g in guardrails) if guardrails else "(tidak ada aturan khusus)"
+
+    persona_line = bot.get("persona") or ""
+
+    header = bot.get("prompt") or ""
+
+    return f"""{header}
+
+## PERSONA
+{persona_line}
+
+## GUARDRAIL (WAJIB DIPATUHI)
+{guard_block}
+
+## MENGIRIM FOTO
+Jika tamu meminta foto dan URL foto tersedia di KONTEKS ("Foto:"), sertakan sebagai marker:
+[[IMG: https://...]]
+Boleh beberapa marker. JANGAN mengarang URL.
+
+## TOOLS YANG BOLEH DIPANGGIL
+Format panggilan: baris terpisah di akhir balasan Anda:
+[[TOOL: <nama_tool>]] {{"arg": "value"}}
+
+Tool yang tersedia untuk Anda:
+{tool_docs}{service_note}
+
+Jika Anda mencoba tool di luar daftar di atas, sistem akan menolaknya.
+Tulis balasan alami ke tamu dulu (1-4 kalimat), lalu marker [[IMG: ...]] bila kirim foto, lalu baris [[TOOL: ...]] bila perlu aksi.
+"""
+
+
 def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], settings: dict) -> str:
     """Build a compact context string for the AI."""
     parts = []

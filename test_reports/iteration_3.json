@@ -1,0 +1,43 @@
+{
+  "summary": "Iteration 3 (Multi-AI Bot Management V2) fully verified. Backend: 13/13 new iteration-3 tests pass — bots CRUD with super_admin gating, tools/intents/workflows CRUD, chat with bot_code routing (Booking AI answers Deluxe availability with price, Guest Service AI refuses booking and redirects to Booking AI, Guest Service AI creates laundry service_request with tool_result.ok=true and persists to DB), permission gating (a bot with tool_codes=['request_handover'] cannot call create_booking — server rejects with 'tidak diizinkan'), knowledge filtering (bot with knowledge_categories=['promo'] cannot answer airport_pickup KB question). Regression: iteration-2 12/12 pass; iteration-1 23/23 pass (previously reported 2 flaky failures now green in this run). Frontend: sidebar 'AI Management' collapsible with 5 items (nav-ai-bots/tools/intents/workflows/prompt), /ai/bots renders 2 seed bot cards → detail page loads with all 7 tabs (profile/prompt/permissions/workflow/knowledge/intents/guardrail), profile edit persists across reload, /ai/tools + /ai/intents + /ai/workflows show seeded rows/cards, Chat Simulator sim-bot-select lists both bots with headers/counts, switching bot resets message list, Booking AI answers 'Halo kamar Deluxe 24-26 Agustus 2026' with Rp 550.000/malam + fasilitas, Guest Service AI refuses booking as designed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration3.py",
+    "/app/test_reports/pytest/iteration3_results.xml",
+    "/app/test_reports/pytest/iteration3_regression1.xml",
+    "/app/test_reports/pytest/iteration3_regression2.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py _load_bot() falls back to 'booking_marketing' when bot_id/bot_code is invalid — this silently hides misconfiguration. Consider returning HTTP 400 when a bot_id is provided but not found.",
+    "server.py chat_message stores conv['bot_id']/'bot_code' via in-memory assignment but the DB $set update (line ~693) does NOT include these keys — the bot association is not persisted per-conversation. This limits later analytics per-bot. Suggest adding 'bot_id' and 'bot_code' to the $set payload on first turn.",
+    "server.py permission gating uses ai_tool_to_capability dict inline — extract to ai_service.py to keep server.py <1000 LOC (currently 1119).",
+    "server.py workflows_update (PATCH) always overwrites all fields with body.model_dump() including default empty steps — non-idempotent for partial updates. Use exclude_unset=True or a separate WorkflowUpdate model like AIBotUpdate.",
+    "tools_update / intents_update accept ToolIn/IntentIn which have required 'name' — a genuine PATCH would need a *Update model with all Optional fields. Right now every 'partial' update must resend name.",
+    "seed.py DEFAULT bots use bare 'existing_prompt or DEFAULT_SYSTEM_PROMPT' — if a legacy prompt existed with data-specific to the older bot, it may leak generic guardrails into Booking AI. Working as intended per spec but worth documenting.",
+    "ai_service.SERVICE_MAP maps 'complaint_ticket' and 'restaurant_order' to None — these tools are exposed via build_dynamic_prompt but SERVICE_MAP does not translate them. Any AI call attempting service_type='complaint' or restaurant order would fail permission gating (empty capability set). Minor: dead permutation.",
+    "BotDetail Save button posts full bot object via PATCH — sends all fields on every save (including unchanged prompt). Fine now but noisy in audit trail.",
+    "ChatSimulator posts bot_id every turn — good. But if bots API is empty (fresh env), botId stays null and no chat can be sent. Consider a fallback empty-state UI."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration3.py (new — 13 iteration-3 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (iteration-3: 13/13; iteration-2 regression: 12/12; iteration-1 regression: 23/23)",
+    "frontend": "100% (sidebar nested nav, BotList, BotDetail 7 tabs + save/persist, Tools/Intents/Workflows pages, Chat Simulator bot selector + session reset + Booking-AI vs Guest-Service-AI behaviour)"
+  },
+  "test_credentials": "admin@pelangi.id / Admin123! | superadmin@pelangi.id / Super123!",
+  "seed_data_creation": "Tests create + delete: 1 TEST_ bot, 1 TEST_ tool, 1 TEST_ intent, 1 TEST_ workflow, 2 TEST_ gated/knowledge-scoped bots (all cleaned up via super_admin DELETE). Chat tests may leave a TEST_ conversation + service_request in DB (Budi laundry). Cloudinary is not touched by iteration-3 tests.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration-3 is fully green backend + frontend. Test file: /app/backend/tests/test_iteration3.py — run with `pytest backend/tests/test_iteration3.py -v`. Two seeded bots (booking_marketing, guest_service) are created idempotently by seed.py — do NOT delete them. If you PATCH bot.tool_codes to test permission gating, use a TEST_ bot instead of the seeded ones. Frontend BotDetail loads asynchronously — always wait for `[data-testid=\"bot-save\"]` before asserting on tabs. Chat responses may take 5-45s (LLM calls to GPT-5.4-mini). Guest Service bot legitimately refuses bookings even without hitting a tool — verify by reading `reply` text for words like 'tidak', 'booking ai', 'resepsionis' rather than only checking tool_used. Regression note: iteration-1 backend_test.py — previously reported flaky tests (prompt version + booking-via-tool) both passed cleanly this run.",
+  "rca of the issue": "No blocking issues found."
+}

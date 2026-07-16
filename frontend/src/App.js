@@ -16,6 +16,11 @@ import PromptManagement from "@/pages/PromptManagement";
 import Analytics from "@/pages/Analytics";
 import Settings from "@/pages/Settings";
 import RagDocuments from "@/pages/RagDocuments";
+import BotList from "@/pages/ai/BotList";
+import BotDetail from "@/pages/ai/BotDetail";
+import ToolsCatalog from "@/pages/ai/ToolsCatalog";
+import IntentsCatalog from "@/pages/ai/IntentsCatalog";
+import WorkflowsCatalog from "@/pages/ai/WorkflowsCatalog";
 
 function ProtectedRoute({ children }) {
   const { user } = useAuth();
@@ -48,6 +53,11 @@ function App() {
             <Route path="service-requests" element={<ServiceRequests />} />
             <Route path="prompt" element={<PromptManagement />} />
             <Route path="rag" element={<RagDocuments />} />
+            <Route path="ai/bots" element={<BotList />} />
+            <Route path="ai/bots/:botId" element={<BotDetail />} />
+            <Route path="ai/tools" element={<ToolsCatalog />} />
+            <Route path="ai/intents" element={<IntentsCatalog />} />
+            <Route path="ai/workflows" element={<WorkflowsCatalog />} />
             <Route path="analytics" element={<Analytics />} />
             <Route path="settings" element={<Settings />} />
           </Route>

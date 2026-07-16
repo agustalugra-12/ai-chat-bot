@@ -6,6 +6,8 @@ import { toast } from "sonner";
 import { ChatMessageContent } from "@/components/ChatMessageContent";
 
 export default function ChatSimulator() {
+  const [bots, setBots] = useState([]);
+  const [botId, setBotId] = useState(null);
   const [sessionId, setSessionId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
@@ -14,6 +16,14 @@ export default function ChatSimulator() {
   const [whatsapp, setWhatsapp] = useState("+628123456789");
   const [lastMeta, setLastMeta] = useState(null);
   const scrollRef = useRef(null);
+
+  useEffect(() => {
+    api.get("/bots").then((r) => {
+      const active = r.data.filter((b) => b.status === "active");
+      setBots(active);
+      if (active.length && !botId) setBotId(active[0].id);
+    });
+  }, []); // eslint-disable-line
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -27,7 +37,7 @@ export default function ChatSimulator() {
     setBusy(true);
     try {
       const { data } = await api.post("/chat/message", {
-        session_id: sessionId, message: q, guest_name: guestName, whatsapp,
+        session_id: sessionId, message: q, guest_name: guestName, whatsapp, bot_id: botId,
       });
       setSessionId(data.session_id);
       setMessages((m) => [...m, { role: "assistant", content: data.reply, timestamp: new Date().toISOString(), intent: data.tool_used }]);
@@ -42,6 +52,13 @@ export default function ChatSimulator() {
   const reset = () => {
     setSessionId(null); setMessages([]); setLastMeta(null);
   };
+
+  const changeBot = (id) => {
+    setBotId(id);
+    reset();
+  };
+
+  const activeBot = bots.find((b) => b.id === botId);
 
   const onKey = (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
@@ -80,8 +97,8 @@ export default function ChatSimulator() {
               <BotMessageSquare className="w-4 h-4" />
             </div>
             <div className="flex-1">
-              <div className="font-[Manrope] font-semibold text-sm">Pelangi AI · Guest Assistant</div>
-              <div className="text-[11px] text-white/70">Online · biasanya balas dalam &lt;3 detik</div>
+              <div className="font-[Manrope] font-semibold text-sm">{activeBot?.name || "Pelangi AI"}</div>
+              <div className="text-[11px] text-white/70">{activeBot?.description || "Guest Assistant"}</div>
             </div>
             {lastMeta && (
               <div className="text-[11px] text-white/80">
@@ -144,6 +161,23 @@ export default function ChatSimulator() {
 
         {/* Side panel */}
         <div className="space-y-4">
+          <div className="pelangi-panel p-5">
+            <div className="text-xs uppercase tracking-widest text-[hsl(var(--muted-foreground))] mb-2">Pilih AI</div>
+            <select
+              data-testid="sim-bot-select"
+              value={botId || ""}
+              onChange={(e) => changeBot(e.target.value)}
+              className="w-full px-3 py-2 rounded-md border border-[hsl(var(--border))] bg-white text-sm"
+            >
+              {bots.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+            {activeBot && (
+              <div className="mt-2 text-[11px] text-[hsl(var(--muted-foreground))]">
+                {activeBot.tool_codes?.length || 0} tools · {activeBot.knowledge_categories?.length || 0} KB categories
+              </div>
+            )}
+          </div>
+
           <div className="pelangi-panel p-5">
             <div className="text-xs uppercase tracking-widest text-[hsl(var(--muted-foreground))] mb-2">Simulasi tamu</div>
             <label className="block text-xs font-medium mt-2 mb-1">Nama</label>
