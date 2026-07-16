@@ -38,6 +38,7 @@ class KnowledgeItem(BaseDocument):
     title: str
     content: str
     is_active: bool = True
+    images: List[dict] = Field(default_factory=list)  # [{url, public_id}]
     created_at: str = Field(default_factory=utc_now_iso)
     updated_at: str = Field(default_factory=utc_now_iso)
 
@@ -47,6 +48,7 @@ class KnowledgeItemIn(BaseModel):
     title: str
     content: str
     is_active: bool = True
+    images: List[dict] = Field(default_factory=list)
 
 
 # ---------- Rooms ----------
@@ -56,6 +58,7 @@ class Room(BaseDocument):
     price_per_night: float
     capacity: int
     photo_url: Optional[str] = None
+    images: List[dict] = Field(default_factory=list)  # [{url, public_id}]
     facilities: List[str] = Field(default_factory=list)
     total_units: int = 1
     is_available: bool = True
@@ -69,6 +72,7 @@ class RoomIn(BaseModel):
     price_per_night: float
     capacity: int
     photo_url: Optional[str] = None
+    images: List[dict] = Field(default_factory=list)
     facilities: List[str] = Field(default_factory=list)
     total_units: int = 1
     is_available: bool = True

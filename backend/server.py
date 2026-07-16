@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, APIRouter, HTTPException, Query, status
+from fastapi import Depends, FastAPI, APIRouter, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 from motor.motor_asyncio import AsyncIOMotorClient
 from starlette.middleware.cors import CORSMiddleware
@@ -38,6 +38,8 @@ from ai_service import (
     DEFAULT_SYSTEM_PROMPT, ai_reply, compact_history,
     build_context_block, parse_tool_call,
 )
+from cloudinary_service import upload_image, upload_raw, delete_asset
+from rag_service import extract_text, chunk_text, bm25_search, build_rag_context
 from seed import seed_all
 
 # ---------------------------------------------------------------------------
@@ -426,12 +428,25 @@ async def _load_active_prompt() -> str:
     return (doc or {}).get("content") or DEFAULT_SYSTEM_PROMPT
 
 
-async def _build_context() -> str:
+async def _build_context(query: Optional[str] = None) -> str:
     rooms = await db.rooms.find({}).to_list(200)
     menu = await db.menu.find({}).to_list(500)
     kb = await db.knowledge_base.find({"is_active": True}).to_list(500)
     settings = await db.settings.find_one({"_id": "singleton"}) or {}
-    return build_context_block(rooms, menu, kb, settings)
+    base = build_context_block(rooms, menu, kb, settings)
+
+    # RAG augmentation
+    if query:
+        try:
+            chunks = await db.rag_chunks.find({}, {"_id": 1, "doc_id": 1, "doc_title": 1, "text": 1}).to_list(2000)
+            chunks_norm = [{"id": c["_id"], "doc_id": c["doc_id"], "doc_title": c.get("doc_title", "doc"), "text": c["text"]} for c in chunks]
+            hits = bm25_search(query, chunks_norm, k=5)
+            rag = build_rag_context(hits)
+            if rag:
+                base = base + "\n\n" + rag
+        except Exception as e:
+            logger.warning(f"RAG failed: {e}")
+    return base
 
 
 async def _handle_tool(tool: str, args: dict, conv: dict) -> Optional[dict]:
@@ -578,7 +593,7 @@ async def chat_message(body: ChatSendRequest, user=Depends(get_current_user)):
 
     # Build prompt inputs
     system_prompt = await _load_active_prompt()
-    context = await _build_context()
+    context = await _build_context(query=body.message)
     history_text = compact_history(conv["messages"][:-1], max_turns=12)
 
     # First AI turn
@@ -755,6 +770,128 @@ async def analytics_summary(user=Depends(get_current_user)):
         "top_intents": top_intents,
         "daily_series": daily_series,
     }
+
+
+# ---------------------------------------------------------------------------
+# UPLOADS (Cloudinary)
+# ---------------------------------------------------------------------------
+ALLOWED_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+ALLOWED_DOC_EXT = {".pdf", ".docx", ".txt", ".md"}
+MAX_UPLOAD_MB = 10
+
+
+def _validate_upload(file: UploadFile, allowed: set) -> str:
+    name = (file.filename or "").lower()
+    ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
+    if ext not in allowed:
+        raise HTTPException(400, f"Ekstensi {ext or '?'} tidak didukung. Diperbolehkan: {sorted(allowed)}")
+    return ext
+
+
+@api.post("/uploads/image")
+async def upload_image_route(
+    file: UploadFile = File(...),
+    folder: str = Query("pelangi/kb"),
+    user=Depends(get_current_user),
+):
+    _validate_upload(file, ALLOWED_IMAGE_EXT)
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(400, f"File melebihi {MAX_UPLOAD_MB}MB")
+    if folder not in ("pelangi/kb", "pelangi/rooms", "pelangi/menu"):
+        folder = "pelangi/kb"
+    try:
+        result = upload_image(data, folder=folder)
+    except Exception as e:
+        raise HTTPException(500, f"Cloudinary error: {e}")
+    return result
+
+
+# ---------------------------------------------------------------------------
+# RAG DOCUMENTS
+# ---------------------------------------------------------------------------
+@api.get("/rag/documents")
+async def rag_docs_list(user=Depends(get_current_user)):
+    docs = await db.rag_documents.find({}).sort("created_at", -1).to_list(200)
+    out = []
+    for d in docs:
+        d["id"] = d.pop("_id")
+        out.append(d)
+    return out
+
+
+@api.post("/rag/documents")
+async def rag_docs_upload(
+    file: UploadFile = File(...),
+    user=Depends(get_current_user),
+):
+    _validate_upload(file, ALLOWED_DOC_EXT)
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(400, f"File melebihi {MAX_UPLOAD_MB}MB")
+
+    filename = file.filename
+    # 1. Extract text
+    try:
+        text = extract_text(filename, data)
+    except Exception as e:
+        raise HTTPException(400, f"Gagal ekstrak teks: {e}")
+    if not text.strip():
+        raise HTTPException(400, "Dokumen kosong / tidak dapat dibaca")
+
+    # 2. Upload raw to Cloudinary (optional persistence)
+    try:
+        cloud = upload_raw(data, filename)
+    except Exception as e:
+        cloud = {"url": None, "public_id": None}
+        logger.warning(f"Cloudinary raw upload failed: {e}")
+
+    # 3. Chunk & store
+    chunks = chunk_text(text, chunk_size=600, overlap=100)
+    doc_id = new_id()
+    doc = {
+        "_id": doc_id,
+        "title": filename,
+        "filename": filename,
+        "url": cloud.get("url"),
+        "public_id": cloud.get("public_id"),
+        "chunk_count": len(chunks),
+        "char_count": len(text),
+        "created_at": utc_now_iso(),
+        "created_by": user.get("email"),
+    }
+    await db.rag_documents.insert_one(doc)
+
+    chunk_docs = [{
+        "_id": new_id(), "doc_id": doc_id, "doc_title": filename,
+        "index": i, "text": ch, "created_at": utc_now_iso(),
+    } for i, ch in enumerate(chunks)]
+    if chunk_docs:
+        await db.rag_chunks.insert_many(chunk_docs)
+
+    doc["id"] = doc.pop("_id")
+    return doc
+
+
+@api.delete("/rag/documents/{doc_id}")
+async def rag_docs_delete(doc_id: str, user=Depends(get_current_user)):
+    doc = await db.rag_documents.find_one({"_id": doc_id})
+    if not doc:
+        raise HTTPException(404, "Not found")
+    if doc.get("public_id"):
+        delete_asset(doc["public_id"], resource_type="raw")
+    await db.rag_chunks.delete_many({"doc_id": doc_id})
+    await db.rag_documents.delete_one({"_id": doc_id})
+    return {"ok": True}
+
+
+@api.get("/rag/search")
+async def rag_search(q: str, k: int = 5, user=Depends(get_current_user)):
+    """Debug endpoint: run BM25 over all chunks."""
+    chunks = await db.rag_chunks.find({}, {"_id": 1, "doc_id": 1, "doc_title": 1, "text": 1}).to_list(2000)
+    norm = [{"id": c["_id"], "doc_id": c["doc_id"], "doc_title": c.get("doc_title", "doc"), "text": c["text"]} for c in chunks]
+    hits = bm25_search(q, norm, k=k)
+    return {"query": q, "hits": hits}
 
 
 # ---------------------------------------------------------------------------

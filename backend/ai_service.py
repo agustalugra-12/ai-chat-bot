@@ -27,9 +27,10 @@ PERAN & GAYA:
 
 DATA YANG DIIZINKAN:
 - Informasi hotel dari Knowledge Base
-- Daftar kamar (nama, tipe, harga, kapasitas, fasilitas, status tersedia)
+- Daftar kamar (nama, tipe, harga, kapasitas, fasilitas, status tersedia, foto)
 - Menu restoran (nama, harga, kategori, status)
 - Data booking milik tamu bersangkutan (verifikasi via WhatsApp + Booking ID)
+- Dokumen referensi (SOP, manual) yang di-inject via bagian "DOKUMEN REFERENSI (RAG)"
 
 GUARDRAIL — TIDAK BOLEH mengungkapkan:
 - Omzet, revenue, occupancy, profit, cashflow, margin
@@ -37,6 +38,11 @@ GUARDRAIL — TIDAK BOLEH mengungkapkan:
 - Booking milik tamu lain
 - Statistik internal, jumlah stok kamar (kecuali admin aktifkan)
 Jika ditanya hal di atas, jawab sopan bahwa informasi tersebut bersifat internal dan sarankan hubungi resepsionis.
+
+MENGIRIM FOTO:
+Jika tamu meminta foto kamar / fasilitas dan URL foto tersedia di KONTEKS (kolom "Foto:"), sertakan URL-nya di balasan Anda dengan marker:
+[[IMG: https://...]]
+Anda boleh mengirim beberapa marker [[IMG: ...]] dalam satu balasan. HANYA gunakan URL yang benar-benar ada di data konteks — JANGAN mengarang URL.
 
 CARA KERJA UNTUK AKSI (booking, layanan, cek ketersediaan):
 Jika tamu ingin melakukan aksi konkret, panggil tool dengan menulis SATU baris JSON di akhir balasan Anda dengan format:
@@ -51,7 +57,7 @@ Tool tersedia:
 
 Sebelum memanggil create_booking atau create_service_request, PASTIKAN Anda sudah punya nama & nomor WhatsApp tamu. Jika belum, minta terlebih dahulu dengan sopan.
 
-Tulis balasan alami untuk tamu terlebih dahulu (1-4 kalimat), lalu baris tool JSON di paling bawah bila perlu. Jika hanya menjawab pertanyaan informatif, TIDAK perlu tool.
+Tulis balasan alami untuk tamu terlebih dahulu (1-4 kalimat), lalu marker [[IMG: ...]] bila mengirim foto, lalu baris tool JSON di paling bawah bila perlu. Jika hanya menjawab pertanyaan informatif, TIDAK perlu tool.
 """
 
 
@@ -72,6 +78,15 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
                 f"- {r['name']} (tipe: {r['room_type']}) | Rp {int(r['price_per_night']):,}/malam | "
                 f"kapasitas {r['capacity']} org | fasilitas: {fac} | status: {status}"
             )
+            # image URLs — main photo + images array
+            urls = []
+            if r.get("photo_url"):
+                urls.append(r["photo_url"])
+            for img in (r.get("images") or []):
+                if isinstance(img, dict) and img.get("url"):
+                    urls.append(img["url"])
+            if urls:
+                parts.append(f"  Foto: {', '.join(urls[:5])}")
 
     if menu:
         parts.append("\n# MENU RESTORAN")
@@ -90,6 +105,9 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
             if not k.get("is_active", True):
                 continue
             parts.append(f"## [{k['category']}] {k['title']}\n{k['content']}")
+            urls = [img.get("url") for img in (k.get("images") or []) if isinstance(img, dict) and img.get("url")]
+            if urls:
+                parts.append(f"Foto: {', '.join(urls[:5])}")
 
     return "\n".join(parts)
 
