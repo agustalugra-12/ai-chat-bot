@@ -1,0 +1,127 @@
+{
+  "theme": "light",
+  "typography": {
+    "headings": "Manrope",
+    "body": "DM Sans",
+    "mono": "JetBrains Mono",
+    "instructions": "Use Manrope for headings with tracking-tight. Use DM Sans for all body text, dashboard data, and standard UI components. Avoid Inter and space grotesk."
+  },
+  "colors": {
+    "primary": {
+      "DEFAULT": "#2A4535",
+      "foreground": "#FFFFFF",
+      "description": "Deep Tropical Green. Use sparingly for primary actions, active states, and brand moments."
+    },
+    "background": {
+      "DEFAULT": "#FAFAF9",
+      "description": "Warm Sand / Off-white (stone-50) to keep interface airy and reduce eye strain compared to pure white."
+    },
+    "surface": {
+      "DEFAULT": "#FFFFFF",
+      "description": "Pure white for cards and modules to create contrast against the warm sand background."
+    },
+    "accent": {
+      "DEFAULT": "#C86240",
+      "foreground": "#FFFFFF",
+      "description": "Terracotta / Rust. Use for urgent CTAs, human handover queues, and alert badges."
+    },
+    "secondary": {
+      "DEFAULT": "#E9D8A6",
+      "foreground": "#2F2A26",
+      "description": "Linen / Light Ochre for subtle active backgrounds and secondary badges."
+    },
+    "text": {
+      "DEFAULT": "#2F2A26",
+      "muted": "#7D7A73",
+      "description": "Espresso/Charcoal for primary text to ensure 4.5:1 contrast. Sage/Olive for muted text."
+    }
+  },
+  "visual_enhancers": {
+    "borders": "Use subtle 1px borders (border-stone-200) for structural separation. No pure black borders.",
+    "shadows": "Ambient, soft shadows for elevated components (e.g., dropdowns). For standard dashboard cards, use a flat cardless approach with 1px border instead of heavy shadows.",
+    "radius": "Max 8px (rounded-lg) to maintain a modern, slightly structural but approachable feel.",
+    "textures": "Use slight grain overlays in hero areas or login pages if applicable, but keep dashboard clean for data legibility."
+  },
+  "grids_and_layouts": {
+    "dashboard": "Use a High Density Grid (Bento style). Base grid-cols-1 md:grid-cols-3 lg:grid-cols-4. Summary cards col-span-1. Charts col-span-2 or 3. Use tight gaps (gap-4 or gap-6).",
+    "sidebar": "Fixed left sidebar with earthy accent on active state. Must be collapsible for scaling.",
+    "spacing": "Generous spacing. p-6 or p-8 inside structural containers. Avoid cramped data tables."
+  },
+  "components": {
+    "cards": "Go cardless or flat rectangular with 1px subtle border. No deep shadows for data widgets.",
+    "chat_simulator": "Needs to look like a real messaging interface (WhatsApp style). Use light green (#DCF8C6 or similar tailwind equivalent like green-100) for user bubbles, white for AI bubbles, and a subtle textured background.",
+    "tables": "Shadcn UI tables, left-aligned data, clear badges for status (Pending/Confirmed).",
+    "badges": "Pill-shaped, using the secondary/accent palette (e.g., Terracotta for Cancelled/Urgent, Sage for Confirmed/Done)."
+  },
+  "motion": {
+    "interactions": "Micro-animations on hover (e.g., slight -translate-y-0.5 or border color change). Staggered entrance for list items.",
+    "page_transitions": "Smooth fade-ins for dashboard tabs."
+  },
+  "accessibility": {
+    "contrast": "Text must meet 4.5:1 ratio. No transparent backgrounds on interactive overlays.",
+    "testing": "All interactive and key informational elements MUST include a data-testid attribute in kebab-case."
+  },
+  "image_urls": [
+    {
+      "url": "https://images.unsplash.com/photo-1611892440504-42a792e24d32?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzOTB8MHwxfHNlYXJjaHwxfHx0cm9waWNhbCUyMHJlc29ydCUyMGJlZHJvb218ZW58MHx8fHwxNzg0MTcxMTczfDA&ixlib=rb-4.1.0&q=85",
+      "description": "Tropical resort bedroom with wooden furniture",
+      "category": "room_management"
+    },
+    {
+      "url": "https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzOTB8MHwxfHNlYXJjaHwyfHx0cm9waWNhbCUyMHJlc29ydCUyMGJlZHJvb218ZW58MHx8fHwxNzg0MTcxMTczfDA&ixlib=rb-4.1.0&q=85",
+      "description": "White bed linen with brown wooden bed frame",
+      "category": "room_management"
+    },
+    {
+      "url": "https://images.unsplash.com/photo-1539755530862-00f623c00f52?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1Mjh8MHwxfHNlYXJjaHwxfHxpbmRvbmVzaWFuJTIwZm9vZHxlbnwwfHx8fDE3ODQxNzExNjN8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Variety of Indonesian food on table",
+      "category": "restaurant_menu"
+    },
+    {
+      "url": "https://images.unsplash.com/photo-1680169590313-9a14f3cd8148?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1Mjh8MHwxfHNlYXJjaHwyfHxpbmRvbmVzaWFuJTIwZm9vZHxlbnwwfHx8fDE3ODQxNzExNjN8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Wooden table topped with bowls of food",
+      "category": "restaurant_menu"
+    },
+    {
+      "url": "https://images.unsplash.com/photo-1781005067104-ddb4ef395da6?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA0MTJ8MHwxfHNlYXJjaHwyfHx0cm9waWNhbCUyMHJlc29ydCUyMHJlY2VwdGlvbnxlbnwwfHx8fDE3ODQxNzExNjN8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Stylish lounge/reception with large windows",
+      "category": "dashboard_hero"
+    }
+  ],
+  "instructions_to_main_agent": [
+    "Use Phosphor Icons (@phosphor-icons/react) for a premium, duotone or light look across the dashboard.",
+    "Implement Shadcn UI components but heavily customize their default Tailwind classes to match the earthy, organic palette.",
+    "Ensure the Chat Simulator looks distinct from the rest of the dashboard, using a WhatsApp-inspired UI (light green bubbles, textured or solid light background).",
+    "Avoid using Shadcn's Card component excessively; opt for raw HTML div with 'border border-stone-200 rounded-lg bg-white'.",
+    "Do not use generic 'blue-purple' AI slop. Use the provided Deep Tropical Green and Terracotta accent colors.",
+    "In the Chat Simulator, ensure 'data-testid' is present on message bubbles, input fields, and the send button."
+  ],
+  "GENERAL_UI_UX_DESIGN_GUIDELINES": [
+    "Provide guidelines for .js files (not .tsx).",
+    "CRITICAL: DO NOT use complete transparent background in header, overlays, any surface that has content under it.",
+    "All interactive and key informational elements MUST include a data-testid attribute to facilitate robust automated testing.",
+    "Avoid generic centered layouts, simplistic gradients, and uniform styling.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "You MUST NOT apply universal transition (e.g. `transition: all`).",
+    "You MUST NOT center align the app container, i.e. do not add `.App { text-align: center; }`.",
+    "Always use modern button styles (pill-shaped or sharp) with interaction animations.",
+    "NEVER use AI assistant Emoji characters like robot, brain, lightbulb, target, etc for icons.",
+    "Every interaction needs micro-animations - hover states, transitions.",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "Use sonner for toasts, located in /app/src/components/ui/sonner.js."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "You tend to converge toward generic, 'on distribution' outputs. In frontend design, this creates what users call the 'AI slop' aesthetic. Avoid this.",
+    "Don't make generic centered layouts, simplistic gradients, and uniform styling.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Use glass-morphism effects carefully, but DO NOT use transparent backgrounds on interactive dropdowns or overlays.",
+    "You MUST NOT apply universal transition. Eg: `transition: all`.",
+    "You MUST NOT center align the app container, ie do not add `.App { text-align: center; }`.",
+    "Always use modern button styles like pill-shaped, or sharp button with interaction animations & color relevant to the app style.",
+    "NEVER use AI assistant Emoji characters for icons.",
+    "Every interaction needs micro-animations - hover states, transitions.",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "All interactive and key informational elements MUST include `data-testid` attribute. Convention: kebab-case, role-based.",
+    "Provide guidelines for .js files (not .tsx)."
+  ]
+}
