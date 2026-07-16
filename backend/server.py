@@ -684,6 +684,9 @@ async def chat_message(body: ChatSendRequest, user=Depends(get_current_user)):
         "last_intent": tool,
         "response_time_ms": elapsed_ms,
     }
+    if bot:
+        update["bot_id"] = bot.get("_id")
+        update["bot_code"] = bot.get("code")
     if tool == "request_handover":
         update["status"] = "waiting_admin"
         update["resolution"] = "handover"

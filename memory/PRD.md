@@ -56,10 +56,22 @@ Membangun **AI Guest Assistant** yang terintegrasi dengan PMS Pelangi Homestay u
 - ✅ AI context automatically augmented with top-5 BM25 hits per query
 - ✅ 100% test coverage (iteration 1 + iteration 2)
 
+### Iteration 3 (Multi-AI Bot Management V2)
+- ✅ **AI Bots** collection — 2 seeded bots: Booking & Marketing AI, Guest Service AI. Setiap bot punya prompt, tool_codes, knowledge_categories, allowed_service_types, guardrail_rules, allowed_intents, workflow_id
+- ✅ **Tools Catalog** (18 items) — CRUD via `/api/tools`, dikelola dari page `/ai/tools`
+- ✅ **Intents Catalog** (13 items dengan mapping ke tools) — page `/ai/intents`
+- ✅ **Workflows** (2 preset: booking_flow, guest_service_flow) — page `/ai/workflows`, drag-free step editor
+- ✅ **Chat endpoint bot-aware** — `bot_id`/`bot_code` param, dynamic system prompt via `build_dynamic_prompt(bot)`, KB filtered by bot's kategori, runtime permission gating (menolak tool call di luar `tool_codes` / `allowed_service_types`)
+- ✅ **Bot Detail page** dengan 7 tab: Profile, Prompt, Permissions, Workflow, Knowledge, Intents, Guardrail
+- ✅ **Chat Simulator** — dropdown pilih bot, ganti bot me-reset session
+- ✅ Sidebar bersarang: "AI Management" collapsible group
+- ✅ Ready untuk future channel (WhatsApp/Telegram/Website/Mobile) via `channel_type` + `channel_id` fields
+- ✅ 100% test coverage: 13/13 iteration-3, plus regression 12/12 iter-2 & 23/23 iter-1
+
 ## Backlog / Next
 ### P0
-- WhatsApp channel integration (Twilio / Meta Cloud API / VPS webhook)
-- Payment link generation & invoice PDF (`create_payment_link` tool)
+- Aktifkan koneksi channel WhatsApp/Telegram real (struktur sudah siap)
+- Payment link + invoice PDF (`send_payment_link` & `send_invoice` tools implemented)
 
 ### P1
 - RAG for FAQ (upload PDF/DOCX → embed → vector search)
