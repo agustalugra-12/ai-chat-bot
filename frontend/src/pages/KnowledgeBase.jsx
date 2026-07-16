@@ -3,6 +3,7 @@ import { PageHeader, Badge, EmptyState } from "@/components/ui-parts";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { Plus, Trash2, PencilLine, X } from "lucide-react";
+import { ImageUploader } from "@/components/ImageUploader";
 
 const LABELS = {
   faq: "FAQ", policy: "Kebijakan", checkin: "Check-in", checkout: "Check-out",
@@ -11,7 +12,7 @@ const LABELS = {
   motor_rental: "Sewa Motor", airport_pickup: "Airport Pickup", promo: "Promo",
 };
 
-const emptyForm = { category: "faq", title: "", content: "", is_active: true };
+const emptyForm = { category: "faq", title: "", content: "", is_active: true, images: [] };
 
 export default function KnowledgeBase() {
   const [items, setItems] = useState([]);
@@ -34,7 +35,7 @@ export default function KnowledgeBase() {
   const openNew = () => { setEditing(null); setForm(emptyForm); setOpen(true); };
   const openEdit = (item) => {
     setEditing(item);
-    setForm({ category: item.category, title: item.title, content: item.content, is_active: item.is_active });
+    setForm({ category: item.category, title: item.title, content: item.content, is_active: item.is_active, images: item.images || [] });
     setOpen(true);
   };
 
@@ -100,9 +101,17 @@ export default function KnowledgeBase() {
                     <div className="flex items-center gap-2 mb-1">
                       <Badge tone="primary">{LABELS[item.category] || item.category}</Badge>
                       {!item.is_active && <Badge tone="muted">nonaktif</Badge>}
+                      {item.images?.length > 0 && <Badge tone="success">{item.images.length} foto</Badge>}
                     </div>
                     <div className="font-[Manrope] font-semibold">{item.title}</div>
                     <div className="text-sm text-[hsl(var(--muted-foreground))] mt-1 whitespace-pre-wrap line-clamp-3">{item.content}</div>
+                    {item.images?.length > 0 && (
+                      <div className="mt-2 flex gap-1.5">
+                        {item.images.slice(0, 4).map((img, i) => (
+                          <img key={i} src={img.url} alt="" className="w-12 h-12 rounded-md object-cover border border-[hsl(var(--border))]" />
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="flex items-start gap-2">
                     <button data-testid={`kb-edit-${item.id}`} onClick={() => openEdit(item)}
@@ -136,6 +145,18 @@ export default function KnowledgeBase() {
               <label className="text-xs font-medium">Konten</label>
               <textarea data-testid="kb-form-content" rows={6} value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })}
                 className="mt-1 w-full px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm" />
+            </div>
+            <div>
+              <label className="text-xs font-medium">Foto (untuk dikirim AI ke tamu)</label>
+              <div className="mt-1">
+                <ImageUploader
+                  value={form.images}
+                  onChange={(imgs) => setForm({ ...form, images: imgs })}
+                  folder="pelangi/kb"
+                  max={5}
+                  tid="kb-uploader"
+                />
+              </div>
             </div>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" data-testid="kb-form-active" checked={form.is_active} onChange={(e) => setForm({ ...form, is_active: e.target.checked })} />

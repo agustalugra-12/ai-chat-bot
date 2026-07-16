@@ -3,7 +3,7 @@ import { useAuth } from "@/lib/auth";
 import {
   LayoutDashboard, MessagesSquare, BotMessageSquare, BookOpenText,
   BedDouble, UtensilsCrossed, CalendarCheck2, Bell, FileTerminal,
-  BarChart3, Settings as SettingsIcon, LogOut, Sparkles,
+  BarChart3, Settings as SettingsIcon, LogOut, Sparkles, FileStack,
 } from "lucide-react";
 
 const nav = [
@@ -11,6 +11,7 @@ const nav = [
   { to: "/conversations", label: "Percakapan", icon: MessagesSquare, tid: "nav-conversations" },
   { to: "/simulator", label: "Chat Simulator", icon: BotMessageSquare, tid: "nav-simulator" },
   { to: "/knowledge-base", label: "Knowledge Base", icon: BookOpenText, tid: "nav-kb" },
+  { to: "/rag", label: "RAG Documents", icon: FileStack, tid: "nav-rag" },
   { to: "/rooms", label: "Kamar", icon: BedDouble, tid: "nav-rooms" },
   { to: "/menu", label: "Menu Resto", icon: UtensilsCrossed, tid: "nav-menu" },
   { to: "/bookings", label: "Booking", icon: CalendarCheck2, tid: "nav-bookings" },

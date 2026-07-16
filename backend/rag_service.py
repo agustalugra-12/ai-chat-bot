@@ -96,13 +96,19 @@ def bm25_search(query: str, chunks: List[dict], k: int = 5) -> List[dict]:
         return []
     corpus = [tokenize(c["text"]) for c in chunks]
     bm25 = BM25Okapi(corpus)
-    scores = bm25.get_scores(tokenize(query))
+    q_tokens = tokenize(query)
+    if not q_tokens:
+        return []
+    scores = bm25.get_scores(q_tokens)
     ranked = sorted(zip(scores, chunks), key=lambda x: x[0], reverse=True)
     out = []
+    # keep top-k; only drop chunks with 0 keyword overlap
+    q_set = set(q_tokens)
     for score, chunk in ranked[:k]:
-        if score <= 0:
+        overlap = q_set.intersection(tokenize(chunk["text"]))
+        if not overlap:
             continue
-        out.append({**chunk, "score": float(score)})
+        out.append({**chunk, "score": float(max(score, 0.01))})
     return out
 
 

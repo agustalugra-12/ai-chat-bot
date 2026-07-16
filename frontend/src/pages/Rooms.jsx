@@ -4,10 +4,11 @@ import { api, fmtIDR } from "@/lib/api";
 import { toast } from "sonner";
 import { Plus, PencilLine, Trash2 } from "lucide-react";
 import { Modal } from "./KnowledgeBase";
+import { ImageUploader } from "@/components/ImageUploader";
 
 const empty = {
   name: "", room_type: "", price_per_night: 0, capacity: 2,
-  photo_url: "", facilities: [], total_units: 1, is_available: true, description: "",
+  photo_url: "", images: [], facilities: [], total_units: 1, is_available: true, description: "",
 };
 
 export default function Rooms() {
@@ -122,8 +123,20 @@ export default function Rooms() {
               <input data-testid="room-form-units" type="number" value={form.total_units} onChange={(e) => setForm({ ...form, total_units: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm" />
             </div>
             <div className="col-span-2">
-              <label className="text-xs font-medium">URL Foto</label>
+              <label className="text-xs font-medium">URL Foto Utama (opsional)</label>
               <input data-testid="room-form-photo" value={form.photo_url || ""} onChange={(e) => setForm({ ...form, photo_url: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm" />
+            </div>
+            <div className="col-span-2">
+              <label className="text-xs font-medium">Galeri Foto (dikirim AI ke tamu)</label>
+              <div className="mt-1">
+                <ImageUploader
+                  value={form.images}
+                  onChange={(imgs) => setForm({ ...form, images: imgs })}
+                  folder="pelangi/rooms"
+                  max={6}
+                  tid="room-uploader"
+                />
+              </div>
             </div>
             <div className="col-span-2">
               <label className="text-xs font-medium">Fasilitas</label>

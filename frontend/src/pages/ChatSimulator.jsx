@@ -3,6 +3,7 @@ import { PageHeader, Badge } from "@/components/ui-parts";
 import { api } from "@/lib/api";
 import { Send, RotateCcw, User2, BotMessageSquare } from "lucide-react";
 import { toast } from "sonner";
+import { ChatMessageContent } from "@/components/ChatMessageContent";
 
 export default function ChatSimulator() {
   const [sessionId, setSessionId] = useState(null);
@@ -102,7 +103,7 @@ export default function ChatSimulator() {
                 data-testid={`chat-msg-${m.role}-${i}`}
                 className={`fade-in-up ${m.role === "user" ? "chat-bubble-guest" : "chat-bubble-ai"}`}
               >
-                <div className="whitespace-pre-wrap text-[14px] leading-relaxed">{m.content}</div>
+                <ChatMessageContent content={m.content} />
                 <div className="text-[10px] mt-1 text-stone-500 text-right">
                   {new Date(m.timestamp).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
                   {m.intent && <> · <span className="text-emerald-700">{m.intent}</span></>}

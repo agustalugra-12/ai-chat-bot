@@ -1,0 +1,50 @@
+{
+  "summary": "Iteration 2 (Cloudinary uploads + RAG + AI photo delivery) fully verified. 12/12 new backend tests pass and all 5 frontend UI flows pass: sidebar /rag nav → RagDocuments page → upload TXT SOP → BM25 preview search → delete; KB modal ImageUploader → upload PNG → thumbnail → save → badge; Rooms edit modal ImageUploader → upload PNG → save → persists across reload; Chat Simulator → 'Boleh liat foto kamar Deluxe?' → assistant reply renders inline Cloudinary <img> via ChatMessageContent. Real Cloudinary uploads land under pelangi/kb, pelangi/rooms, pelangi/docs. Iteration-1 regression: 21/23 pass — 2 flaky pre-existing failures unrelated to iteration 2 (see backend_issues.minor).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/prompt (POST)", "issue": "backend_test.py::TestPromptManagement.test_create_new_version_and_switch is flaky when prompt versions have been previously bumped by other tests. The test's `cur_version` assumes the currently ACTIVE prompt is also the LATEST, but /api/prompt uses max(version)+1 for next_version. When another test previously activated an older version, next_version diverges from cur_version+1. Test-only bug — server behaviour is consistent."},
+      {"endpoint": "/api/chat/message", "issue": "TestChat.test_chat_booking_via_tool intermittently returns tool_used='check_availability' instead of 'create_booking' when the LLM decides to double-check availability first. Pre-existing LLM non-determinism, not an iteration-2 regression."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "ChatMessageContent", "issue": "URL_RE regex requires URLs to end with .jpg|png|webp|gif|jpeg|gif. Unsplash CDN URLs used as seed room.photo_url end with query params like `?w=800`, so they are NOT rendered inline. When AI includes such URLs, they show as raw text bullets (e.g. leaves an orphan '2.' after the images.unsplash.com line got emitted but not stripped). Cloudinary URLs work correctly.", "selector": "components/ChatMessageContent.jsx", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration2.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/iteration2_results.xml",
+    "/app/test_reports/pytest/iteration2_regression.xml"
+  ],
+  "action_items": [
+    "(LOW) Extend URL_RE in ChatMessageContent.jsx to also match res.cloudinary.com and images.unsplash.com hosts regardless of extension/query-string, e.g. detect hosts by URL parsing instead of extension whitelist. This will inline Unsplash seed photos too.",
+    "(LOW/optional) Make TestPromptManagement.test_create_new_version_and_switch resilient by grabbing MAX version (via /api/prompt/versions) instead of ACTIVE version before asserting +1.",
+    "(LOW/optional) TestChat.test_chat_booking_via_tool could accept either 'create_booking' or a two-turn scenario where 'check_availability' precedes 'create_booking' — currently flaky due to LLM decision."
+  ],
+  "critical_code_review_comments": [
+    "server.py POST /api/uploads/image folder validation silently rewrites unknown folder to 'pelangi/kb' (line 802) — consider returning 400 to surface caller mistakes.",
+    "server.py POST /api/rag/documents does not wrap chunk insert in a transaction; a Cloudinary upload success followed by db.rag_chunks.insert_many failure would leak a Cloudinary asset. Optional to add cleanup on failure.",
+    "cloudinary_service.delete_asset swallows all exceptions with bare except (line 55-56) — masks real Cloudinary permission errors during rag document delete. Log the exception at WARNING at least.",
+    "rag_service.bm25_search treats a chunk as relevant only if there is token-overlap between query and chunk. This is correct as guardrail but note it discards potentially useful semantic hits — expected for a BM25-only design.",
+    "ai_service.build_context_block loops all KB items but only prepends KB heading once. Room/menu sections use '\\n#' newline-prefixed markdown — verified visually via successful RAG-aware chat.",
+    "ChatMessageContent URL_RE will not match Cloudinary URLs whose format is auto-negotiated (fetch_format=auto returns e.g. .avif). Since upload_image sets fetch_format=auto quality=auto, Cloudinary may sometimes serve .avif — regex needs future-proofing (again, host-based detection is safer).",
+    "backend_test.py + test_iteration2.py both re-parse REACT_APP_BACKEND_URL from frontend/.env — extract to a conftest.py to DRY up."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration2.py (new — 12 new iteration-2 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% for iteration-2 (12/12); iteration-1 regression 21/23 with 2 pre-existing flaky failures unrelated to iteration 2",
+    "frontend": "100% (RAG page, KB uploader, Rooms uploader + persistence, chat inline image rendering all verified)"
+  },
+  "test_credentials": "admin@pelangi.id / Admin123!  |  superadmin@pelangi.id / Super123!",
+  "seed_data_creation": "Tests create/destroy: 1 TEST_ KB item with image (deleted), 1 attached image on real Deluxe room (kept — used by chat photo test), 2 TEST_ RAG documents (deleted after test class), 2 TEST_ AI conversations for pet + photo. Cloudinary now has assets under pelangi/kb, pelangi/rooms, and pelangi/docs.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration-2 features (Cloudinary uploads, RAG BM25, AI photo delivery + RAG-augmented answers) all green backend + frontend. New regression file /app/backend/tests/test_iteration2.py — run with `pytest /app/backend/tests/test_iteration2.py -v`. Deluxe Room in DB now has 1 Cloudinary image attached — do NOT delete if you need to re-verify chat photo delivery. If iteration-1 backend_test.py flakes on prompt/booking tool tests, that's pre-existing and does not affect iteration 2. Cloudinary is REAL — every test run creates ~4-5 assets; they persist unless the API is called to delete.",
+  "rca of the issue": "None blocking. Minor: ChatMessageContent URL detection is extension-based, so Unsplash query-parameterised URLs shown by AI are not inlined. Fix suggestion: replace URL_RE with host-based detection: if url.startsWith('https://res.cloudinary.com/') || url.startsWith('https://images.unsplash.com/') then treat as image, else keep as text. This will also make the chat display cleaner (no leftover numbered bullet fragments)."
+}

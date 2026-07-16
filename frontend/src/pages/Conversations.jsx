@@ -3,6 +3,7 @@ import { PageHeader, Badge, EmptyState } from "@/components/ui-parts";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { AlertTriangle, CheckCircle2, MessagesSquare } from "lucide-react";
+import { ChatMessageContent } from "@/components/ChatMessageContent";
 
 export default function Conversations() {
   const [list, setList] = useState([]);
@@ -112,7 +113,7 @@ export default function Conversations() {
               <div className="flex-1 overflow-y-auto pelangi-scroll p-6 chat-bg flex flex-col gap-2">
                 {selected.messages.map((m, i) => (
                   <div key={i} className={m.role === "user" ? "chat-bubble-guest" : "chat-bubble-ai"}>
-                    <div className="whitespace-pre-wrap text-[14px] leading-relaxed">{m.content}</div>
+                    <ChatMessageContent content={m.content} />
                     <div className="text-[10px] mt-1 text-stone-500 text-right">
                       {new Date(m.timestamp).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
                       {m.intent && <> · <span className="text-emerald-700">{m.intent}</span></>}

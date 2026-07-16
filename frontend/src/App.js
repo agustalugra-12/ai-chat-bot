@@ -15,6 +15,7 @@ import ServiceRequests from "@/pages/ServiceRequests";
 import PromptManagement from "@/pages/PromptManagement";
 import Analytics from "@/pages/Analytics";
 import Settings from "@/pages/Settings";
+import RagDocuments from "@/pages/RagDocuments";
 
 function ProtectedRoute({ children }) {
   const { user } = useAuth();
@@ -46,6 +47,7 @@ function App() {
             <Route path="bookings" element={<Bookings />} />
             <Route path="service-requests" element={<ServiceRequests />} />
             <Route path="prompt" element={<PromptManagement />} />
+            <Route path="rag" element={<RagDocuments />} />
             <Route path="analytics" element={<Analytics />} />
             <Route path="settings" element={<Settings />} />
           </Route>
