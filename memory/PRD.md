@@ -31,6 +31,8 @@ Membangun **AI Guest Assistant** yang terintegrasi dengan PMS Pelangi Homestay u
 13. Analytics (total conv, resolution rate, handover, bookings AI, conversion, response time, top intents, daily series)
 
 ## Implemented — 2026-02
+
+### Iteration 1 (MVP)
 - ✅ Auth (JWT, bcrypt, seeded admin + super_admin)
 - ✅ Knowledge Base CRUD (seeded 12 items)
 - ✅ Rooms CRUD (seeded 3 rooms)
@@ -45,7 +47,14 @@ Membangun **AI Guest Assistant** yang terintegrasi dengan PMS Pelangi Homestay u
 - ✅ Analytics dashboard (recharts)
 - ✅ Settings (hotel info + AI options)
 - ✅ AI Guardrail (refuses internal data)
-- ✅ 100% test coverage via testing agent
+
+### Iteration 2 (Photos + RAG)
+- ✅ **Cloudinary photo upload** — reusable `ImageUploader` in KB items & Rooms (max 5-6 per item)
+- ✅ **AI sends photos in chat** — `[[IMG: url]]` marker parsing + host-based Cloudinary/Unsplash detection in `ChatMessageContent`
+- ✅ **RAG for PDF/DOCX/TXT** — upload SOP/manual → auto-extract text (pypdf/python-docx) → chunk 600 chars → BM25 index
+- ✅ **RAG Documents admin page** — upload, list, delete, live retrieval preview
+- ✅ AI context automatically augmented with top-5 BM25 hits per query
+- ✅ 100% test coverage (iteration 1 + iteration 2)
 
 ## Backlog / Next
 ### P0

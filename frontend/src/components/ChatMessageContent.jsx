@@ -1,12 +1,13 @@
 import React from "react";
 
-// Parse text that may contain [[IMG: url]] and standalone URLs. Returns array of {type: 'text'|'image', value}.
+// Detect explicit [[IMG: url]] markers and known image-hosting URLs.
 const IMG_MARKER_RE = /\[\[IMG:\s*(https?:\/\/[^\s\]]+)\s*\]\]/gi;
-const URL_RE = /(https?:\/\/[^\s)]+\.(?:jpg|jpeg|png|webp|gif))(?![^\s])/gi;
+// Match any URL that starts with known image hosts (regardless of extension / query).
+const IMAGE_HOST_RE = /(https?:\/\/(?:res\.cloudinary\.com|images\.unsplash\.com)\/[^\s)]+)/gi;
 
 function extractImageUrls(text) {
   const urls = [];
-  let stripped = text;
+  let stripped = text || "";
 
   // 1. explicit [[IMG: url]]
   stripped = stripped.replace(IMG_MARKER_RE, (_, u) => {
@@ -14,16 +15,24 @@ function extractImageUrls(text) {
     return "";
   });
 
-  // 2. Loose Cloudinary URLs pointing to res.cloudinary.com images
-  stripped = stripped.replace(URL_RE, (u) => {
-    if (u.includes("res.cloudinary.com") || u.includes("images.unsplash.com")) {
-      urls.push(u);
-      return "";
-    }
-    return u;
+  // 2. host-based detection (Cloudinary + Unsplash regardless of format)
+  stripped = stripped.replace(IMAGE_HOST_RE, (u) => {
+    urls.push(u);
+    return "";
   });
 
-  return { text: stripped.replace(/\n{3,}/g, "\n\n").trim(), images: urls };
+  // Clean up leftover list markers / stray punctuation from removed URLs
+  stripped = stripped
+    .replace(/^\s*[\-\*\d]+[\.\)]?\s*$/gm, "")   // "1.", "2)", "- " on their own line
+    .replace(/[ \t]+$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  // Dedupe URLs while preserving order
+  const seen = new Set();
+  const unique = urls.filter((u) => (seen.has(u) ? false : seen.add(u)));
+
+  return { text: stripped, images: unique };
 }
 
 export function ChatMessageContent({ content }) {
