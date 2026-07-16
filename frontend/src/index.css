@@ -2,114 +2,189 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Pelangi design tokens */
+@layer base {
+    :root {
+        --background: 40 20% 97%;
+        --foreground: 30 12% 15%;
+        --card: 0 0% 100%;
+        --card-foreground: 30 12% 15%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 30 12% 15%;
+        --primary: 143 25% 22%;
+        --primary-foreground: 40 30% 98%;
+        --secondary: 43 60% 78%;
+        --secondary-foreground: 30 15% 18%;
+        --muted: 40 20% 94%;
+        --muted-foreground: 30 8% 42%;
+        --accent: 16 55% 52%;
+        --accent-foreground: 40 30% 98%;
+        --destructive: 4 62% 48%;
+        --destructive-foreground: 40 30% 98%;
+        --border: 30 15% 88%;
+        --input: 30 15% 88%;
+        --ring: 143 25% 22%;
+        --chart-1: 143 25% 30%;
+        --chart-2: 16 55% 52%;
+        --chart-3: 43 60% 60%;
+        --chart-4: 200 40% 40%;
+        --chart-5: 30 45% 45%;
+        --radius: 0.6rem;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
 body {
     margin: 0;
     font-family:
-        -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
-        "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
-        sans-serif;
+        "DM Sans", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    letter-spacing: -0.005em;
 }
 
-code {
-    font-family:
-        source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    font-family: "Manrope", system-ui, -apple-system, sans-serif;
+    letter-spacing: -0.02em;
 }
 
-@layer base {
-    :root {
-        --background: 0 0% 100%;
-        --foreground: 0 0% 3.9%;
-        --card: 0 0% 100%;
-        --card-foreground: 0 0% 3.9%;
-        --popover: 0 0% 100%;
-        --popover-foreground: 0 0% 3.9%;
-        --primary: 0 0% 9%;
-        --primary-foreground: 0 0% 98%;
-        --secondary: 0 0% 96.1%;
-        --secondary-foreground: 0 0% 9%;
-        --muted: 0 0% 96.1%;
-        --muted-foreground: 0 0% 45.1%;
-        --accent: 0 0% 96.1%;
-        --accent-foreground: 0 0% 9%;
-        --destructive: 0 84.2% 60.2%;
-        --destructive-foreground: 0 0% 98%;
-        --border: 0 0% 89.8%;
-        --input: 0 0% 89.8%;
-        --ring: 0 0% 3.9%;
-        --chart-1: 12 76% 61%;
-        --chart-2: 173 58% 39%;
-        --chart-3: 197 37% 24%;
-        --chart-4: 43 74% 66%;
-        --chart-5: 27 87% 67%;
-        --radius: 0.5rem;
-    }
-    .dark {
-        --background: 0 0% 3.9%;
-        --foreground: 0 0% 98%;
-        --card: 0 0% 3.9%;
-        --card-foreground: 0 0% 98%;
-        --popover: 0 0% 3.9%;
-        --popover-foreground: 0 0% 98%;
-        --primary: 0 0% 98%;
-        --primary-foreground: 0 0% 9%;
-        --secondary: 0 0% 14.9%;
-        --secondary-foreground: 0 0% 98%;
-        --muted: 0 0% 14.9%;
-        --muted-foreground: 0 0% 63.9%;
-        --accent: 0 0% 14.9%;
-        --accent-foreground: 0 0% 98%;
-        --destructive: 0 62.8% 30.6%;
-        --destructive-foreground: 0 0% 98%;
-        --border: 0 0% 14.9%;
-        --input: 0 0% 14.9%;
-        --ring: 0 0% 83.1%;
-        --chart-1: 220 70% 50%;
-        --chart-2: 160 60% 45%;
-        --chart-3: 30 80% 55%;
-        --chart-4: 280 65% 60%;
-        --chart-5: 340 75% 55%;
-    }
+code,
+pre {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
 }
 
 @layer base {
     * {
         @apply border-border;
     }
-    body {
-        @apply bg-background text-foreground;
-    }
 }
 
-@layer base {
-    [data-debug-wrapper="true"] {
-        display: contents !important;
-    }
+/* Sidebar link */
+.sidebar-link {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.65rem 0.9rem;
+    border-radius: 8px;
+    color: hsl(var(--foreground));
+    font-weight: 500;
+    font-size: 0.9rem;
+    transition:
+        background-color 0.15s ease,
+        color 0.15s ease,
+        border-color 0.15s ease;
+    border: 1px solid transparent;
+}
+.sidebar-link:hover {
+    background-color: hsl(var(--muted));
+}
+.sidebar-link.active {
+    background-color: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+    border-color: hsl(var(--primary));
+}
+.sidebar-link.active svg {
+    color: hsl(var(--primary-foreground));
+}
 
-    [data-debug-wrapper="true"] > * {
-        margin-left: inherit;
-        margin-right: inherit;
-        margin-top: inherit;
-        margin-bottom: inherit;
-        padding-left: inherit;
-        padding-right: inherit;
-        padding-top: inherit;
-        padding-bottom: inherit;
-        column-gap: inherit;
-        row-gap: inherit;
-        gap: inherit;
-        border-left-width: inherit;
-        border-right-width: inherit;
-        border-top-width: inherit;
-        border-bottom-width: inherit;
-        border-left-style: inherit;
-        border-right-style: inherit;
-        border-top-style: inherit;
-        border-bottom-style: inherit;
-        border-left-color: inherit;
-        border-right-color: inherit;
-        border-top-color: inherit;
-        border-bottom-color: inherit;
+/* Data card */
+.pelangi-panel {
+    background-color: hsl(var(--card));
+    border: 1px solid hsl(var(--border));
+    border-radius: 12px;
+}
+
+/* Chat bubbles */
+.chat-bg {
+    background-color: #ece5dd;
+    background-image:
+        radial-gradient(rgba(0, 0, 0, 0.03) 1px, transparent 1px),
+        radial-gradient(rgba(0, 0, 0, 0.03) 1px, transparent 1px);
+    background-size:
+        20px 20px,
+        20px 20px;
+    background-position:
+        0 0,
+        10px 10px;
+}
+
+.chat-bubble-guest {
+    background-color: #dcf8c6;
+    color: #1f2937;
+    border-radius: 14px 14px 4px 14px;
+    padding: 0.6rem 0.85rem;
+    max-width: 78%;
+    align-self: flex-end;
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
+}
+
+.chat-bubble-ai {
+    background-color: #ffffff;
+    color: #1f2937;
+    border-radius: 14px 14px 14px 4px;
+    padding: 0.6rem 0.85rem;
+    max-width: 78%;
+    align-self: flex-start;
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
+}
+
+/* Table row hover */
+.pelangi-row:hover {
+    background-color: hsl(var(--muted));
+}
+
+/* Login backdrop */
+.login-hero {
+    background:
+        radial-gradient(1200px 500px at -10% -20%, #2a4535 0%, transparent 60%),
+        radial-gradient(900px 400px at 110% 120%, #c86240 0%, transparent 55%),
+        #1f1c17;
+}
+
+.grain::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.15;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.6'/%3E%3C/svg%3E");
+}
+
+/* Fade in for lists */
+@keyframes fade-in-up {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
     }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+.fade-in-up {
+    animation: fade-in-up 0.35s ease-out both;
+}
+
+/* Scrollbar */
+.pelangi-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+.pelangi-scroll::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 4px;
+}
+.pelangi-scroll::-webkit-scrollbar-track {
+    background: transparent;
 }
