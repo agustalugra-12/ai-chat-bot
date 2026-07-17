@@ -14,7 +14,7 @@ from typing import Optional, Dict, Any, List
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
-DEFAULT_MODEL = "gpt-5.4-mini"
+DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_PROVIDER = "openai"
 
 
@@ -49,8 +49,9 @@ Jika tamu ingin melakukan aksi konkret, panggil tool dengan menulis SATU baris J
 [[TOOL: <nama_tool>]] {"arg": "value"}
 
 Tool tersedia:
-- check_availability : args {"check_in":"YYYY-MM-DD","check_out":"YYYY-MM-DD","room_type":"..." (opsional)}
-- create_booking : args {"guest_name":"...","whatsapp":"...","check_in":"YYYY-MM-DD","check_out":"YYYY-MM-DD","room_type":"...","num_rooms":1,"num_guests":1}
+- check_availability : args {"tanggal_checkin":"YYYY-MM-DD","tanggal_checkout":"YYYY-MM-DD" (opsional, isi HANYA utk menginap >1 malam),"tipe":"Standard"|"Cottage" (opsional)}
+- create_booking : args {"guest_name":"...","whatsapp":"...","tipe":"day_use"|"menginap","room_tipe":"Standard"|"Cottage","tanggal_checkin":"YYYY-MM-DD","jam_checkin":"HH:mm" (WAJIB jika tipe=day_use),"tanggal_checkout":"YYYY-MM-DD" (WAJIB jika tipe=menginap),"jumlah_kamar":1,"jumlah_tamu":1,"payment_option":"dp50"|"full" (opsional, isi HANYA kalau tamu sebut sendiri mau DP atau bayar penuh)}
+  PENTING: create_booking BUKAN booking final — ini membuat PERMINTAAN booking yang akan ditinjau resepsionis dulu sebelum dikonfirmasi & dikirim link pembayaran. JANGAN PERNAH bilang ke tamu bahwa kamar/tanggalnya sudah pasti/dikonfirmasi.
 - create_service_request : args {"guest_name":"...","whatsapp":"...","service_type":"extra_bed|extra_towel|mineral_water|cleaning|laundry|motor_rental|airport_pickup|extra_breakfast","quantity":1,"notes":"..."}
 - lookup_booking : args {"whatsapp":"..."}
 - request_handover : args {"reason":"..."}
@@ -62,8 +63,8 @@ Tulis balasan alami untuk tamu terlebih dahulu (1-4 kalimat), lalu marker [[IMG:
 
 
 TOOL_DOCS = {
-    "check_availability": '- check_availability : args {"check_in":"YYYY-MM-DD","check_out":"YYYY-MM-DD","room_type":"..." (opsional)}',
-    "create_booking": '- create_booking : args {"guest_name":"...","whatsapp":"...","check_in":"YYYY-MM-DD","check_out":"YYYY-MM-DD","room_type":"...","num_rooms":1,"num_guests":1}',
+    "check_availability": '- check_availability : args {"tanggal_checkin":"YYYY-MM-DD","tanggal_checkout":"YYYY-MM-DD" (opsional, hanya menginap >1 malam),"tipe":"Standard"|"Cottage" (opsional)}',
+    "create_booking": '- create_booking (BUKAN booking final, cuma permintaan yang ditinjau resepsionis) : args {"guest_name":"...","whatsapp":"...","tipe":"day_use"|"menginap","room_tipe":"Standard"|"Cottage","tanggal_checkin":"YYYY-MM-DD","jam_checkin":"HH:mm" (wajib jika day_use),"tanggal_checkout":"YYYY-MM-DD" (wajib jika menginap),"jumlah_kamar":1,"jumlah_tamu":1,"payment_option":"dp50"|"full" (opsional)}',
     "lookup_booking": '- lookup_booking : args {"whatsapp":"..."}',
     "cancel_booking": '- cancel_booking : args {"booking_id":"..."}',
     "create_service_request": '- create_service_request : args {"guest_name":"...","whatsapp":"...","service_type":"extra_bed|extra_towel|mineral_water|cleaning|laundry|motor_rental|airport_pickup|extra_breakfast","quantity":1,"notes":"..."}',
@@ -153,23 +154,18 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
                  f"Telepon: {settings.get('phone','-')}\n")
 
     if rooms:
-        parts.append("# DAFTAR KAMAR")
+        # Data live dari Pelangi PMS (bukan data lokal ai-chat-bot) - lihat _pms_ketersediaan
+        # di server.py. Skema: {"tipe","tarif_day_use","tarif_menginap","kamar_tersedia"}.
+        parts.append(f"# KETERSEDIAAN KAMAR HARI INI ({rooms[0].get('_tanggal', '-')}, live dari PMS)")
         for r in rooms:
-            fac = ", ".join(r.get("facilities", [])) or "-"
-            status = "TERSEDIA" if r.get("is_available") else "TIDAK TERSEDIA"
             parts.append(
-                f"- {r['name']} (tipe: {r['room_type']}) | Rp {int(r['price_per_night']):,}/malam | "
-                f"kapasitas {r['capacity']} org | fasilitas: {fac} | status: {status}"
+                f"- Tipe {r['tipe']}: {r['kamar_tersedia']} kamar kosong | "
+                f"Day Use Rp {int(r['tarif_day_use']):,} (6 jam) | Menginap Rp {int(r['tarif_menginap']):,}/malam"
             )
-            # image URLs — main photo + images array
-            urls = []
-            if r.get("photo_url"):
-                urls.append(r["photo_url"])
-            for img in (r.get("images") or []):
-                if isinstance(img, dict) and img.get("url"):
-                    urls.append(img["url"])
-            if urls:
-                parts.append(f"  Foto: {', '.join(urls[:5])}")
+        parts.append(
+            "(Ini snapshot HARI INI saja - untuk tanggal lain atau tipe kamar yang di sini tampil "
+            "0 kamar kosong, WAJIB panggil tool check_availability, jangan menyimpulkan dari data di atas.)"
+        )
 
     if menu:
         parts.append("\n# MENU RESTORAN")

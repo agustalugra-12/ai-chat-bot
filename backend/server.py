@@ -61,6 +61,14 @@ WAHA_API_KEY = os.environ.get("WAHA_API_KEY", "")
 WAHA_SESSION = os.environ.get("WAHA_SESSION", "default")
 WAHA_WEBHOOK_TOKEN = os.environ.get("WAHA_WEBHOOK_TOKEN", "")
 
+# ---- Pelangi PMS ----
+# Sumber kebenaran ketersediaan/tarif kamar & tujuan booking request (non-binding) -
+# ai-chat-bot TIDAK PERNAH menyimpan ketersediaan/booking sungguhan di database sendiri,
+# supaya tidak ada data ganda yang bisa menyimpang dari PMS (lihat backend/routes/
+# integrasi_ai_bot.py di repo Pelangi PMS untuk sisi baca/tulisnya).
+PMS_API_BASE_URL = os.environ.get("PMS_API_BASE_URL", "")
+PMS_API_KEY = os.environ.get("PMS_API_KEY", "")
+
 app = FastAPI(title="Pelangi Homestay Guest AI")
 api = APIRouter(prefix="/api")
 
@@ -458,8 +466,70 @@ async def _load_bot(bot_id: Optional[str], bot_code: Optional[str]) -> dict:
     return await db.ai_bots.find_one({}) or {}
 
 
+async def _pms_ketersediaan(tanggal: Optional[str] = None, tipe: Optional[str] = None,
+                             tanggal_checkout: Optional[str] = None) -> List[dict]:
+    """Ketersediaan & tarif kamar LIVE dari Pelangi PMS - satu-satunya sumber kebenaran,
+    bukan koleksi `db.rooms` lokal ai-chat-bot (itu cuma dipakai fitur admin lokal lain,
+    bukan untuk menjawab tamu)."""
+    if not PMS_API_BASE_URL or not PMS_API_KEY:
+        logging.getLogger("pms").warning("PMS_API_BASE_URL/PMS_API_KEY belum diisi - tidak bisa cek ketersediaan PMS")
+        return []
+    params = {}
+    if tanggal:
+        params["tanggal"] = tanggal
+    if tipe:
+        params["tipe"] = tipe
+    if tanggal_checkout:
+        params["tanggal_checkout"] = tanggal_checkout
+    try:
+        async with httpx.AsyncClient(timeout=10) as http:
+            resp = await http.get(
+                f"{PMS_API_BASE_URL.rstrip('/')}/api/integrasi-ai-bot/ketersediaan",
+                headers={"Authorization": f"Bearer {PMS_API_KEY}"}, params=params,
+            )
+        if resp.status_code >= 400:
+            logging.getLogger("pms").warning(f"PMS ketersediaan gagal HTTP {resp.status_code}: {resp.text[:300]}")
+            return []
+        data = resp.json()
+        out = data.get("ketersediaan") or []
+        for r in out:
+            r["_tanggal"] = data.get("tanggal")
+        return out
+    except Exception as e:
+        logging.getLogger("pms").warning(f"Gagal menghubungi PMS ketersediaan: {e}")
+        return []
+
+
+async def _pms_buat_booking_request(args: dict) -> dict:
+    """Kirim permintaan booking NON-BINDING ke Pelangi PMS (db.booking_requests) -
+    resepsionis yang Terima/Tolak manual, sama seperti alur AI WhatsApp internal PMS.
+    ai-chat-bot TIDAK PERNAH membuat booking sungguhan sendiri."""
+    if not PMS_API_BASE_URL or not PMS_API_KEY:
+        return {"ok": False, "error": "PMS_API_BASE_URL/PMS_API_KEY belum dikonfigurasi"}
+    payload = {
+        "nama_tamu": args.get("guest_name"), "no_hp": args.get("whatsapp"),
+        "tipe": args.get("tipe"), "room_tipe": args.get("room_tipe"),
+        "tanggal_checkin": args.get("tanggal_checkin"), "jam_checkin": args.get("jam_checkin"),
+        "tanggal_checkout": args.get("tanggal_checkout"),
+        "jumlah_kamar": args.get("jumlah_kamar"), "jumlah_tamu": args.get("jumlah_tamu"),
+        "payment_option": args.get("payment_option"),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            resp = await http.post(
+                f"{PMS_API_BASE_URL.rstrip('/')}/api/integrasi-ai-bot/booking-request",
+                headers={"Authorization": f"Bearer {PMS_API_KEY}"}, json=payload,
+            )
+        if resp.status_code >= 400:
+            return {"ok": False, "error": f"PMS menolak: HTTP {resp.status_code} {resp.text[:200]}"}
+        data = resp.json()
+        return {"ok": True, "booking_request": data.get("booking_request")}
+    except Exception as e:
+        return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}
+
+
 async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None) -> str:
-    rooms = await db.rooms.find({}).to_list(200)
+    rooms = await _pms_ketersediaan()
     menu = await db.menu.find({}).to_list(500)
     kb_q = {"is_active": True}
     if bot and bot.get("knowledge_categories"):
@@ -486,71 +556,29 @@ async def _handle_tool(tool: str, args: dict, conv: dict) -> Optional[dict]:
     """Execute AI tool call. Returns tool_result dict for the AI to acknowledge next turn."""
     if tool == "check_availability":
         try:
-            check_in = args.get("check_in"); check_out = args.get("check_out")
-            room_type = args.get("room_type")
-            rooms_q = {}
-            if room_type:
-                rooms_q["room_type"] = room_type
-            rooms = await db.rooms.find(rooms_q).to_list(200)
-            bookings = await db.bookings.find({"status": {"$in": ["confirmed", "pending"]}}).to_list(1000)
-
-            def overlaps(b):
-                try:
-                    b_in = datetime.fromisoformat(b["check_in"]).date()
-                    b_out = datetime.fromisoformat(b["check_out"]).date()
-                    q_in = datetime.fromisoformat(check_in).date()
-                    q_out = datetime.fromisoformat(check_out).date()
-                    return not (b_out <= q_in or b_in >= q_out)
-                except Exception:
-                    return False
-
-            report = []
-            for r in rooms:
-                if not r.get("is_available", True):
-                    report.append({"room": r["name"], "available": False}); continue
-                used = sum(b.get("num_rooms", 1) for b in bookings
-                           if b.get("room_type") == r["room_type"] and overlaps(b))
-                report.append({
-                    "room": r["name"], "room_type": r["room_type"],
-                    "available": used < int(r.get("total_units", 1)),
-                    "price_per_night": r["price_per_night"],
-                })
-            return {"ok": True, "tool": tool, "result": report}
+            rooms = await _pms_ketersediaan(
+                tanggal=args.get("tanggal_checkin"), tipe=args.get("tipe"),
+                tanggal_checkout=args.get("tanggal_checkout"),
+            )
+            return {"ok": True, "tool": tool, "result": rooms}
         except Exception as e:
             return {"ok": False, "tool": tool, "error": str(e)}
 
     if tool == "create_booking":
         try:
-            required = ["guest_name", "whatsapp", "check_in", "check_out", "room_type"]
+            logging.getLogger("pms").info(f"create_booking args diterima dari AI: {args}")
+            required = ["guest_name", "whatsapp", "tipe", "room_tipe", "tanggal_checkin"]
             for k in required:
                 if not args.get(k):
                     return {"ok": False, "tool": tool, "error": f"missing {k}"}
-            total = await _compute_room_price(
-                args["room_type"], int(args.get("num_rooms", 1)),
-                args["check_in"], args["check_out"],
-            )
-            doc = {
-                "_id": new_id(),
-                "guest_name": args["guest_name"],
-                "whatsapp": args["whatsapp"],
-                "check_in": args["check_in"],
-                "check_out": args["check_out"],
-                "room_type": args["room_type"],
-                "num_rooms": int(args.get("num_rooms", 1)),
-                "num_guests": int(args.get("num_guests", 1)),
-                "total_amount": total,
-                "dp_amount": 0.0,
-                "status": "pending",
-                "payment_status": "unpaid",
-                "source": "ai",
-                "room_ids": [],
-                "notes": args.get("notes"),
-                "created_at": utc_now_iso(),
-                "updated_at": utc_now_iso(),
-            }
-            await db.bookings.insert_one(doc)
+            if args["tipe"] not in ("day_use", "menginap"):
+                return {"ok": False, "tool": tool, "error": "tipe harus 'day_use' atau 'menginap'"}
+            hasil = await _pms_buat_booking_request(args)
+            if not hasil.get("ok"):
+                return {"ok": False, "tool": tool, "error": hasil.get("error")}
             await db.conversations.update_one({"_id": conv["_id"]}, {"$set": {"booking_created": True}})
-            return {"ok": True, "tool": tool, "booking_id": doc["_id"], "total_amount": total}
+            br = hasil.get("booking_request") or {}
+            return {"ok": True, "tool": tool, "booking_request_id": br.get("id"), "kode": br.get("kode")}
         except Exception as e:
             return {"ok": False, "tool": tool, "error": str(e)}
 
