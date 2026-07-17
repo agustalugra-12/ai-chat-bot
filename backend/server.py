@@ -1,5 +1,6 @@
 """Pelangi Homestay Guest AI — FastAPI backend."""
 import os
+import asyncio
 import logging
 import time
 import uuid
@@ -754,6 +755,68 @@ async def chat_message(body: ChatSendRequest, user=Depends(get_current_user)):
         session_id, body.message, body.guest_name, body.whatsapp,
         body.bot_id, body.bot_code, channel="simulator",
     )
+
+
+async def _waha_call(method: str, path: str, json_body: Optional[dict] = None) -> tuple[int, dict]:
+    """Proxy tipis ke REST API WAHA sendiri - dipakai endpoint dashboard di bawah supaya
+    owner bisa kelola koneksi WhatsApp (status/connect/disconnect) tanpa perlu masuk
+    terminal server. WAHA_BASE_URL cukup reachable dari host ini (bukan API publik)."""
+    if not WAHA_BASE_URL or not WAHA_API_KEY:
+        return 503, {"error": "WAHA_BASE_URL/WAHA_API_KEY belum dikonfigurasi"}
+    try:
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.request(
+                method, f"{WAHA_BASE_URL.rstrip('/')}{path}",
+                headers={"X-Api-Key": WAHA_API_KEY}, json=json_body,
+            )
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"raw": resp.text[:300]}
+        return resp.status_code, data
+    except Exception as e:
+        return 502, {"error": f"Gagal menghubungi WAHA: {e}"}
+
+
+@api.get("/waha/status")
+async def waha_status(user=Depends(get_current_user)):
+    _, data = await _waha_call("GET", f"/api/sessions/{WAHA_SESSION}")
+    return data
+
+
+@api.post("/waha/connect")
+async def waha_connect(body: dict, user=Depends(get_current_user)):
+    """Mulai/pairing ulang sesi WhatsApp lewat kode angka (bukan QR - lebih gampang
+    dipakai tanpa perlu scan gambar). PENTING: WhatsApp membatasi sementara akun yang
+    terlalu sering connect/disconnect dalam waktu singkat ("reachout timelock") - jangan
+    panggil endpoint ini berulang-ulang kalau baru saja gagal, tunggu beberapa menit."""
+    phone = (body or {}).get("phone_number", "").strip()
+    if not phone:
+        raise HTTPException(400, "phone_number wajib diisi (format 62xxx)")
+
+    _, cur = await _waha_call("GET", f"/api/sessions/{WAHA_SESSION}")
+    if cur.get("status") not in ("SCAN_QR_CODE",):
+        await _waha_call("POST", f"/api/sessions/{WAHA_SESSION}/logout")
+        await asyncio.sleep(2)
+        start_status, start_data = await _waha_call("POST", f"/api/sessions/{WAHA_SESSION}/start")
+        if start_status >= 400:
+            raise HTTPException(start_status, start_data.get("error") or "Gagal memulai sesi WAHA")
+        await asyncio.sleep(3)
+
+    code_status, code_data = await _waha_call(
+        "POST", f"/api/{WAHA_SESSION}/auth/request-code", {"phoneNumber": phone},
+    )
+    if code_status >= 400:
+        raise HTTPException(code_status, code_data.get("message") or code_data.get("error") or "Gagal meminta kode pairing")
+    return code_data
+
+
+@api.post("/waha/disconnect")
+async def waha_disconnect(user=Depends(get_current_user)):
+    status, data = await _waha_call("POST", f"/api/sessions/{WAHA_SESSION}/logout")
+    if status >= 400:
+        raise HTTPException(status, data.get("error") or "Gagal memutus sesi WAHA")
+    return {"ok": True}
 
 
 async def _waha_send_text(chat_id: str, text: str) -> None:
