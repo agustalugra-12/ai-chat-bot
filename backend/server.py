@@ -87,6 +87,7 @@ PMS_DEFAULT_ENDPOINTS = {
     "ketersediaan_path": "/api/integrasi-ai-bot/ketersediaan",
     "booking_request_path": "/api/integrasi-ai-bot/booking-request",
     "tiket_path": "/api/integrasi-ai-bot/tiket",
+    "rules_path": "/api/integrasi-ai-bot/rules",
 }
 
 # Kapabilitas yang BENAR-BENAR tersambung ke kode (toggle di luar daftar ini boleh
@@ -681,6 +682,16 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
     settings = await db.settings.find_one({"_id": "singleton"}) or {}
     base = build_context_block(rooms, menu, kb, settings)
 
+    # Business Rules (Rule Engine tahap 1) - SENGAJA terpisah dari Knowledge Base (KB isinya
+    # info umum hotel/wisata/FAQ, ini kebijakan operasional dari PMS: DP/cancellation/
+    # checkin/checkout/promo/dll). Cache hasil sync, bukan realtime call per pesan.
+    rules = await db.business_rules_cache.find({}).to_list(200)
+    if rules:
+        parts = ["\n# ATURAN BISNIS (dari PMS, WAJIB diikuti - jangan mengarang kebijakan sendiri)"]
+        for r in rules:
+            parts.append(f"- [{r.get('category')}] {r.get('title')}: {r.get('description')}")
+        base = base + "\n" + "\n".join(parts)
+
     # RAG augmentation
     if query:
         try:
@@ -1089,22 +1100,58 @@ async def pms_integration_logs(limit: int = Query(50, le=200), user=Depends(get_
 
 
 SYNC_KINDS = {"hotel_profile", "faq", "prompt", "rule"}
+SYNC_NOT_AVAILABLE = {"hotel_profile", "faq", "prompt"}  # PMS belum expose endpointnya
+
+
+async def _sync_business_rules() -> dict:
+    """Rule Engine tahap 1: PMS = pemilik kebenaran (routes/business_rules.py di repo PMS),
+    ai-chat-bot cuma menyimpan CACHE read-only hasil sync ini di `business_rules_cache` -
+    dipakai `_build_context` supaya AI menjawab kebijakan bisnis akurat, bukan menghafal
+    teks bebas. Replace-all (bukan merge) supaya rule yang dihapus/dinonaktifkan di PMS
+    ikut hilang dari cache, tidak nyangkut selamanya."""
+    cfg = await _pms_config()
+    if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
+        return {"ok": False, "message": "PMS URL / API Key belum diisi", "at": utc_now_iso()}
+    path = cfg["endpoints"].get("rules_path", PMS_DEFAULT_ENDPOINTS["rules_path"])
+    started = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=10) as http:
+            resp = await http.get(
+                f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"},
+            )
+        latency_ms = int((time.time() - started) * 1000)
+        if resp.status_code >= 400:
+            await _pms_log(path, "GET", resp.status_code, latency_ms, False, "sync rule")
+            return {"ok": False, "message": f"PMS merespons HTTP {resp.status_code}", "at": utc_now_iso()}
+        await _pms_log(path, "GET", resp.status_code, latency_ms, True, "sync rule")
+        rules = (resp.json().get("rules")) or []
+        await db.business_rules_cache.delete_many({})
+        if rules:
+            await db.business_rules_cache.insert_many([{"_id": new_id(), **r, "synced_at": utc_now_iso()} for r in rules])
+        return {"ok": True, "message": f"{len(rules)} business rule disinkronkan dari PMS", "at": utc_now_iso(), "count": len(rules)}
+    except Exception as e:
+        await _pms_log(path, "GET", None, int((time.time() - started) * 1000), False, f"sync rule: {e}")
+        return {"ok": False, "message": f"Gagal menghubungi PMS: {e}", "at": utc_now_iso()}
 
 
 @api.post("/pms-integration/sync/{jenis}")
 async def pms_integration_sync(jenis: str, user=Depends(get_current_user)):
-    """Placeholder JUJUR - PMS Pelangi belum expose endpoint hotel_profile/faq/prompt/rule
-    untuk ditarik ai-chat-bot (baru ada ketersediaan/booking-request/tiket). Tombol ini
-    sengaja TETAP ADA di dashboard (sesuai desain panel) tapi melaporkan status apa adanya,
-    BUKAN pura-pura berhasil. Akan diisi sungguhan begitu endpoint PMS terkait dibangun -
-    lihat audit "PMS Integration Panel", item Rule Engine (tahap berikutnya)."""
+    """`rule` benar-benar sync dari PMS (routes/business_rules.py di sana). hotel_profile/
+    faq/prompt masih placeholder JUJUR - PMS belum expose endpoint-nya, tombol tetap ada
+    (sesuai desain panel) tapi melapor apa adanya, BUKAN pura-pura berhasil."""
     if jenis not in SYNC_KINDS:
         raise HTTPException(404, f"Jenis sync tidak dikenal: {jenis}")
-    result = {
-        "ok": False,
-        "message": f"Endpoint PMS untuk '{jenis}' belum tersedia - sync ini akan aktif setelah Rule Engine/endpoint terkait dibangun di PMS.",
-        "at": utc_now_iso(),
-    }
+
+    if jenis in SYNC_NOT_AVAILABLE:
+        result = {
+            "ok": False,
+            "message": f"Endpoint PMS untuk '{jenis}' belum tersedia - sync ini akan aktif setelah endpoint terkait dibangun di PMS.",
+            "at": utc_now_iso(),
+        }
+    else:
+        result = await _sync_business_rules()
+
     await db.pms_integration_config.update_one(
         {"_id": "singleton"}, {"$set": {f"last_sync.{jenis}": result}}, upsert=True,
     )
