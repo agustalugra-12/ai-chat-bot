@@ -15,6 +15,7 @@ import ServiceRequests from "@/pages/ServiceRequests";
 import PromptManagement from "@/pages/PromptManagement";
 import Analytics from "@/pages/Analytics";
 import Settings from "@/pages/Settings";
+import PmsIntegration from "@/pages/PmsIntegration";
 import RagDocuments from "@/pages/RagDocuments";
 import BotList from "@/pages/ai/BotList";
 import BotDetail from "@/pages/ai/BotDetail";
@@ -59,6 +60,7 @@ function App() {
             <Route path="ai/intents" element={<IntentsCatalog />} />
             <Route path="ai/workflows" element={<WorkflowsCatalog />} />
             <Route path="analytics" element={<Analytics />} />
+            <Route path="pms-integration" element={<PmsIntegration />} />
             <Route path="settings" element={<Settings />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

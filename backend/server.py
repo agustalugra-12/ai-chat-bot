@@ -2,6 +2,7 @@
 import os
 import asyncio
 import logging
+import secrets
 import time
 import uuid
 from datetime import datetime, timezone
@@ -69,6 +70,98 @@ WAHA_WEBHOOK_TOKEN = os.environ.get("WAHA_WEBHOOK_TOKEN", "")
 # integrasi_ai_bot.py di repo Pelangi PMS untuk sisi baca/tulisnya).
 PMS_API_BASE_URL = os.environ.get("PMS_API_BASE_URL", "")
 PMS_API_KEY = os.environ.get("PMS_API_KEY", "")
+
+# ---- PMS Integration Panel (configuration layer) ----
+# Konfigurasi (URL/API Key/endpoint path/capability toggle) disimpan di DB
+# (`pms_integration_config`, dokumen tunggal "singleton"), BUKAN cuma di .env, supaya bisa
+# diubah dari dashboard tanpa redeploy. Env var di atas (PMS_API_BASE_URL/PMS_API_KEY) tetap
+# dipakai sebagai FALLBACK kalau dokumen DB belum diisi - migrasi aman, tidak memutus
+# integrasi yang sudah jalan (dibangun manual lewat .env sebelum panel ini ada).
+#
+# PENTING (arsitektur TIDAK diubah): helper `_pms_ketersediaan`/`_pms_buat_booking_request`
+# yang sudah ada tetap dipakai apa adanya, cuma sumber konfigurasinya dialihkan dari
+# konstanta modul ke `_pms_config()`. Endpoint PMS baru (`_pms_buat_tiket`) reuse endpoint
+# `/api/integrasi-ai-bot/tiket` yang MEMANG SUDAH ADA di sisi PMS sejak awal, cuma belum
+# pernah dipanggil dari sini.
+PMS_DEFAULT_ENDPOINTS = {
+    "ketersediaan_path": "/api/integrasi-ai-bot/ketersediaan",
+    "booking_request_path": "/api/integrasi-ai-bot/booking-request",
+    "tiket_path": "/api/integrasi-ai-bot/tiket",
+}
+
+# Kapabilitas yang BENAR-BENAR tersambung ke kode (toggle di luar daftar ini boleh
+# disimpan tapi tidak akan pernah bikin AI melakukan apa pun - endpoint PMS-nya belum ada,
+# lihat catatan "wired" di bawah). Jangan tambah entry baru di sini tanpa juga menyambungkan
+# handler-nya - toggle yang "hidup" tapi tidak ngapa-ngapain itu menyesatkan.
+PMS_CAPABILITY_WIRED = {"check_availability", "create_booking", "create_maintenance_ticket"}
+PMS_DEFAULT_CAPABILITIES = {
+    "check_availability": True,
+    "create_booking": True,
+    "check_booking_status": False,   # endpoint PMS belum ada - toggle disimpan, tidak fungsional
+    "create_maintenance_ticket": True,
+    "refund": False,                 # belum diimplementasikan
+    "ota_sync": False,                # belum diimplementasikan
+    "payment": False,                 # belum diimplementasikan
+    "checkin": False,                 # belum diimplementasikan
+}
+
+PMS_INTEGRATION_DEFAULT = {
+    "_id": "singleton",
+    "pms_base_url": "",
+    "pms_api_key": "",
+    "webhook_token": None,
+    "bot_whatsapp_number": "",
+    "endpoints": dict(PMS_DEFAULT_ENDPOINTS),
+    "capabilities": dict(PMS_DEFAULT_CAPABILITIES),
+    "last_test_at": None, "last_test_ok": None, "last_test_latency_ms": None,
+    "last_test_message": None, "last_test_version": None,
+    "last_sync": {},  # {"hotel_profile": {"at":..., "ok":..., "message":...}, "faq":..., "prompt":..., "rule":...}
+    "updated_at": None,
+}
+
+
+async def _pms_config() -> dict:
+    """Config PMS Integration siap pakai - auto-seed dari env lama + auto-generate
+    webhook_token kalau dokumen belum pernah dibuat (migrasi aman, sama pola dengan
+    `webhook_token` di Pelangi PMS sendiri)."""
+    cfg = await db.pms_integration_config.find_one({"_id": "singleton"})
+    if not cfg:
+        cfg = dict(PMS_INTEGRATION_DEFAULT)
+        cfg["pms_base_url"] = PMS_API_BASE_URL
+        cfg["pms_api_key"] = PMS_API_KEY
+        cfg["webhook_token"] = WAHA_WEBHOOK_TOKEN or secrets.token_hex(20)
+        cfg["updated_at"] = utc_now_iso()
+        await db.pms_integration_config.insert_one(cfg)
+    merged = {**PMS_INTEGRATION_DEFAULT, **cfg}
+    merged["endpoints"] = {**PMS_DEFAULT_ENDPOINTS, **(cfg.get("endpoints") or {})}
+    merged["capabilities"] = {**PMS_DEFAULT_CAPABILITIES, **(cfg.get("capabilities") or {})}
+    if not merged.get("pms_base_url"):
+        merged["pms_base_url"] = PMS_API_BASE_URL
+    if not merged.get("pms_api_key"):
+        merged["pms_api_key"] = PMS_API_KEY
+    if not merged.get("webhook_token"):
+        merged["webhook_token"] = WAHA_WEBHOOK_TOKEN
+    return merged
+
+
+async def _pms_log(endpoint: str, method: str, status_code: Optional[int], latency_ms: int,
+                    ok: bool, detail: str = "") -> None:
+    """Riwayat request/response AI Bot <-> PMS - dipakai dashboard (tab Log) untuk debug
+    tanpa perlu SSH baca journalctl. Auto-buang entri lama supaya koleksi tidak membengkak
+    tanpa batas (cap longgar, bukan TTL index - cukup untuk kebutuhan debug jangka pendek)."""
+    try:
+        await db.pms_integration_logs.insert_one({
+            "_id": new_id(), "endpoint": endpoint, "method": method,
+            "status_code": status_code, "latency_ms": latency_ms, "ok": ok,
+            "detail": (detail or "")[:500], "at": utc_now_iso(),
+        })
+        count = await db.pms_integration_logs.count_documents({})
+        if count > 500:
+            old = await db.pms_integration_logs.find({}).sort("at", 1).limit(count - 500).to_list(count - 500)
+            await db.pms_integration_logs.delete_many({"_id": {"$in": [o["_id"] for o in old]}})
+    except Exception:
+        pass  # logging tidak boleh menggagalkan alur utama
+
 
 app = FastAPI(title="Pelangi Homestay Guest AI")
 api = APIRouter(prefix="/api")
@@ -472,8 +565,11 @@ async def _pms_ketersediaan(tanggal: Optional[str] = None, tipe: Optional[str] =
     """Ketersediaan & tarif kamar LIVE dari Pelangi PMS - satu-satunya sumber kebenaran,
     bukan koleksi `db.rooms` lokal ai-chat-bot (itu cuma dipakai fitur admin lokal lain,
     bukan untuk menjawab tamu)."""
-    if not PMS_API_BASE_URL or not PMS_API_KEY:
-        logging.getLogger("pms").warning("PMS_API_BASE_URL/PMS_API_KEY belum diisi - tidak bisa cek ketersediaan PMS")
+    cfg = await _pms_config()
+    if not cfg["capabilities"].get("check_availability"):
+        return []
+    if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
+        logging.getLogger("pms").warning("PMS URL/API Key belum diisi - tidak bisa cek ketersediaan PMS")
         return []
     params = {}
     if tanggal:
@@ -482,21 +578,27 @@ async def _pms_ketersediaan(tanggal: Optional[str] = None, tipe: Optional[str] =
         params["tipe"] = tipe
     if tanggal_checkout:
         params["tanggal_checkout"] = tanggal_checkout
+    path = cfg["endpoints"]["ketersediaan_path"]
+    started = time.time()
     try:
         async with httpx.AsyncClient(timeout=10) as http:
             resp = await http.get(
-                f"{PMS_API_BASE_URL.rstrip('/')}/api/integrasi-ai-bot/ketersediaan",
-                headers={"Authorization": f"Bearer {PMS_API_KEY}"}, params=params,
+                f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, params=params,
             )
+        latency_ms = int((time.time() - started) * 1000)
         if resp.status_code >= 400:
+            await _pms_log(path, "GET", resp.status_code, latency_ms, False, resp.text)
             logging.getLogger("pms").warning(f"PMS ketersediaan gagal HTTP {resp.status_code}: {resp.text[:300]}")
             return []
+        await _pms_log(path, "GET", resp.status_code, latency_ms, True)
         data = resp.json()
         out = data.get("ketersediaan") or []
         for r in out:
             r["_tanggal"] = data.get("tanggal")
         return out
     except Exception as e:
+        await _pms_log(path, "GET", None, int((time.time() - started) * 1000), False, str(e))
         logging.getLogger("pms").warning(f"Gagal menghubungi PMS ketersediaan: {e}")
         return []
 
@@ -505,8 +607,11 @@ async def _pms_buat_booking_request(args: dict) -> dict:
     """Kirim permintaan booking NON-BINDING ke Pelangi PMS (db.booking_requests) -
     resepsionis yang Terima/Tolak manual, sama seperti alur AI WhatsApp internal PMS.
     ai-chat-bot TIDAK PERNAH membuat booking sungguhan sendiri."""
-    if not PMS_API_BASE_URL or not PMS_API_KEY:
-        return {"ok": False, "error": "PMS_API_BASE_URL/PMS_API_KEY belum dikonfigurasi"}
+    cfg = await _pms_config()
+    if not cfg["capabilities"].get("create_booking"):
+        return {"ok": False, "error": "Fitur Buat Booking dinonaktifkan di panel Integrasi PMS"}
+    if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
+        return {"ok": False, "error": "PMS URL/API Key belum dikonfigurasi"}
     payload = {
         "nama_tamu": args.get("guest_name"), "no_hp": args.get("whatsapp"),
         "tipe": args.get("tipe"), "room_tipe": args.get("room_tipe"),
@@ -515,17 +620,54 @@ async def _pms_buat_booking_request(args: dict) -> dict:
         "jumlah_kamar": args.get("jumlah_kamar"), "jumlah_tamu": args.get("jumlah_tamu"),
         "payment_option": args.get("payment_option"),
     }
+    path = cfg["endpoints"]["booking_request_path"]
+    started = time.time()
     try:
         async with httpx.AsyncClient(timeout=15) as http:
             resp = await http.post(
-                f"{PMS_API_BASE_URL.rstrip('/')}/api/integrasi-ai-bot/booking-request",
-                headers={"Authorization": f"Bearer {PMS_API_KEY}"}, json=payload,
+                f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, json=payload,
             )
+        latency_ms = int((time.time() - started) * 1000)
         if resp.status_code >= 400:
+            await _pms_log(path, "POST", resp.status_code, latency_ms, False, resp.text)
             return {"ok": False, "error": f"PMS menolak: HTTP {resp.status_code} {resp.text[:200]}"}
+        await _pms_log(path, "POST", resp.status_code, latency_ms, True)
         data = resp.json()
         return {"ok": True, "booking_request": data.get("booking_request")}
     except Exception as e:
+        await _pms_log(path, "POST", None, int((time.time() - started) * 1000), False, str(e))
+        return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}
+
+
+async def _pms_buat_tiket(tipe: str, deskripsi: str, whatsapp: str, guest_name: str = "") -> dict:
+    """Kirim tiket komplain/maintenance ke Pelangi PMS (reuse endpoint yang SUDAH ADA
+    sejak awal di sisi PMS, `/api/integrasi-ai-bot/tiket` - sebelumnya tidak pernah
+    dipanggil dari ai-chat-bot, tiket AI selalu nyasar ke `db.service_requests` lokal
+    yang tidak pernah dilihat staf PMS."""
+    cfg = await _pms_config()
+    if not cfg["capabilities"].get("create_maintenance_ticket"):
+        return {"ok": False, "error": "Fitur Buat Tiket Maintenance dinonaktifkan di panel Integrasi PMS"}
+    if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
+        return {"ok": False, "error": "PMS URL/API Key belum dikonfigurasi"}
+    payload = {"tipe": tipe, "deskripsi": deskripsi, "no_hp": whatsapp, "nama_tamu": guest_name}
+    path = cfg["endpoints"]["tiket_path"]
+    started = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            resp = await http.post(
+                f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, json=payload,
+            )
+        latency_ms = int((time.time() - started) * 1000)
+        if resp.status_code >= 400:
+            await _pms_log(path, "POST", resp.status_code, latency_ms, False, resp.text)
+            return {"ok": False, "error": f"PMS menolak: HTTP {resp.status_code} {resp.text[:200]}"}
+        await _pms_log(path, "POST", resp.status_code, latency_ms, True)
+        data = resp.json()
+        return {"ok": True, "tiket": data.get("tiket")}
+    except Exception as e:
+        await _pms_log(path, "POST", None, int((time.time() - started) * 1000), False, str(e))
         return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}
 
 
@@ -598,6 +740,24 @@ async def _handle_tool(tool: str, args: dict, conv: dict) -> Optional[dict]:
             }
             await db.service_requests.insert_one(doc)
             return {"ok": True, "tool": tool, "request_id": doc["_id"]}
+        except Exception as e:
+            return {"ok": False, "tool": tool, "error": str(e)}
+
+    if tool == "create_maintenance_ticket":
+        try:
+            tipe = args.get("tipe")
+            if tipe not in ("complaint", "maintenance"):
+                return {"ok": False, "tool": tool, "error": "tipe harus 'complaint' atau 'maintenance'"}
+            deskripsi = (args.get("deskripsi") or "").strip()
+            if not deskripsi:
+                return {"ok": False, "tool": tool, "error": "missing deskripsi"}
+            whatsapp = args.get("whatsapp") or conv.get("whatsapp") or ""
+            guest_name = args.get("guest_name") or conv.get("guest_name") or ""
+            hasil = await _pms_buat_tiket(tipe, deskripsi, whatsapp, guest_name)
+            if not hasil.get("ok"):
+                return {"ok": False, "tool": tool, "error": hasil.get("error")}
+            tiket = hasil.get("tiket") or {}
+            return {"ok": True, "tool": tool, "tiket_id": tiket.get("id")}
         except Exception as e:
             return {"ok": False, "tool": tool, "error": str(e)}
 
@@ -685,8 +845,8 @@ async def _run_chat_turn(
             "cancel_booking": {"cancel_booking"},
             "request_handover": {"request_handover"},
             "create_service_request": {"restaurant_order", "laundry_request", "housekeeping_request",
-                                       "maintenance_request", "complaint_ticket", "room_service",
-                                       "airport_pickup", "motor_rental"},
+                                       "room_service", "airport_pickup", "motor_rental"},
+            "create_maintenance_ticket": {"maintenance_request", "complaint_ticket"},
         }
         allowed_caps = ai_tool_to_capability.get(tool, set())
         if allowed_tool_codes and not (allowed_caps & allowed_tool_codes):
@@ -819,6 +979,138 @@ async def waha_disconnect(user=Depends(get_current_user)):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# PMS INTEGRATION PANEL (configuration layer - lihat catatan arsitektur di atas)
+# ---------------------------------------------------------------------------
+def _pms_config_public(cfg: dict) -> dict:
+    out = {k: v for k, v in cfg.items() if k != "_id"}
+    return out
+
+
+@api.get("/pms-integration")
+async def get_pms_integration(user=Depends(get_current_user)):
+    return _pms_config_public(await _pms_config())
+
+
+@api.put("/pms-integration")
+async def update_pms_integration(body: dict, user=Depends(get_current_user)):
+    updates = {}
+    for k in ("pms_base_url", "pms_api_key", "bot_whatsapp_number"):
+        if k in body and body[k] is not None:
+            updates[k] = body[k]
+    if "endpoints" in body and isinstance(body["endpoints"], dict):
+        cfg = await _pms_config()
+        updates["endpoints"] = {**cfg["endpoints"], **{k: v for k, v in body["endpoints"].items() if k in PMS_DEFAULT_ENDPOINTS}}
+    if not updates:
+        raise HTTPException(400, "Tidak ada field yang diubah")
+    updates["updated_at"] = utc_now_iso()
+    await db.pms_integration_config.update_one({"_id": "singleton"}, {"$set": updates}, upsert=True)
+    return _pms_config_public(await _pms_config())
+
+
+@api.post("/pms-integration/capabilities")
+async def update_pms_capabilities(body: dict, user=Depends(get_current_user)):
+    cfg = await _pms_config()
+    caps = dict(cfg["capabilities"])
+    for k, v in (body or {}).items():
+        if k in PMS_DEFAULT_CAPABILITIES and isinstance(v, bool):
+            caps[k] = v
+    await db.pms_integration_config.update_one(
+        {"_id": "singleton"}, {"$set": {"capabilities": caps, "updated_at": utc_now_iso()}}, upsert=True,
+    )
+    return _pms_config_public(await _pms_config())
+
+
+@api.post("/pms-integration/regenerate-webhook-token")
+async def regenerate_pms_webhook_token(user=Depends(get_current_user)):
+    """Regenerate token webhook masuk (dipakai WAHA memanggil /webhook/waha di sini) -
+    otomatis update juga konfigurasi webhook di WAHA supaya tidak perlu langkah manual
+    tambahan (dulu ini harus di-sinkronkan manual lewat terminal server)."""
+    new_token = secrets.token_hex(20)
+    await db.pms_integration_config.update_one(
+        {"_id": "singleton"}, {"$set": {"webhook_token": new_token, "updated_at": utc_now_iso()}}, upsert=True,
+    )
+    if WAHA_BASE_URL and WAHA_API_KEY:
+        await _waha_call(
+            "PUT", f"/api/sessions/{WAHA_SESSION}",
+            {"config": {"webhooks": [{"url": f"http://host.docker.internal:8002/api/webhook/waha?token={new_token}", "events": ["message"]}]}},
+        )
+    return _pms_config_public(await _pms_config())
+
+
+@api.post("/pms-integration/test")
+async def test_pms_integration(user=Depends(get_current_user)):
+    """Test Connection - HANYA memanggil endpoint baca (ketersediaan), TIDAK PERNAH
+    memanggil endpoint tulis (booking-request/tiket) untuk uji coba, supaya tidak
+    membuat data palsu di PMS produksi (pelajaran dari insiden testing WAHA hari ini)."""
+    cfg = await _pms_config()
+    result = {"ok": False, "message": "", "latency_ms": None, "version": None, "tested_at": utc_now_iso()}
+    if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
+        result["message"] = "PMS URL / API Key belum diisi"
+    else:
+        started = time.time()
+        path = cfg["endpoints"]["ketersediaan_path"]
+        try:
+            async with httpx.AsyncClient(timeout=10) as http:
+                resp = await http.get(
+                    f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                    headers={"Authorization": f"Bearer {cfg['pms_api_key']}"},
+                )
+            latency_ms = int((time.time() - started) * 1000)
+            result["latency_ms"] = latency_ms
+            if resp.status_code == 200:
+                data = resp.json()
+                n = len(data.get("ketersediaan") or [])
+                result["ok"] = True
+                result["message"] = f"Terhubung - {n} tipe kamar ditemukan di PMS"
+                await _pms_log(path, "GET", 200, latency_ms, True, "test connection")
+            else:
+                result["message"] = f"PMS merespons HTTP {resp.status_code}"
+                await _pms_log(path, "GET", resp.status_code, latency_ms, False, "test connection")
+        except Exception as e:
+            result["message"] = f"Gagal terhubung: {e}"
+            await _pms_log(path, "GET", None, int((time.time() - started) * 1000), False, f"test connection: {e}")
+
+    await db.pms_integration_config.update_one(
+        {"_id": "singleton"},
+        {"$set": {
+            "last_test_at": result["tested_at"], "last_test_ok": result["ok"],
+            "last_test_latency_ms": result["latency_ms"], "last_test_message": result["message"],
+        }},
+        upsert=True,
+    )
+    return result
+
+
+@api.get("/pms-integration/logs")
+async def pms_integration_logs(limit: int = Query(50, le=200), user=Depends(get_current_user)):
+    docs = await db.pms_integration_logs.find({}).sort("at", -1).to_list(limit)
+    return [{**d, "id": d.pop("_id")} for d in docs]
+
+
+SYNC_KINDS = {"hotel_profile", "faq", "prompt", "rule"}
+
+
+@api.post("/pms-integration/sync/{jenis}")
+async def pms_integration_sync(jenis: str, user=Depends(get_current_user)):
+    """Placeholder JUJUR - PMS Pelangi belum expose endpoint hotel_profile/faq/prompt/rule
+    untuk ditarik ai-chat-bot (baru ada ketersediaan/booking-request/tiket). Tombol ini
+    sengaja TETAP ADA di dashboard (sesuai desain panel) tapi melaporkan status apa adanya,
+    BUKAN pura-pura berhasil. Akan diisi sungguhan begitu endpoint PMS terkait dibangun -
+    lihat audit "PMS Integration Panel", item Rule Engine (tahap berikutnya)."""
+    if jenis not in SYNC_KINDS:
+        raise HTTPException(404, f"Jenis sync tidak dikenal: {jenis}")
+    result = {
+        "ok": False,
+        "message": f"Endpoint PMS untuk '{jenis}' belum tersedia - sync ini akan aktif setelah Rule Engine/endpoint terkait dibangun di PMS.",
+        "at": utc_now_iso(),
+    }
+    await db.pms_integration_config.update_one(
+        {"_id": "singleton"}, {"$set": {f"last_sync.{jenis}": result}}, upsert=True,
+    )
+    return result
+
+
 async def _waha_send_text(chat_id: str, text: str) -> None:
     if not WAHA_BASE_URL or not WAHA_API_KEY:
         logging.getLogger("waha").warning("WAHA_BASE_URL/WAHA_API_KEY belum diisi — balasan tidak terkirim ke tamu")
@@ -845,8 +1137,13 @@ async def webhook_waha(request: Request, token: Optional[str] = None):
     tamu WhatsApp asli konsisten dengan yang staf uji coba di dashboard. Balasan dikirim
     balik ke tamu dengan MEMANGGIL WAHA (`_waha_send_text`) — bukan lewat response webhook,
     karena WAHA tidak merelai isi response webhook ke WhatsApp seperti sebagian provider lain.
+    Token dicocokkan ke `webhook_token` di `pms_integration_config` (dashboard Settings ->
+    PMS Integration), bisa di-regenerate dari sana - fallback ke env WAHA_WEBHOOK_TOKEN
+    kalau dokumen config belum pernah dibuat.
     """
-    if not WAHA_WEBHOOK_TOKEN or token != WAHA_WEBHOOK_TOKEN:
+    cfg = await _pms_config()
+    expected = cfg.get("webhook_token") or WAHA_WEBHOOK_TOKEN
+    if not expected or token != expected:
         raise HTTPException(404, "Not Found")
 
     payload = await request.json()

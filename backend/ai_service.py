@@ -53,10 +53,11 @@ Tool tersedia:
 - create_booking : args {"guest_name":"...","whatsapp":"...","tipe":"day_use"|"menginap","room_tipe":"Standard"|"Cottage","tanggal_checkin":"YYYY-MM-DD","jam_checkin":"HH:mm" (WAJIB jika tipe=day_use),"tanggal_checkout":"YYYY-MM-DD" (WAJIB jika tipe=menginap),"jumlah_kamar":1,"jumlah_tamu":1,"payment_option":"dp50"|"full" (opsional, isi HANYA kalau tamu sebut sendiri mau DP atau bayar penuh)}
   PENTING: create_booking BUKAN booking final — ini membuat PERMINTAAN booking yang akan ditinjau resepsionis dulu sebelum dikonfirmasi & dikirim link pembayaran. JANGAN PERNAH bilang ke tamu bahwa kamar/tanggalnya sudah pasti/dikonfirmasi.
 - create_service_request : args {"guest_name":"...","whatsapp":"...","service_type":"extra_bed|extra_towel|mineral_water|cleaning|laundry|motor_rental|airport_pickup|extra_breakfast","quantity":1,"notes":"..."}
+- create_maintenance_ticket (tiket masuk ke PMS, dipantau staf) : args {"tipe":"complaint"|"maintenance","deskripsi":"...","guest_name":"...","whatsapp":"..."}. Pakai "maintenance" utk kerusakan fasilitas (AC/TV/air/listrik dst), "complaint" utk keluhan pelayanan/kebersihan yang BUKAN kerusakan alat.
 - lookup_booking : args {"whatsapp":"..."}
 - request_handover : args {"reason":"..."}
 
-Sebelum memanggil create_booking atau create_service_request, PASTIKAN Anda sudah punya nama & nomor WhatsApp tamu. Jika belum, minta terlebih dahulu dengan sopan.
+Sebelum memanggil create_booking, create_service_request, atau create_maintenance_ticket, PASTIKAN Anda sudah punya nama & nomor WhatsApp tamu. Jika belum, minta terlebih dahulu dengan sopan.
 
 Tulis balasan alami untuk tamu terlebih dahulu (1-4 kalimat), lalu marker [[IMG: ...]] bila mengirim foto, lalu baris tool JSON di paling bawah bila perlu. Jika hanya menjawab pertanyaan informatif, TIDAK perlu tool.
 """
@@ -68,6 +69,7 @@ TOOL_DOCS = {
     "lookup_booking": '- lookup_booking : args {"whatsapp":"..."}',
     "cancel_booking": '- cancel_booking : args {"booking_id":"..."}',
     "create_service_request": '- create_service_request : args {"guest_name":"...","whatsapp":"...","service_type":"extra_bed|extra_towel|mineral_water|cleaning|laundry|motor_rental|airport_pickup|extra_breakfast","quantity":1,"notes":"..."}',
+    "create_maintenance_ticket": '- create_maintenance_ticket (tiket masuk ke PMS, dipantau staf) : args {"tipe":"complaint"|"maintenance","deskripsi":"...","guest_name":"...","whatsapp":"..."}. Pakai "maintenance" utk kerusakan fasilitas (AC/TV/air/listrik dst), "complaint" utk keluhan pelayanan/kebersihan yang BUKAN kerusakan alat.',
     "request_handover": '- request_handover : args {"reason":"..."}',
 }
 
@@ -101,10 +103,13 @@ def build_dynamic_prompt(bot: dict) -> str:
         exposed.add("request_handover")
     # any service-request-like tool → expose create_service_request
     service_like = {"restaurant_order", "laundry_request", "housekeeping_request",
-                    "maintenance_request", "complaint_ticket", "room_service",
-                    "airport_pickup", "motor_rental"}
+                    "room_service", "airport_pickup", "motor_rental"}
     if service_like.intersection(tool_codes):
         exposed.add("create_service_request")
+    # maintenance_request/complaint_ticket → tiket masuk PMS (bukan db.service_requests lokal)
+    maintenance_like = {"maintenance_request", "complaint_ticket"}
+    if maintenance_like.intersection(tool_codes):
+        exposed.add("create_maintenance_ticket")
 
     tool_docs = "\n".join(TOOL_DOCS[t] for t in exposed if t in TOOL_DOCS) or "(tidak ada tool)"
 

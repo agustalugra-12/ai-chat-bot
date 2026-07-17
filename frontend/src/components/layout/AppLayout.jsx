@@ -5,7 +5,7 @@ import {
   LayoutDashboard, MessagesSquare, BotMessageSquare, BookOpenText,
   BedDouble, UtensilsCrossed, CalendarCheck2, Bell, FileTerminal,
   BarChart3, Settings as SettingsIcon, LogOut, Sparkles, FileStack,
-  Bot, Wrench, Target, Waypoints, ChevronDown, ChevronRight,
+  Bot, Wrench, Target, Waypoints, ChevronDown, ChevronRight, Plug,
 } from "lucide-react";
 
 const topNav = [
@@ -36,6 +36,7 @@ const opsSection = [
 
 const bottomNav = [
   { to: "/analytics", label: "Analytics", icon: BarChart3, tid: "nav-analytics" },
+  { to: "/pms-integration", label: "Integrasi PMS", icon: Plug, tid: "nav-pms-integration" },
   { to: "/settings", label: "Settings", icon: SettingsIcon, tid: "nav-settings" },
 ];
 
