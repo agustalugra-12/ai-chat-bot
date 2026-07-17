@@ -2,31 +2,60 @@ import { useEffect, useState } from "react";
 import { PageHeader, Badge, EmptyState } from "@/components/ui-parts";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
-import { AlertTriangle, CheckCircle2, MessagesSquare } from "lucide-react";
+import { AlertTriangle, CheckCircle2, MessagesSquare, Send, Bot, Loader2 } from "lucide-react";
 import { ChatMessageContent } from "@/components/ChatMessageContent";
 
 export default function Conversations() {
   const [list, setList] = useState([]);
   const [selected, setSelected] = useState(null);
   const [filter, setFilter] = useState("all");
+  const [replyText, setReplyText] = useState("");
+  const [sending, setSending] = useState(false);
 
-  const load = async () => {
+  const load = async (keepSelectedId) => {
     const { data } = await api.get("/conversations");
     setList(data);
-    if (data.length && !selected) setSelected(data[0]);
+    if (keepSelectedId) {
+      const fresh = data.find((c) => c.id === keepSelectedId);
+      if (fresh) setSelected(fresh);
+    } else if (data.length && !selected) {
+      setSelected(data[0]);
+    }
   };
   useEffect(() => { load(); }, []); // eslint-disable-line
 
   const doHandover = async (id) => {
     await api.patch(`/conversations/${id}/handover`);
-    toast.success("Dialihkan ke admin");
-    load();
+    toast.success("Dialihkan ke admin — AI berhenti membalas otomatis");
+    load(id);
+  };
+
+  const doResume = async (id) => {
+    await api.patch(`/conversations/${id}/resume`);
+    toast.success("AI aktif lagi — akan membalas otomatis pesan berikutnya");
+    load(id);
   };
 
   const doClose = async (id) => {
     await api.patch(`/conversations/${id}/close`);
     toast.success("Percakapan ditutup");
-    load();
+    load(id);
+  };
+
+  const sendReply = async () => {
+    const text = replyText.trim();
+    if (!text || !selected) return;
+    setSending(true);
+    try {
+      const { data } = await api.post(`/conversations/${selected.id}/reply`, { message: text });
+      setReplyText("");
+      toast.success(data.sent_to_whatsapp ? "Balasan terkirim ke WhatsApp tamu" : "Balasan tersimpan di percakapan");
+      load(selected.id);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Gagal mengirim balasan");
+    } finally {
+      setSending(false);
+    }
   };
 
   const visible = list.filter((c) => filter === "all" ? true : c.status === filter);
@@ -96,7 +125,12 @@ export default function Conversations() {
                   <div className="text-xs text-[hsl(var(--muted-foreground))]">{selected.whatsapp} · {selected.channel} · session {selected.session_id.slice(0, 8)}…</div>
                 </div>
                 <div className="flex items-center gap-2">
-                  {selected.status !== "waiting_admin" && (
+                  {selected.status === "waiting_admin" ? (
+                    <button data-testid="btn-resume-ai" onClick={() => doResume(selected.id)}
+                      className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-emerald-600 text-emerald-700 hover:bg-emerald-600 hover:text-white">
+                      <Bot className="w-3 h-3" /> Aktifkan AI Lagi
+                    </button>
+                  ) : (
                     <button data-testid="btn-handover" onClick={() => doHandover(selected.id)}
                       className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-[hsl(var(--accent))] text-[hsl(var(--accent))] hover:bg-[hsl(var(--accent))] hover:text-white">
                       <AlertTriangle className="w-3 h-3" /> Handover ke Admin
@@ -110,9 +144,15 @@ export default function Conversations() {
                   )}
                 </div>
               </div>
+              {selected.status === "waiting_admin" && (
+                <div className="bg-amber-50 border-b border-amber-200 px-6 py-2 text-xs text-amber-800 flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> AI berhenti membalas otomatis di percakapan ini — balas manual di bawah, atau tekan "Aktifkan AI Lagi".
+                </div>
+              )}
               <div className="flex-1 overflow-y-auto pelangi-scroll p-6 chat-bg flex flex-col gap-2">
                 {selected.messages.map((m, i) => (
                   <div key={i} className={m.role === "user" ? "chat-bubble-guest" : "chat-bubble-ai"}>
+                    {m.from_admin && <div className="text-[10px] font-semibold text-emerald-700 mb-0.5">Staf</div>}
                     <ChatMessageContent content={m.content} />
                     <div className="text-[10px] mt-1 text-stone-500 text-right">
                       {new Date(m.timestamp).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
@@ -121,6 +161,25 @@ export default function Conversations() {
                   </div>
                 ))}
               </div>
+              {selected.status !== "closed" && (
+                <div className="bg-white border-t border-[hsl(var(--border))] p-3 flex items-end gap-2">
+                  <textarea
+                    data-testid="reply-input"
+                    value={replyText}
+                    onChange={(e) => setReplyText(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
+                    placeholder="Ketik balasan manual ke tamu…"
+                    rows={2}
+                    className="flex-1 px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm resize-none"
+                  />
+                  <button
+                    data-testid="btn-send-reply" onClick={sendReply} disabled={sending || !replyText.trim()}
+                    className="inline-flex items-center gap-1.5 bg-[hsl(var(--primary))] text-white text-sm font-medium px-4 py-2.5 rounded-md hover:opacity-90 disabled:opacity-50"
+                  >
+                    {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Kirim
+                  </button>
+                </div>
+              )}
             </>
           )}
         </div>

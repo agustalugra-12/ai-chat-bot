@@ -537,6 +537,57 @@ async def convs_close(conv_id: str, user=Depends(get_current_user)):
     return {"ok": True}
 
 
+@api.patch("/conversations/{conv_id}/resume")
+async def convs_resume(conv_id: str, user=Depends(get_current_user)):
+    """Kebalikan dari handover - staf selesai menangani, AI aktif lagi menjawab pesan
+    tamu berikutnya secara otomatis."""
+    conv = await db.conversations.find_one({"_id": conv_id})
+    if not conv:
+        raise HTTPException(404, "Not found")
+    await db.conversations.update_one(
+        {"_id": conv_id},
+        {"$set": {"status": "active", "resolution": "handover", "updated_at": utc_now_iso()}},
+    )
+    doc = await db.conversations.find_one({"_id": conv_id})
+    doc["id"] = doc.pop("_id")
+    return doc
+
+
+class ConvReplyIn(BaseModel):
+    message: str
+
+
+@api.post("/conversations/{conv_id}/reply")
+async def convs_reply(conv_id: str, body: ConvReplyIn, user=Depends(get_current_user)):
+    """Staf mengetik & mengirim balasan manual ke tamu - mengisi gap "Human Response" yang
+    sebelumnya tidak ada (handover cuma menandai status, tidak pernah benar-benar
+    mengirim apa pun ke tamu). Kalau channel WhatsApp, balasan sungguhan dikirim lewat WAHA
+    persis seperti balasan AI. Status TIDAK otomatis berubah - staf tetap pegang kendali
+    sampai eksplisit menekan "Aktifkan AI Lagi" (`/resume`)."""
+    conv = await db.conversations.find_one({"_id": conv_id})
+    if not conv:
+        raise HTTPException(404, "Not found")
+    text = (body.message or "").strip()
+    if not text:
+        raise HTTPException(400, "Pesan tidak boleh kosong")
+
+    admin_msg = {
+        "role": "assistant", "content": text, "timestamp": utc_now_iso(),
+        "intent": None, "from_admin": True, "admin_name": user.get("email") or user.get("id"),
+    }
+    messages = conv.get("messages", []) + [admin_msg]
+    await db.conversations.update_one(
+        {"_id": conv_id}, {"$set": {"messages": messages, "updated_at": utc_now_iso()}},
+    )
+
+    sent_to_whatsapp = False
+    if conv.get("channel") == "whatsapp" and conv.get("whatsapp"):
+        await _waha_send_text(f"{conv['whatsapp']}@c.us", text)
+        sent_to_whatsapp = True
+
+    return {"ok": True, "sent_to_whatsapp": sent_to_whatsapp}
+
+
 # ---------------------------------------------------------------------------
 # CHAT (AI Guest Assistant)
 # ---------------------------------------------------------------------------
@@ -828,6 +879,19 @@ async def _run_chat_turn(
     # Append user message
     user_msg = {"role": "user", "content": message, "timestamp": utc_now_iso()}
     conv["messages"].append(user_msg)
+
+    # Human Handover: staf sudah mengambil alih (status waiting_admin) - AI BERHENTI
+    # menjawab sampai staf balas manual (POST /conversations/{id}/reply) atau aktifkan AI
+    # lagi (PATCH .../resume). Pesan tamu tetap tersimpan supaya staf lihat riwayat lengkap,
+    # cuma tidak dibalas otomatis - staf yang pegang kendali penuh.
+    if conv.get("status") == "waiting_admin":
+        await db.conversations.update_one(
+            {"_id": conv["_id"]}, {"$set": {"messages": conv["messages"], "updated_at": utc_now_iso()}},
+        )
+        return {
+            "session_id": session_id, "conversation_id": conv["_id"], "reply": None,
+            "tool_used": None, "tool_result": None, "response_time_ms": int((time.time() - started) * 1000),
+        }
 
     # Load bot + build dynamic prompt
     bot = await _load_bot(bot_id, bot_code)
