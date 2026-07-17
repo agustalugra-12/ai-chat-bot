@@ -7,8 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+import httpx
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, APIRouter, File, HTTPException, Query, UploadFile, status
+from fastapi import Depends, FastAPI, APIRouter, File, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
 from motor.motor_asyncio import AsyncIOMotorClient
 from starlette.middleware.cors import CORSMiddleware
@@ -51,6 +52,14 @@ from seed import seed_all
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
+
+# ---- WAHA (WhatsApp gateway) ----
+# WAHA memanggil /webhook/waha di sini saat ada pesan WhatsApp masuk; balasan AI dikirim
+# balik ke tamu dengan PMS ini memanggil WAHA (arah keluar), bukan lewat response webhook.
+WAHA_BASE_URL = os.environ.get("WAHA_BASE_URL", "")
+WAHA_API_KEY = os.environ.get("WAHA_API_KEY", "")
+WAHA_SESSION = os.environ.get("WAHA_SESSION", "default")
+WAHA_WEBHOOK_TOKEN = os.environ.get("WAHA_WEBHOOK_TOKEN", "")
 
 app = FastAPI(title="Pelangi Homestay Guest AI")
 api = APIRouter(prefix="/api")
@@ -587,9 +596,14 @@ async def _handle_tool(tool: str, args: dict, conv: dict) -> Optional[dict]:
     return {"ok": False, "tool": tool, "error": "unknown tool"}
 
 
-@api.post("/chat/message")
-async def chat_message(body: ChatSendRequest, user=Depends(get_current_user)):
-    session_id = body.session_id or str(uuid.uuid4())
+async def _run_chat_turn(
+    session_id: str, message: str, guest_name: Optional[str], whatsapp: Optional[str],
+    bot_id: Optional[str], bot_code: Optional[str], channel: str = "simulator",
+) -> dict:
+    """Inti alur 1 giliran chat (load bot, build context, panggil AI, tool-calling,
+    simpan percakapan) — dipakai `/chat/message` (simulator, staf login) DAN webhook WAHA
+    (`/webhook/waha`, tamu WhatsApp asli) supaya tidak ada logika AI ganda yang bisa
+    saling menyimpang antara jalur uji coba staf dan jalur tamu sungguhan."""
     started = time.time()
 
     conv = await db.conversations.find_one({"session_id": session_id})
@@ -597,9 +611,9 @@ async def chat_message(body: ChatSendRequest, user=Depends(get_current_user)):
         conv = {
             "_id": new_id(),
             "session_id": session_id,
-            "guest_name": body.guest_name,
-            "whatsapp": body.whatsapp,
-            "channel": "simulator",
+            "guest_name": guest_name,
+            "whatsapp": whatsapp,
+            "channel": channel,
             "messages": [],
             "status": "active",
             "resolution": "unresolved",
@@ -612,11 +626,11 @@ async def chat_message(body: ChatSendRequest, user=Depends(get_current_user)):
         await db.conversations.insert_one(conv)
 
     # Append user message
-    user_msg = {"role": "user", "content": body.message, "timestamp": utc_now_iso()}
+    user_msg = {"role": "user", "content": message, "timestamp": utc_now_iso()}
     conv["messages"].append(user_msg)
 
     # Load bot + build dynamic prompt
-    bot = await _load_bot(body.bot_id, body.bot_code)
+    bot = await _load_bot(bot_id, bot_code)
     if bot:
         conv["bot_id"] = bot.get("_id")
         conv["bot_code"] = bot.get("code")
@@ -625,11 +639,11 @@ async def chat_message(body: ChatSendRequest, user=Depends(get_current_user)):
 
     # Build prompt inputs
     system_prompt = build_dynamic_prompt(bot) if bot else await _load_active_prompt()
-    context = await _build_context(query=body.message, bot=bot)
+    context = await _build_context(query=message, bot=bot)
     history_text = compact_history(conv["messages"][:-1], max_turns=12)
 
     # First AI turn
-    raw = await ai_reply(session_id, system_prompt, context, history_text, body.message)
+    raw = await ai_reply(session_id, system_prompt, context, history_text, message)
     clean_text, tool, args = parse_tool_call(raw)
 
     tool_result = None
@@ -703,6 +717,68 @@ async def chat_message(body: ChatSendRequest, user=Depends(get_current_user)):
         "tool_result": tool_result,
         "response_time_ms": elapsed_ms,
     }
+
+
+@api.post("/chat/message")
+async def chat_message(body: ChatSendRequest, user=Depends(get_current_user)):
+    session_id = body.session_id or str(uuid.uuid4())
+    return await _run_chat_turn(
+        session_id, body.message, body.guest_name, body.whatsapp,
+        body.bot_id, body.bot_code, channel="simulator",
+    )
+
+
+async def _waha_send_text(chat_id: str, text: str) -> None:
+    if not WAHA_BASE_URL or not WAHA_API_KEY:
+        logging.getLogger("waha").warning("WAHA_BASE_URL/WAHA_API_KEY belum diisi — balasan tidak terkirim ke tamu")
+        return
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            resp = await http.post(
+                f"{WAHA_BASE_URL.rstrip('/')}/api/sendText",
+                headers={"X-Api-Key": WAHA_API_KEY},
+                json={"session": WAHA_SESSION, "chatId": chat_id, "text": text},
+            )
+            if resp.status_code >= 400:
+                logging.getLogger("waha").warning(f"WAHA sendText gagal HTTP {resp.status_code}: {resp.text[:300]}")
+    except Exception as e:
+        logging.getLogger("waha").warning(f"Gagal memanggil WAHA sendText: {e}")
+
+
+@api.post("/webhook/waha")
+async def webhook_waha(request: Request, token: Optional[str] = None):
+    """Dipanggil WAHA (gateway WhatsApp self-hosted) setiap ada pesan masuk. Publik (tidak
+    ada login), jadi divalidasi lewat `?token=` yang harus cocok `WAHA_WEBHOOK_TOKEN` — pola
+    sama seperti webhook masuk di Pelangi PMS (`webhook_config.webhook_token`). Reuse penuh
+    `_run_chat_turn` (logika sama dengan simulator `/chat/message`) supaya AI yang menjawab
+    tamu WhatsApp asli konsisten dengan yang staf uji coba di dashboard. Balasan dikirim
+    balik ke tamu dengan MEMANGGIL WAHA (`_waha_send_text`) — bukan lewat response webhook,
+    karena WAHA tidak merelai isi response webhook ke WhatsApp seperti sebagian provider lain.
+    """
+    if not WAHA_WEBHOOK_TOKEN or token != WAHA_WEBHOOK_TOKEN:
+        raise HTTPException(404, "Not Found")
+
+    payload = await request.json()
+    if payload.get("event") != "message":
+        return {"ok": True, "diabaikan": f"event '{payload.get('event')}' tidak diproses"}
+
+    data = payload.get("payload") or {}
+    if data.get("fromMe"):
+        return {"ok": True, "diabaikan": "pesan keluar dari nomor bot sendiri"}
+
+    chat_id = data.get("from") or ""
+    phone = chat_id.split("@")[0] if "@" in chat_id else chat_id
+    message = data.get("body") or ""
+    if not phone or not message:
+        return {"ok": True, "diabaikan": "tanpa nomor pengirim/isi pesan (kemungkinan pesan media)"}
+
+    guest_name = data.get("notifyName") or phone
+    session_id = f"wa-{phone}"
+
+    hasil = await _run_chat_turn(session_id, message, guest_name, phone, None, None, channel="whatsapp")
+    if hasil.get("reply"):
+        await _waha_send_text(chat_id, hasil["reply"])
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
