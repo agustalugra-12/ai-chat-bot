@@ -88,17 +88,18 @@ PMS_DEFAULT_ENDPOINTS = {
     "booking_request_path": "/api/integrasi-ai-bot/booking-request",
     "tiket_path": "/api/integrasi-ai-bot/tiket",
     "rules_path": "/api/integrasi-ai-bot/rules",
+    "booking_status_path": "/api/integrasi-ai-bot/booking-status",
 }
 
 # Kapabilitas yang BENAR-BENAR tersambung ke kode (toggle di luar daftar ini boleh
 # disimpan tapi tidak akan pernah bikin AI melakukan apa pun - endpoint PMS-nya belum ada,
 # lihat catatan "wired" di bawah). Jangan tambah entry baru di sini tanpa juga menyambungkan
 # handler-nya - toggle yang "hidup" tapi tidak ngapa-ngapain itu menyesatkan.
-PMS_CAPABILITY_WIRED = {"check_availability", "create_booking", "create_maintenance_ticket"}
+PMS_CAPABILITY_WIRED = {"check_availability", "create_booking", "create_maintenance_ticket", "check_booking_status"}
 PMS_DEFAULT_CAPABILITIES = {
     "check_availability": True,
     "create_booking": True,
-    "check_booking_status": False,   # endpoint PMS belum ada - toggle disimpan, tidak fungsional
+    "check_booking_status": True,
     "create_maintenance_ticket": True,
     "refund": False,                 # belum diimplementasikan
     "ota_sync": False,                # belum diimplementasikan
@@ -723,6 +724,35 @@ async def _pms_buat_tiket(tipe: str, deskripsi: str, whatsapp: str, guest_name: 
         return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}
 
 
+async def _pms_status_booking(whatsapp: str) -> dict:
+    """Status booking request tamu, LIVE dari Pelangi PMS (`db.booking_requests`) - bukan
+    `db.bookings` lokal ai-chat-bot yang isinya cuma sisa fitur admin generik, tidak pernah
+    diisi jalur AI sejak create_booking dialihkan ke PMS."""
+    cfg = await _pms_config()
+    if not cfg["capabilities"].get("check_booking_status"):
+        return {"ok": False, "error": "Fitur Cek Status Booking dinonaktifkan di panel Integrasi PMS"}
+    if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
+        return {"ok": False, "error": "PMS URL/API Key belum dikonfigurasi"}
+    path = cfg["endpoints"].get("booking_status_path", PMS_DEFAULT_ENDPOINTS["booking_status_path"])
+    started = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=10) as http:
+            resp = await http.get(
+                f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, params={"no_hp": whatsapp},
+            )
+        latency_ms = int((time.time() - started) * 1000)
+        if resp.status_code >= 400:
+            await _pms_log(path, "GET", resp.status_code, latency_ms, False, resp.text)
+            return {"ok": False, "error": f"PMS menolak: HTTP {resp.status_code} {resp.text[:200]}"}
+        await _pms_log(path, "GET", resp.status_code, latency_ms, True)
+        data = resp.json()
+        return {"ok": True, "permintaan": data.get("permintaan") or []}
+    except Exception as e:
+        await _pms_log(path, "GET", None, int((time.time() - started) * 1000), False, str(e))
+        return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}
+
+
 async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None) -> str:
     rooms = await _pms_ketersediaan()
     menu = await db.menu.find({}).to_list(500)
@@ -824,18 +854,13 @@ async def _handle_tool(tool: str, args: dict, conv: dict) -> Optional[dict]:
             return {"ok": False, "tool": tool, "error": str(e)}
 
     if tool == "lookup_booking":
-        wa = args.get("whatsapp")
+        wa = args.get("whatsapp") or conv.get("whatsapp")
         if not wa:
             return {"ok": False, "tool": tool, "error": "missing whatsapp"}
-        docs = await db.bookings.find({"whatsapp": wa}).sort("created_at", -1).to_list(20)
-        summary = [{
-            "booking_id": d["_id"], "guest_name": d["guest_name"],
-            "check_in": d["check_in"], "check_out": d["check_out"],
-            "room_type": d["room_type"], "num_rooms": d.get("num_rooms", 1),
-            "status": d["status"], "total_amount": d.get("total_amount", 0),
-            "payment_status": d.get("payment_status", "unpaid"),
-        } for d in docs]
-        return {"ok": True, "tool": tool, "result": summary}
+        hasil = await _pms_status_booking(wa)
+        if not hasil.get("ok"):
+            return {"ok": False, "tool": tool, "error": hasil.get("error")}
+        return {"ok": True, "tool": tool, "result": hasil.get("permintaan") or []}
 
     if tool == "request_handover":
         await db.conversations.update_one(

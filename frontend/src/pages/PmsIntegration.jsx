@@ -17,7 +17,7 @@ const CAP_LABELS = {
   payment: "Payment",
   checkin: "Check-in",
 };
-const CAP_WIRED = new Set(["check_availability", "create_booking", "create_maintenance_ticket"]);
+const CAP_WIRED = new Set(["check_availability", "create_booking", "create_maintenance_ticket", "check_booking_status"]);
 const CAP_ORDER = ["check_availability", "create_booking", "check_booking_status", "create_maintenance_ticket", "refund", "ota_sync", "payment", "checkin"];
 
 const SYNC_KINDS = [
