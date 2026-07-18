@@ -8,7 +8,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 from dotenv import load_dotenv
@@ -673,8 +673,138 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
     return base
 
 
+# ---------------------------------------------------------------------------
+# TOOL MANAGER (PRD v2) - registry tool AI: satu sumber kebenaran untuk nama, handler,
+# DAN syarat izin (tool_codes bot apa yang membuka tool ini) per tool. Nambah tool baru
+# = tulis 1 fungsi + `@register_tool(...)`, tidak perlu sentuh dispatcher (_handle_tool)
+# atau permission-gating di _run_chat_turn - keduanya baca registry yang sama.
+# ---------------------------------------------------------------------------
+TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {}
+
+
+def register_tool(name: str, required_tool_codes: Optional[set] = None):
+    """`required_tool_codes` kosong/None = tool selalu diizinkan untuk semua bot (baseline
+    capability seperti remember_guest_fact, bukan aksi bisnis yang perlu dibatasi)."""
+    def deco(fn):
+        TOOL_REGISTRY[name] = {"handler": fn, "required_tool_codes": required_tool_codes or set()}
+        return fn
+    return deco
+
+
+@register_tool("check_availability", {"check_availability"})
+async def _tool_check_availability(args: dict, conv: dict) -> dict:
+    try:
+        rooms = await _pms_ketersediaan(
+            tanggal=args.get("tanggal_checkin"), tipe=args.get("tipe"),
+            tanggal_checkout=args.get("tanggal_checkout"),
+        )
+        return {"ok": True, "tool": "check_availability", "result": rooms}
+    except Exception as e:
+        return {"ok": False, "tool": "check_availability", "error": str(e)}
+
+
+@register_tool("create_booking", {"create_booking"})
+async def _tool_create_booking(args: dict, conv: dict) -> dict:
+    try:
+        logging.getLogger("pms").info(f"create_booking args diterima dari AI: {args}")
+        required = ["guest_name", "whatsapp", "tipe", "room_tipe", "tanggal_checkin"]
+        for k in required:
+            if not args.get(k):
+                return {"ok": False, "tool": "create_booking", "error": f"missing {k}"}
+        if args["tipe"] not in ("day_use", "menginap"):
+            return {"ok": False, "tool": "create_booking", "error": "tipe harus 'day_use' atau 'menginap'"}
+        hasil = await _pms_buat_booking_request(args)
+        if not hasil.get("ok"):
+            return {"ok": False, "tool": "create_booking", "error": hasil.get("error")}
+        await db.conversations.update_one({"_id": conv["_id"]}, {"$set": {"booking_created": True}})
+        br = hasil.get("booking_request") or {}
+        return {"ok": True, "tool": "create_booking", "booking_request_id": br.get("id"), "kode": br.get("kode")}
+    except Exception as e:
+        return {"ok": False, "tool": "create_booking", "error": str(e)}
+
+
+@register_tool("create_service_request", {"restaurant_order", "laundry_request", "housekeeping_request",
+                                           "room_service", "airport_pickup", "motor_rental"})
+async def _tool_create_service_request(args: dict, conv: dict) -> dict:
+    try:
+        doc = {
+            "_id": new_id(),
+            "guest_name": args.get("guest_name") or conv.get("guest_name") or "Guest",
+            "whatsapp": args.get("whatsapp") or conv.get("whatsapp") or "-",
+            "booking_id": args.get("booking_id"),
+            "service_type": args["service_type"],
+            "quantity": int(args.get("quantity", 1)),
+            "notes": args.get("notes"),
+            "status": "new",
+            "created_at": utc_now_iso(),
+        }
+        await db.service_requests.insert_one(doc)
+        return {"ok": True, "tool": "create_service_request", "request_id": doc["_id"]}
+    except Exception as e:
+        return {"ok": False, "tool": "create_service_request", "error": str(e)}
+
+
+@register_tool("create_maintenance_ticket", {"maintenance_request", "complaint_ticket"})
+async def _tool_create_maintenance_ticket(args: dict, conv: dict) -> dict:
+    try:
+        tipe = args.get("tipe")
+        if tipe not in ("complaint", "maintenance"):
+            return {"ok": False, "tool": "create_maintenance_ticket", "error": "tipe harus 'complaint' atau 'maintenance'"}
+        deskripsi = (args.get("deskripsi") or "").strip()
+        if not deskripsi:
+            return {"ok": False, "tool": "create_maintenance_ticket", "error": "missing deskripsi"}
+        whatsapp = args.get("whatsapp") or conv.get("whatsapp") or ""
+        guest_name = args.get("guest_name") or conv.get("guest_name") or ""
+        hasil = await _pms_buat_tiket(tipe, deskripsi, whatsapp, guest_name)
+        if not hasil.get("ok"):
+            return {"ok": False, "tool": "create_maintenance_ticket", "error": hasil.get("error")}
+        tiket = hasil.get("tiket") or {}
+        return {"ok": True, "tool": "create_maintenance_ticket", "tiket_id": tiket.get("id")}
+    except Exception as e:
+        return {"ok": False, "tool": "create_maintenance_ticket", "error": str(e)}
+
+
+@register_tool("lookup_booking", {"lookup_booking"})
+async def _tool_lookup_booking(args: dict, conv: dict) -> dict:
+    wa = args.get("whatsapp") or conv.get("whatsapp")
+    if not wa:
+        return {"ok": False, "tool": "lookup_booking", "error": "missing whatsapp"}
+    hasil = await _pms_status_booking(wa)
+    if not hasil.get("ok"):
+        return {"ok": False, "tool": "lookup_booking", "error": hasil.get("error")}
+    return {"ok": True, "tool": "lookup_booking", "result": hasil.get("permintaan") or []}
+
+
+@register_tool("request_handover", {"request_handover"})
+async def _tool_request_handover(args: dict, conv: dict) -> dict:
+    await db.conversations.update_one(
+        {"_id": conv["_id"]},
+        {"$set": {"status": "waiting_admin", "resolution": "handover", "updated_at": utc_now_iso()}},
+    )
+    return {"ok": True, "tool": "request_handover"}
+
+
+@register_tool("remember_guest_fact")  # baseline memory hygiene, selalu diizinkan (lihat docstring register_tool)
+async def _tool_remember_guest_fact(args: dict, conv: dict) -> dict:
+    wa = args.get("whatsapp") or conv.get("whatsapp")
+    fact = (args.get("fact") or "").strip()
+    if not wa or not fact:
+        return {"ok": False, "tool": "remember_guest_fact", "error": "missing whatsapp/fact"}
+    key = _normalize_phone(wa)
+    existing = await db.guest_profiles.find_one({"_id": key})
+    facts = (existing or {}).get("preferensi") or []
+    if fact not in facts:  # cegah duplikat kalau AI menyimpan hal yang sama berkali-kali
+        facts.append(fact)
+        facts = facts[-20:]  # cap wajar per tamu, fakta terlama otomatis terbuang
+    await db.guest_profiles.update_one(
+        {"_id": key}, {"$set": {"preferensi": facts}, "$setOnInsert": {"created_at": utc_now_iso()}}, upsert=True,
+    )
+    return {"ok": True, "tool": "remember_guest_fact"}
+
+
 async def _handle_tool(tool: str, args: dict, conv: dict) -> Optional[dict]:
-    """Execute AI tool call. Returns tool_result dict for the AI to acknowledge next turn."""
+    """Tool Manager dispatch - cari handler tool di TOOL_REGISTRY (lihat @register_tool
+    di atas)."""
     # Nomor WA & nama dari `conv` (asal koneksi WA/simulator sungguhan) SELALU dipakai kalau
     # ada, dan MENIMPA apa pun yang LLM tulis di args - ditemukan lewat pengujian nyata
     # (2026-07-18) bahwa LLM kadang mengisi whatsapp dengan teks placeholder literal dari
@@ -686,103 +816,10 @@ async def _handle_tool(tool: str, args: dict, conv: dict) -> Optional[dict]:
     if conv.get("guest_name"):
         args = {**args, "guest_name": args.get("guest_name") or conv["guest_name"]}
 
-    if tool == "check_availability":
-        try:
-            rooms = await _pms_ketersediaan(
-                tanggal=args.get("tanggal_checkin"), tipe=args.get("tipe"),
-                tanggal_checkout=args.get("tanggal_checkout"),
-            )
-            return {"ok": True, "tool": tool, "result": rooms}
-        except Exception as e:
-            return {"ok": False, "tool": tool, "error": str(e)}
-
-    if tool == "create_booking":
-        try:
-            logging.getLogger("pms").info(f"create_booking args diterima dari AI: {args}")
-            required = ["guest_name", "whatsapp", "tipe", "room_tipe", "tanggal_checkin"]
-            for k in required:
-                if not args.get(k):
-                    return {"ok": False, "tool": tool, "error": f"missing {k}"}
-            if args["tipe"] not in ("day_use", "menginap"):
-                return {"ok": False, "tool": tool, "error": "tipe harus 'day_use' atau 'menginap'"}
-            hasil = await _pms_buat_booking_request(args)
-            if not hasil.get("ok"):
-                return {"ok": False, "tool": tool, "error": hasil.get("error")}
-            await db.conversations.update_one({"_id": conv["_id"]}, {"$set": {"booking_created": True}})
-            br = hasil.get("booking_request") or {}
-            return {"ok": True, "tool": tool, "booking_request_id": br.get("id"), "kode": br.get("kode")}
-        except Exception as e:
-            return {"ok": False, "tool": tool, "error": str(e)}
-
-    if tool == "create_service_request":
-        try:
-            doc = {
-                "_id": new_id(),
-                "guest_name": args.get("guest_name") or conv.get("guest_name") or "Guest",
-                "whatsapp": args.get("whatsapp") or conv.get("whatsapp") or "-",
-                "booking_id": args.get("booking_id"),
-                "service_type": args["service_type"],
-                "quantity": int(args.get("quantity", 1)),
-                "notes": args.get("notes"),
-                "status": "new",
-                "created_at": utc_now_iso(),
-            }
-            await db.service_requests.insert_one(doc)
-            return {"ok": True, "tool": tool, "request_id": doc["_id"]}
-        except Exception as e:
-            return {"ok": False, "tool": tool, "error": str(e)}
-
-    if tool == "create_maintenance_ticket":
-        try:
-            tipe = args.get("tipe")
-            if tipe not in ("complaint", "maintenance"):
-                return {"ok": False, "tool": tool, "error": "tipe harus 'complaint' atau 'maintenance'"}
-            deskripsi = (args.get("deskripsi") or "").strip()
-            if not deskripsi:
-                return {"ok": False, "tool": tool, "error": "missing deskripsi"}
-            whatsapp = args.get("whatsapp") or conv.get("whatsapp") or ""
-            guest_name = args.get("guest_name") or conv.get("guest_name") or ""
-            hasil = await _pms_buat_tiket(tipe, deskripsi, whatsapp, guest_name)
-            if not hasil.get("ok"):
-                return {"ok": False, "tool": tool, "error": hasil.get("error")}
-            tiket = hasil.get("tiket") or {}
-            return {"ok": True, "tool": tool, "tiket_id": tiket.get("id")}
-        except Exception as e:
-            return {"ok": False, "tool": tool, "error": str(e)}
-
-    if tool == "lookup_booking":
-        wa = args.get("whatsapp") or conv.get("whatsapp")
-        if not wa:
-            return {"ok": False, "tool": tool, "error": "missing whatsapp"}
-        hasil = await _pms_status_booking(wa)
-        if not hasil.get("ok"):
-            return {"ok": False, "tool": tool, "error": hasil.get("error")}
-        return {"ok": True, "tool": tool, "result": hasil.get("permintaan") or []}
-
-    if tool == "request_handover":
-        await db.conversations.update_one(
-            {"_id": conv["_id"]},
-            {"$set": {"status": "waiting_admin", "resolution": "handover", "updated_at": utc_now_iso()}},
-        )
-        return {"ok": True, "tool": tool}
-
-    if tool == "remember_guest_fact":
-        wa = args.get("whatsapp") or conv.get("whatsapp")
-        fact = (args.get("fact") or "").strip()
-        if not wa or not fact:
-            return {"ok": False, "tool": tool, "error": "missing whatsapp/fact"}
-        key = _normalize_phone(wa)
-        existing = await db.guest_profiles.find_one({"_id": key})
-        facts = (existing or {}).get("preferensi") or []
-        if fact not in facts:  # cegah duplikat kalau AI menyimpan hal yang sama berkali-kali
-            facts.append(fact)
-            facts = facts[-20:]  # cap wajar per tamu, fakta terlama otomatis terbuang
-        await db.guest_profiles.update_one(
-            {"_id": key}, {"$set": {"preferensi": facts}, "$setOnInsert": {"created_at": utc_now_iso()}}, upsert=True,
-        )
-        return {"ok": True, "tool": tool}
-
-    return {"ok": False, "tool": tool, "error": "unknown tool"}
+    entry = TOOL_REGISTRY.get(tool)
+    if not entry:
+        return {"ok": False, "tool": tool, "error": "unknown tool"}
+    return await entry["handler"](args, conv)
 
 
 async def _run_chat_turn(
@@ -857,21 +894,13 @@ async def _run_chat_turn(
 
     tool_result = None
     if tool:
-        # Permission gating
-        ai_tool_to_capability = {
-            "check_availability": {"check_availability"},
-            "create_booking": {"create_booking"},
-            "lookup_booking": {"lookup_booking"},
-            "cancel_booking": {"cancel_booking"},
-            "request_handover": {"request_handover"},
-            "create_service_request": {"restaurant_order", "laundry_request", "housekeeping_request",
-                                       "room_service", "airport_pickup", "motor_rental"},
-            "create_maintenance_ticket": {"maintenance_request", "complaint_ticket"},
-        }
-        allowed_caps = ai_tool_to_capability.get(tool, set())
-        # remember_guest_fact SENGAJA tidak digating per bot - baseline memory hygiene,
-        # bukan aksi bisnis yang perlu dibatasi seperti booking/tiket/service request.
-        if tool != "remember_guest_fact" and allowed_tool_codes and not (allowed_caps & allowed_tool_codes):
+        # Permission gating - baca langsung dari TOOL_REGISTRY (Tool Manager), satu sumber
+        # kebenaran yang sama dipakai _handle_tool untuk dispatch. required_tool_codes
+        # kosong (mis. remember_guest_fact) otomatis lolos gate ini, tanpa special-case.
+        tool_entry = TOOL_REGISTRY.get(tool)
+        if not tool_entry:
+            tool_result = {"ok": False, "tool": tool, "error": f"tool '{tool}' tidak dikenal"}
+        elif allowed_tool_codes and tool_entry["required_tool_codes"] and not (tool_entry["required_tool_codes"] & allowed_tool_codes):
             tool_result = {"ok": False, "tool": tool, "error": f"tool '{tool}' tidak diizinkan untuk bot ini"}
         elif tool == "create_service_request" and allowed_services and args.get("service_type") not in allowed_services:
             tool_result = {"ok": False, "tool": tool, "error": f"service_type '{args.get('service_type')}' tidak diizinkan untuk bot ini"}
