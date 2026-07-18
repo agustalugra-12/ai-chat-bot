@@ -165,6 +165,23 @@ async def _pms_log(endpoint: str, method: str, status_code: Optional[int], laten
         pass  # logging tidak boleh menggagalkan alur utama
 
 
+async def _audit_log(user: dict, action: str, detail: str = "") -> None:
+    """AuditLogger - "siapa ubah apa kapan" untuk aksi admin sensitif. Pola sama dengan
+    `log_activity` di Pelangi PMS (collection `audit_log`, dibaca dashboard sendiri lewat
+    GET /audit-log). Cakupan tahap 1: konfigurasi Integrasi PMS (URL/API key/capability/
+    webhook token), koneksi WAHA (connect/disconnect), dan Human Handover (handover/
+    resume/reply/close) - permukaan admin paling sensitif & paling baru dibangun. CRUD
+    entity lain (rooms/menu/kb/dst) belum diinstrumentasi, menyusul kalau dibutuhkan -
+    pola & tabelnya sudah siap dipakai tanpa perubahan skema."""
+    try:
+        await db.audit_log.insert_one({
+            "id": new_id(), "user_id": user.get("id"), "user_email": user.get("email"),
+            "action": action, "detail": (detail or "")[:500], "at": utc_now_iso(),
+        })
+    except Exception:
+        pass  # logging tidak boleh menggagalkan alur utama
+
+
 app = FastAPI(title="Pelangi Homestay Guest AI")
 api = APIRouter(prefix="/api")
 
@@ -525,6 +542,7 @@ async def convs_handover(conv_id: str, user=Depends(get_current_user)):
     doc = await db.conversations.find_one({"_id": conv_id})
     if not doc:
         raise HTTPException(404, "Not found")
+    await _audit_log(user, "conversation_handover", f"conv {conv_id} ({doc.get('guest_name') or doc.get('whatsapp') or '-'})")
     doc["id"] = doc.pop("_id")
     return doc
 
@@ -535,6 +553,7 @@ async def convs_close(conv_id: str, user=Depends(get_current_user)):
         {"_id": conv_id},
         {"$set": {"status": "closed", "updated_at": utc_now_iso()}},
     )
+    await _audit_log(user, "conversation_close", f"conv {conv_id}")
     return {"ok": True}
 
 
@@ -549,6 +568,7 @@ async def convs_resume(conv_id: str, user=Depends(get_current_user)):
         {"_id": conv_id},
         {"$set": {"status": "active", "resolution": "handover", "updated_at": utc_now_iso()}},
     )
+    await _audit_log(user, "conversation_resume_ai", f"conv {conv_id} ({conv.get('guest_name') or conv.get('whatsapp') or '-'})")
     doc = await db.conversations.find_one({"_id": conv_id})
     doc["id"] = doc.pop("_id")
     return doc
@@ -586,6 +606,7 @@ async def convs_reply(conv_id: str, body: ConvReplyIn, user=Depends(get_current_
         await _waha_send_text(f"{conv['whatsapp']}@c.us", text)
         sent_to_whatsapp = True
 
+    await _audit_log(user, "conversation_manual_reply", f"conv {conv_id}: {text[:200]}")
     return {"ok": True, "sent_to_whatsapp": sent_to_whatsapp}
 
 
@@ -1068,6 +1089,7 @@ async def waha_connect(body: dict, user=Depends(get_current_user)):
     )
     if code_status >= 400:
         raise HTTPException(code_status, code_data.get("message") or code_data.get("error") or "Gagal meminta kode pairing")
+    await _audit_log(user, "waha_connect", f"phone {phone}")
     return code_data
 
 
@@ -1076,6 +1098,7 @@ async def waha_disconnect(user=Depends(get_current_user)):
     status, data = await _waha_call("POST", f"/api/sessions/{WAHA_SESSION}/logout")
     if status >= 400:
         raise HTTPException(status, data.get("error") or "Gagal memutus sesi WAHA")
+    await _audit_log(user, "waha_disconnect")
     return {"ok": True}
 
 
@@ -1105,6 +1128,8 @@ async def update_pms_integration(body: dict, user=Depends(get_current_user)):
         raise HTTPException(400, "Tidak ada field yang diubah")
     updates["updated_at"] = utc_now_iso()
     await db.pms_integration_config.update_one({"_id": "singleton"}, {"$set": updates}, upsert=True)
+    # Field saja yang dicatat, BUKAN nilainya (pms_api_key rahasia, jangan bocor ke log)
+    await _audit_log(user, "pms_integration_update", f"field diubah: {', '.join(sorted(updates.keys() - {'updated_at'}))}")
     return _pms_config_public(await _pms_config())
 
 
@@ -1112,12 +1137,16 @@ async def update_pms_integration(body: dict, user=Depends(get_current_user)):
 async def update_pms_capabilities(body: dict, user=Depends(get_current_user)):
     cfg = await _pms_config()
     caps = dict(cfg["capabilities"])
+    changed = []
     for k, v in (body or {}).items():
-        if k in PMS_DEFAULT_CAPABILITIES and isinstance(v, bool):
+        if k in PMS_DEFAULT_CAPABILITIES and isinstance(v, bool) and caps.get(k) != v:
             caps[k] = v
+            changed.append(f"{k}={v}")
     await db.pms_integration_config.update_one(
         {"_id": "singleton"}, {"$set": {"capabilities": caps, "updated_at": utc_now_iso()}}, upsert=True,
     )
+    if changed:
+        await _audit_log(user, "pms_capability_toggle", ", ".join(changed))
     return _pms_config_public(await _pms_config())
 
 
@@ -1130,6 +1159,7 @@ async def regenerate_pms_webhook_token(user=Depends(get_current_user)):
     await db.pms_integration_config.update_one(
         {"_id": "singleton"}, {"$set": {"webhook_token": new_token, "updated_at": utc_now_iso()}}, upsert=True,
     )
+    await _audit_log(user, "pms_webhook_token_regenerate")
     if WAHA_BASE_URL and WAHA_API_KEY:
         await _waha_call(
             "PUT", f"/api/sessions/{WAHA_SESSION}",
@@ -1188,6 +1218,20 @@ async def pms_integration_logs(limit: int = Query(50, le=200), user=Depends(get_
     return [{**d, "id": d.pop("_id")} for d in docs]
 
 
+@api.get("/audit-log")
+async def audit_log_list(action: Optional[str] = None, limit: int = Query(100, le=500), user=Depends(get_current_user)):
+    q: Dict[str, Any] = {}
+    if action:
+        q["action"] = action
+    docs = await db.audit_log.find(q, {"_id": 0}).sort("at", -1).to_list(limit)
+    return docs
+
+
+@api.get("/audit-log/actions")
+async def audit_log_actions(user=Depends(get_current_user)):
+    return sorted(await db.audit_log.distinct("action"))
+
+
 SYNC_KINDS = {"hotel_profile", "faq", "prompt", "rule"}
 SYNC_NOT_AVAILABLE = {"hotel_profile", "faq", "prompt"}  # PMS belum expose endpointnya
 
@@ -1244,6 +1288,7 @@ async def pms_integration_sync(jenis: str, user=Depends(get_current_user)):
     await db.pms_integration_config.update_one(
         {"_id": "singleton"}, {"$set": {f"last_sync.{jenis}": result}}, upsert=True,
     )
+    await _audit_log(user, f"pms_sync_{jenis}", result.get("message", ""))
     return result
 
 
