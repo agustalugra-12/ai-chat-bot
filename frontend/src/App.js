@@ -17,6 +17,7 @@ import Analytics from "@/pages/Analytics";
 import Settings from "@/pages/Settings";
 import PmsIntegration from "@/pages/PmsIntegration";
 import AuditLog from "@/pages/AuditLog";
+import GuestProfiles from "@/pages/GuestProfiles";
 import RagDocuments from "@/pages/RagDocuments";
 import BotList from "@/pages/ai/BotList";
 import BotDetail from "@/pages/ai/BotDetail";
@@ -63,6 +64,7 @@ function App() {
             <Route path="analytics" element={<Analytics />} />
             <Route path="pms-integration" element={<PmsIntegration />} />
             <Route path="audit-log" element={<AuditLog />} />
+            <Route path="guest-profiles" element={<GuestProfiles />} />
             <Route path="settings" element={<Settings />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

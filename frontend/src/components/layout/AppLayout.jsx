@@ -5,7 +5,7 @@ import {
   LayoutDashboard, MessagesSquare, BotMessageSquare, BookOpenText,
   BedDouble, UtensilsCrossed, CalendarCheck2, Bell, FileTerminal,
   BarChart3, Settings as SettingsIcon, LogOut, Sparkles, FileStack,
-  Bot, Wrench, Target, Waypoints, ChevronDown, ChevronRight, Plug, ShieldCheck,
+  Bot, Wrench, Target, Waypoints, ChevronDown, ChevronRight, Plug, ShieldCheck, Users,
 } from "lucide-react";
 
 const topNav = [
@@ -27,6 +27,7 @@ const dataSection = [
   { to: "/rag", label: "RAG Documents", icon: FileStack, tid: "nav-rag" },
   { to: "/rooms", label: "Kamar", icon: BedDouble, tid: "nav-rooms" },
   { to: "/menu", label: "Menu Resto", icon: UtensilsCrossed, tid: "nav-menu" },
+  { to: "/guest-profiles", label: "Profil Tamu (Memory)", icon: Users, tid: "nav-guest-profiles" },
 ];
 
 const opsSection = [

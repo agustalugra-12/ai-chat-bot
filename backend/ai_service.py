@@ -55,6 +55,7 @@ TOOL_DOCS = {
     "create_service_request": '- create_service_request : args {"guest_name":"...","whatsapp":"...","service_type":"extra_bed|extra_towel|mineral_water|cleaning|laundry|motor_rental|airport_pickup|extra_breakfast","quantity":1,"notes":"..."}',
     "create_maintenance_ticket": '- create_maintenance_ticket (tiket masuk ke PMS, dipantau staf) : args {"tipe":"complaint"|"maintenance","deskripsi":"...","guest_name":"...","whatsapp":"..."}. Pakai "maintenance" utk kerusakan fasilitas (AC/TV/air/listrik dst), "complaint" utk keluhan pelayanan/kebersihan yang BUKAN kerusakan alat.',
     "request_handover": '- request_handover : args {"reason":"..."}',
+    "remember_guest_fact": '- remember_guest_fact : args {"whatsapp":"...","fact":"..."}. WAJIB dipanggil SETIAP KALI tamu minta sesuatu "dicatat"/"diingat", atau menyebutkan preferensi kamar, alergi/pantangan, nama panggilan, kebiasaan yang relevan untuk kunjungan berikutnya. JANGAN PERNAH bilang "sudah saya catat"/"baik, dicatat" ke tamu TANPA benar-benar memanggil tool ini di baris yang sama - mengaku mencatat tanpa memanggil tool = BOHONG, datanya tidak benar-benar tersimpan. JANGAN dipakai untuk data booking/transaksi (itu sudah otomatis tersimpan di PMS) - HANYA fakta personal/preferensi tamu.',
 }
 
 # Map catalog tool_codes → actual backend tool name used by AI
@@ -74,7 +75,8 @@ def build_dynamic_prompt(bot: dict) -> str:
     """Build the runtime system prompt from a bot config."""
     tool_codes = bot.get("tool_codes", [])
     # Which AI-tools to expose
-    exposed = set()
+    # remember_guest_fact SELALU ada, tidak digating per bot - baseline memory hygiene.
+    exposed = {"remember_guest_fact"}
     if "check_availability" in tool_codes:
         exposed.add("check_availability")
     if "create_booking" in tool_codes:

@@ -2,6 +2,7 @@
 import os
 import asyncio
 import logging
+import re
 import secrets
 import time
 import uuid
@@ -817,7 +818,39 @@ async def _pms_status_booking(whatsapp: str) -> dict:
         return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}
 
 
-async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None) -> str:
+def _normalize_phone(no_hp: str) -> str:
+    """Bentuk kanonik 62xxx - mencegah 1 tamu punya 2 profil terpisah gara-gara format
+    nomor beda (0812... vs 62812...), sama pola dengan normalisasi di sisi PMS."""
+    digits = re.sub(r"\D", "", no_hp or "")
+    if digits.startswith("0"):
+        digits = "62" + digits[1:]
+    return digits
+
+
+async def _touch_guest_profile(whatsapp: Optional[str], guest_name: Optional[str], is_new_conversation: bool) -> None:
+    """Memory (tahap 1 - short/long/preference): dipanggil tiap giliran chat supaya profil
+    tamu selalu punya nama & waktu terakhir dilihat terkini, DAN supaya percakapan baru
+    dari nomor yang sama tercatat sebagai kunjungan berulang (total_conversations)."""
+    key = _normalize_phone(whatsapp or "")
+    if not key:
+        return
+    updates: Dict[str, Any] = {"last_seen_at": utc_now_iso()}
+    if guest_name:
+        updates["nama"] = guest_name
+    op: Dict[str, Any] = {"$set": updates, "$setOnInsert": {"created_at": utc_now_iso()}}
+    if is_new_conversation:
+        op["$inc"] = {"total_conversations": 1}
+    await db.guest_profiles.update_one({"_id": key}, op, upsert=True)
+
+
+async def _get_guest_profile(whatsapp: Optional[str]) -> Optional[dict]:
+    key = _normalize_phone(whatsapp or "")
+    if not key:
+        return None
+    return await db.guest_profiles.find_one({"_id": key})
+
+
+async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None, whatsapp: Optional[str] = None) -> str:
     rooms = await _pms_ketersediaan()
     menu = await db.menu.find({}).to_list(500)
     kb_q = {"is_active": True}
@@ -837,6 +870,20 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
             parts.append(f"- [{r.get('category')}] {r.get('title')}: {r.get('description')}")
         base = base + "\n" + "\n".join(parts)
 
+    # Memory (Long Memory + Preference) - profil tamu lintas-percakapan, BUKAN riwayat
+    # pesan mentah (itu Short Memory, sudah otomatis lewat conv["messages"] per sesi).
+    # Cuma ditampilkan kalau tamu ini pernah muncul sebelumnya - tamu baru tidak dapat
+    # section ini sama sekali (tidak ada yang perlu diingat).
+    profile = await _get_guest_profile(whatsapp)
+    if profile and (profile.get("total_conversations", 0) > 0):
+        parts = [f"\n# PROFIL TAMU (dari percakapan sebelumnya, kunjungan ke-{profile.get('total_conversations', 1) + 1})"]
+        if profile.get("nama"):
+            parts.append(f"- Nama: {profile['nama']}")
+        for fact in (profile.get("preferensi") or []):
+            parts.append(f"- {fact}")
+        parts.append("(Gunakan info ini untuk menyapa lebih personal & tidak menanyakan ulang hal yang sudah diketahui - TETAP verifikasi untuk data sensitif seperti booking.)")
+        base = base + "\n" + "\n".join(parts)
+
     # RAG augmentation
     if query:
         try:
@@ -853,6 +900,17 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
 
 async def _handle_tool(tool: str, args: dict, conv: dict) -> Optional[dict]:
     """Execute AI tool call. Returns tool_result dict for the AI to acknowledge next turn."""
+    # Nomor WA & nama dari `conv` (asal koneksi WA/simulator sungguhan) SELALU dipakai kalau
+    # ada, dan MENIMPA apa pun yang LLM tulis di args - ditemukan lewat pengujian nyata
+    # (2026-07-18) bahwa LLM kadang mengisi whatsapp dengan teks placeholder literal dari
+    # contoh di TOOL_DOCS (mis. "...") alih-alih nomor tamu asli, dan karena string itu
+    # tidak kosong, logika `args.get("whatsapp") or conv.get("whatsapp")` yang lama tidak
+    # pernah fallback - tiket/booking/fakta tersimpan dengan nomor sampah, bukan tamu asli.
+    if conv.get("whatsapp"):
+        args = {**args, "whatsapp": conv["whatsapp"]}
+    if conv.get("guest_name"):
+        args = {**args, "guest_name": args.get("guest_name") or conv["guest_name"]}
+
     if tool == "check_availability":
         try:
             rooms = await _pms_ketersediaan(
@@ -933,6 +991,22 @@ async def _handle_tool(tool: str, args: dict, conv: dict) -> Optional[dict]:
         )
         return {"ok": True, "tool": tool}
 
+    if tool == "remember_guest_fact":
+        wa = args.get("whatsapp") or conv.get("whatsapp")
+        fact = (args.get("fact") or "").strip()
+        if not wa or not fact:
+            return {"ok": False, "tool": tool, "error": "missing whatsapp/fact"}
+        key = _normalize_phone(wa)
+        existing = await db.guest_profiles.find_one({"_id": key})
+        facts = (existing or {}).get("preferensi") or []
+        if fact not in facts:  # cegah duplikat kalau AI menyimpan hal yang sama berkali-kali
+            facts.append(fact)
+            facts = facts[-20:]  # cap wajar per tamu, fakta terlama otomatis terbuang
+        await db.guest_profiles.update_one(
+            {"_id": key}, {"$set": {"preferensi": facts}, "$setOnInsert": {"created_at": utc_now_iso()}}, upsert=True,
+        )
+        return {"ok": True, "tool": tool}
+
     return {"ok": False, "tool": tool, "error": "unknown tool"}
 
 
@@ -947,6 +1021,7 @@ async def _run_chat_turn(
     started = time.time()
 
     conv = await db.conversations.find_one({"session_id": session_id})
+    is_new_conversation = conv is None
     if not conv:
         conv = {
             "_id": new_id(),
@@ -964,6 +1039,8 @@ async def _run_chat_turn(
             "updated_at": utc_now_iso(),
         }
         await db.conversations.insert_one(conv)
+
+    await _touch_guest_profile(conv.get("whatsapp") or whatsapp, conv.get("guest_name") or guest_name, is_new_conversation)
 
     # Append user message
     user_msg = {"role": "user", "content": message, "timestamp": utc_now_iso()}
@@ -992,7 +1069,7 @@ async def _run_chat_turn(
 
     # Build prompt inputs
     system_prompt = await _system_prompt_for(bot)
-    context = await _build_context(query=message, bot=bot)
+    context = await _build_context(query=message, bot=bot, whatsapp=conv.get("whatsapp") or whatsapp)
     history_text = compact_history(conv["messages"][:-1], max_turns=12)
 
     # First AI turn
@@ -1013,7 +1090,9 @@ async def _run_chat_turn(
             "create_maintenance_ticket": {"maintenance_request", "complaint_ticket"},
         }
         allowed_caps = ai_tool_to_capability.get(tool, set())
-        if allowed_tool_codes and not (allowed_caps & allowed_tool_codes):
+        # remember_guest_fact SENGAJA tidak digating per bot - baseline memory hygiene,
+        # bukan aksi bisnis yang perlu dibatasi seperti booking/tiket/service request.
+        if tool != "remember_guest_fact" and allowed_tool_codes and not (allowed_caps & allowed_tool_codes):
             tool_result = {"ok": False, "tool": tool, "error": f"tool '{tool}' tidak diizinkan untuk bot ini"}
         elif tool == "create_service_request" and allowed_services and args.get("service_type") not in allowed_services:
             tool_result = {"ok": False, "tool": tool, "error": f"service_type '{args.get('service_type')}' tidak diizinkan untuk bot ini"}
@@ -1273,6 +1352,25 @@ async def audit_log_list(action: Optional[str] = None, limit: int = Query(100, l
 @api.get("/audit-log/actions")
 async def audit_log_actions(user=Depends(get_current_user)):
     return sorted(await db.audit_log.distinct("action"))
+
+
+@api.get("/guest-profiles")
+async def guest_profiles_list(search: Optional[str] = None, limit: int = Query(100, le=500), user=Depends(get_current_user)):
+    """Memory tahap 1 - profil tamu lintas-percakapan (nama, preferensi/fakta yang diingat
+    AI, jumlah kunjungan). Read-only dari dashboard - AI yang mengisi lewat tool
+    remember_guest_fact + pembaruan otomatis tiap giliran chat, staf cukup melihat."""
+    q: Dict[str, Any] = {}
+    if search:
+        q["$or"] = [
+            {"_id": {"$regex": re.escape(search)}},
+            {"nama": {"$regex": re.escape(search), "$options": "i"}},
+        ]
+    docs = await db.guest_profiles.find(q).sort("last_seen_at", -1).to_list(limit)
+    out = []
+    for d in docs:
+        d["whatsapp"] = d.pop("_id")
+        out.append(d)
+    return out
 
 
 SYNC_KINDS = {"hotel_profile", "faq", "prompt", "rule"}
