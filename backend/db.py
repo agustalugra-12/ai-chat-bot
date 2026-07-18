@@ -1,9 +1,25 @@
-"""MongoDB helpers and Pydantic base document."""
+"""MongoDB helpers and Pydantic base document.
+
+Juga satu-satunya tempat koneksi Mongo (`client`/`db`) dibuat - dipindahkan dari
+server.py (2026-07-19, bagian Connector Layer PRD v2) supaya modul lain (termasuk
+connectors/) bisa import `db` tanpa circular import balik ke server.py.
+"""
 from typing import Annotated, Any, Optional
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from bson import ObjectId
 from datetime import datetime, timezone
+import os
 import uuid
+
+from dotenv import load_dotenv
+from pathlib import Path
+from motor.motor_asyncio import AsyncIOMotorClient
+
+load_dotenv(Path(__file__).parent / ".env")
+
+mongo_url = os.environ["MONGO_URL"]
+client = AsyncIOMotorClient(mongo_url)
+db = client[os.environ["DB_NAME"]]
 
 
 def _validate_object_id(v: Any) -> str:
