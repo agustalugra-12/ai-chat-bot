@@ -129,6 +129,57 @@ function KoneksiWhatsApp() {
   );
 }
 
+function ModelLLM({ s, setS }) {
+  const [options, setOptions] = useState(null);
+
+  useEffect(() => {
+    api.get("/settings/llm-options").then(({ data }) => setOptions(data)).catch(() => {});
+  }, []);
+
+  if (!options) return null;
+  const provider = s.llm_provider || options.default_provider;
+  const models = options.providers[provider] || [];
+  const model = s.llm_model || options.default_model;
+
+  const onProviderChange = (p) => {
+    const firstModel = options.providers[p]?.[0] || "";
+    setS({ ...s, llm_provider: p, llm_model: firstModel });
+  };
+
+  return (
+    <div className="pelangi-panel p-5 space-y-4">
+      <div className="font-[Manrope] font-semibold">Provider LLM</div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="text-xs font-medium">Provider</label>
+          <select
+            data-testid="set-llm-provider"
+            value={provider}
+            onChange={(e) => onProviderChange(e.target.value)}
+            className="mt-1 w-full px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm bg-white"
+          >
+            {Object.keys(options.providers).map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-medium">Model</label>
+          <select
+            data-testid="set-llm-model"
+            value={model}
+            onChange={(e) => setS({ ...s, llm_model: e.target.value })}
+            className="mt-1 w-full px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm bg-white"
+          >
+            {models.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </div>
+      </div>
+      <div className="text-xs text-[hsl(var(--muted-foreground))]">
+        Berlaku untuk semua percakapan AI (WhatsApp & Chat Simulator). Semua provider di atas dipanggil lewat kunci LLM yang sama.
+      </div>
+    </div>
+  );
+}
+
 export default function Settings() {
   const [s, setS] = useState(null);
 
@@ -202,6 +253,7 @@ export default function Settings() {
           </label>
         </div>
 
+        <ModelLLM s={s} setS={setS} />
         <KoneksiWhatsApp />
       </div>
     </div>

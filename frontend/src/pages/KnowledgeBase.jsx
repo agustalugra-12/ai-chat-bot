@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { PageHeader, Badge, EmptyState } from "@/components/ui-parts";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
-import { Plus, Trash2, PencilLine, X } from "lucide-react";
+import { Plus, Trash2, PencilLine, X, Search } from "lucide-react";
 import { ImageUploader } from "@/components/ImageUploader";
 
 const LABELS = {
@@ -18,6 +18,7 @@ export default function KnowledgeBase() {
   const [items, setItems] = useState([]);
   const [categories, setCategories] = useState([]);
   const [tab, setTab] = useState("all");
+  const [search, setSearch] = useState("");
   const [form, setForm] = useState(emptyForm);
   const [editing, setEditing] = useState(null);
   const [open, setOpen] = useState(false);
@@ -61,7 +62,10 @@ export default function KnowledgeBase() {
     toast.success("Item dihapus"); load();
   };
 
-  const visible = items.filter((i) => tab === "all" ? true : i.category === tab);
+  const query = search.trim().toLowerCase();
+  const visible = items
+    .filter((i) => tab === "all" ? true : i.category === tab)
+    .filter((i) => !query || i.title.toLowerCase().includes(query) || i.content.toLowerCase().includes(query));
 
   return (
     <div>
@@ -78,6 +82,17 @@ export default function KnowledgeBase() {
       />
 
       <div className="p-8 space-y-6">
+        <div className="relative max-w-md">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]" />
+          <input
+            data-testid="kb-search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Cari judul atau isi konten..."
+            className="w-full pl-9 pr-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm bg-white"
+          />
+        </div>
+
         <div className="flex gap-2 flex-wrap">
           <FilterChip active={tab === "all"} onClick={() => setTab("all")} label="Semua" tid="kb-tab-all" count={items.length} />
           {categories.map((c) => (
@@ -92,7 +107,7 @@ export default function KnowledgeBase() {
 
         <div className="pelangi-panel overflow-hidden">
           {visible.length === 0 ? (
-            <EmptyState tid="kb-empty" title="Belum ada item pada kategori ini" />
+            <EmptyState tid="kb-empty" title={query ? `Tidak ada hasil untuk "${search}"` : "Belum ada item pada kategori ini"} />
           ) : (
             <div className="divide-y divide-[hsl(var(--border))]">
               {visible.map((item) => (

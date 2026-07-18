@@ -249,6 +249,8 @@ class SettingsIn(BaseModel):
     checkout_time: Optional[str] = None
     whatsapp_enabled: Optional[bool] = None
     show_stock_count: Optional[bool] = None
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
 
 
 # ---------- Availability ----------

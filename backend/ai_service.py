@@ -17,6 +17,15 @@ EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_PROVIDER = "openai"
 
+# Provider/model dipilih owner lewat Settings (db.settings.llm_provider/llm_model) - semua
+# di bawah ini jalan lewat EMERGENT_LLM_KEY yang sama (universal key, di-proxy
+# emergentintegrations), tidak butuh API key terpisah per provider.
+LLM_PROVIDER_OPTIONS = {
+    "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"],
+    "anthropic": ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"],
+    "gemini": ["gemini-2.0-flash", "gemini-1.5-pro"],
+}
+
 
 # SENGAJA cuma berisi persona/peran/data-access - GUARDRAIL, MENGIRIM FOTO, dan daftar
 # Tool SELALU dirender fresh oleh build_dynamic_prompt() dari TOOL_DOCS/bot.guardrail_rules
@@ -241,8 +250,13 @@ async def ai_reply(
     context_block: str,
     history_text: str,
     user_text: str,
+    provider: str = DEFAULT_PROVIDER,
+    model: str = DEFAULT_MODEL,
 ) -> str:
-    """Single-shot call. History is passed as compacted text within the system prompt."""
+    """Single-shot call. History is passed as compacted text within the system prompt.
+
+    provider/model dapat di-override lewat Settings (lihat GET/PUT /settings di server.py,
+    field llm_provider/llm_model) - default konstanta di atas dipakai kalau belum diisi."""
     full_system = (
         f"{system_prompt}\n\n"
         f"=== KONTEKS SAAT INI ===\n{context_block}\n=== AKHIR KONTEKS ===\n\n"
@@ -252,7 +266,7 @@ async def ai_reply(
         api_key=EMERGENT_LLM_KEY,
         session_id=session_id,
         system_message=full_system,
-    ).with_model(DEFAULT_PROVIDER, DEFAULT_MODEL)
+    ).with_model(provider or DEFAULT_PROVIDER, model or DEFAULT_MODEL)
 
     response = await chat.send_message(UserMessage(text=user_text))
     return response if isinstance(response, str) else str(response)

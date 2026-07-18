@@ -48,9 +48,9 @@ from models import (
     Workflow, WorkflowIn, WorkflowStep,
 )
 from ai_service import (
-    ALL_TOOL_CODES, DEFAULT_SYSTEM_PROMPT, ai_reply, compact_history,
-    build_context_block, build_dynamic_prompt, parse_tool_call,
-    SERVICE_MAP,
+    ALL_TOOL_CODES, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_SYSTEM_PROMPT, ai_reply,
+    compact_history, build_context_block, build_dynamic_prompt, parse_tool_call,
+    LLM_PROVIDER_OPTIONS, SERVICE_MAP,
 )
 from cloudinary_service import upload_image, upload_raw, delete_asset
 from rag_service import extract_text, chunk_text, bm25_search, build_rag_context
@@ -894,8 +894,12 @@ async def _run_chat_turn(
     context = await _build_context(query=message, bot=bot, whatsapp=conv.get("whatsapp") or whatsapp, rooms=rooms_now)
     history_text = compact_history(conv["messages"][:-1], max_turns=12)
 
+    settings_doc = await db.settings.find_one({"_id": "singleton"}) or {}
+    llm_provider = settings_doc.get("llm_provider") or DEFAULT_PROVIDER
+    llm_model = settings_doc.get("llm_model") or DEFAULT_MODEL
+
     # First AI turn
-    raw = await ai_reply(session_id, system_prompt, context, history_text, message)
+    raw = await ai_reply(session_id, system_prompt, context, history_text, message, llm_provider, llm_model)
     clean_text, tool, args = parse_tool_call(raw)
 
     tool_result = None
@@ -922,7 +926,7 @@ async def _run_chat_turn(
             conv["messages"] + [{"role": "assistant", "content": clean_text or "(tool call)"}],
             max_turns=14,
         )
-        follow_raw = await ai_reply(session_id, system_prompt, context, history_after, follow_up_user)
+        follow_raw = await ai_reply(session_id, system_prompt, context, history_after, follow_up_user, llm_provider, llm_model)
         follow_clean, _, _ = parse_tool_call(follow_raw)
         final_text = (clean_text + "\n\n" + follow_clean).strip() if clean_text else follow_clean
     else:
@@ -1332,6 +1336,11 @@ async def prompt_activate(prompt_id: str, user=Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 # SETTINGS
 # ---------------------------------------------------------------------------
+@api.get("/settings/llm-options")
+async def settings_llm_options(user=Depends(get_current_user)):
+    return {"providers": LLM_PROVIDER_OPTIONS, "default_provider": DEFAULT_PROVIDER, "default_model": DEFAULT_MODEL}
+
+
 @api.get("/settings")
 async def settings_get(user=Depends(get_current_user)):
     doc = await db.settings.find_one({"_id": "singleton"}) or {}
