@@ -7,7 +7,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import httpx
 from dotenv import load_dotenv
@@ -165,6 +165,39 @@ async def _pms_log(endpoint: str, method: str, status_code: Optional[int], laten
         pass  # logging tidak boleh menggagalkan alur utama
 
 
+# ---- Rate Limiting ----
+# In-memory murni (tanpa dependency baru/Redis) - cukup untuk deployment single-instance
+# seperti sekarang. Melindungi endpoint yang benar-benar publik lewat internet:
+# /auth/login (brute force password) dan /webhook/waha (endpoint token-only, bisa
+# dihajar dari IP mana pun kalau token bocor/ditebak).
+_rate_limit_buckets: Dict[str, List[float]] = {}
+
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def rate_limiter(max_requests: int, window_seconds: int):
+    async def _check(request: Request) -> None:
+        key = f"{request.url.path}:{_client_ip(request)}"
+        now = time.time()
+        cutoff = now - window_seconds
+        bucket = [t for t in _rate_limit_buckets.get(key, []) if t >= cutoff]
+        if len(bucket) >= max_requests:
+            _rate_limit_buckets[key] = bucket
+            raise HTTPException(429, "Terlalu banyak permintaan, coba lagi sebentar lagi")
+        bucket.append(now)
+        _rate_limit_buckets[key] = bucket
+        # Katup pengaman terhadap pertumbuhan dict tak terbatas (banyak IP unik/serangan
+        # terdistribusi) - jarang kena di skala 1 homestay, tapi murah untuk dijaga.
+        if len(_rate_limit_buckets) > 20000:
+            _rate_limit_buckets.clear()
+    return _check
+
+
 async def _audit_log(user: dict, action: str, detail: str = "") -> None:
     """AuditLogger - "siapa ubah apa kapan" untuk aksi admin sensitif. Pola sama dengan
     `log_activity` di Pelangi PMS (collection `audit_log`, dibaca dashboard sendiri lewat
@@ -218,7 +251,7 @@ async def root():
 # AUTH
 # ---------------------------------------------------------------------------
 @api.post("/auth/login", response_model=LoginResponse)
-async def login(body: LoginRequest):
+async def login(body: LoginRequest, _: None = Depends(rate_limiter(10, 60))):
     user = await db.users.find_one({"email": body.email.lower()})
     if not user or not verify_password(body.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Email atau password salah")
@@ -1320,7 +1353,7 @@ async def _waha_send_text(chat_id: str, text: str) -> None:
 
 
 @api.post("/webhook/waha")
-async def webhook_waha(request: Request, token: Optional[str] = None):
+async def webhook_waha(request: Request, token: Optional[str] = None, _: None = Depends(rate_limiter(30, 10))):
     """Dipanggil WAHA (gateway WhatsApp self-hosted) setiap ada pesan masuk. Publik (tidak
     ada login), jadi divalidasi lewat `?token=` yang harus cocok `WAHA_WEBHOOK_TOKEN` — pola
     sama seperti webhook masuk di Pelangi PMS (`webhook_config.webhook_token`). Reuse penuh
