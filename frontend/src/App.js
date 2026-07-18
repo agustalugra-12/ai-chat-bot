@@ -24,6 +24,7 @@ import BotDetail from "@/pages/ai/BotDetail";
 import ToolsCatalog from "@/pages/ai/ToolsCatalog";
 import IntentsCatalog from "@/pages/ai/IntentsCatalog";
 import WorkflowsCatalog from "@/pages/ai/WorkflowsCatalog";
+import AiRules from "@/pages/ai/AiRules";
 
 function ProtectedRoute({ children }) {
   const { user } = useAuth();
@@ -61,6 +62,7 @@ function App() {
             <Route path="ai/tools" element={<ToolsCatalog />} />
             <Route path="ai/intents" element={<IntentsCatalog />} />
             <Route path="ai/workflows" element={<WorkflowsCatalog />} />
+            <Route path="ai/rules" element={<AiRules />} />
             <Route path="analytics" element={<Analytics />} />
             <Route path="pms-integration" element={<PmsIntegration />} />
             <Route path="audit-log" element={<AuditLog />} />

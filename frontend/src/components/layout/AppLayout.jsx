@@ -5,7 +5,7 @@ import {
   LayoutDashboard, MessagesSquare, BotMessageSquare, BookOpenText,
   BedDouble, UtensilsCrossed, CalendarCheck2, Bell, FileTerminal,
   BarChart3, Settings as SettingsIcon, LogOut, Sparkles, FileStack,
-  Bot, Wrench, Target, Waypoints, ChevronDown, ChevronRight, Plug, ShieldCheck, Users,
+  Bot, Wrench, Target, Waypoints, ChevronDown, ChevronRight, Plug, ShieldCheck, ShieldAlert, Users,
 } from "lucide-react";
 
 const topNav = [
@@ -19,6 +19,7 @@ const aiSection = [
   { to: "/ai/tools", label: "Tools", icon: Wrench, tid: "nav-ai-tools" },
   { to: "/ai/intents", label: "Intents", icon: Target, tid: "nav-ai-intents" },
   { to: "/ai/workflows", label: "Workflows", icon: Waypoints, tid: "nav-ai-workflows" },
+  { to: "/ai/rules", label: "AI Rules", icon: ShieldAlert, tid: "nav-ai-rules" },
   { to: "/prompt", label: "Prompt (legacy)", icon: FileTerminal, tid: "nav-prompt" },
 ];
 
