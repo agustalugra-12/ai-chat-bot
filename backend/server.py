@@ -1517,13 +1517,22 @@ async def webhook_waha(request: Request, token: Optional[str] = None, _: None = 
         return {"ok": True, "diabaikan": "pesan keluar dari nomor bot sendiri"}
 
     chat_id = data.get("from") or ""
-    phone = chat_id.split("@")[0] if "@" in chat_id else chat_id
+    raw_id, _, domain = chat_id.partition("@")
     message = data.get("body") or ""
-    if not phone or not message:
+    if not raw_id or not message:
         return {"ok": True, "diabaikan": "tanpa nomor pengirim/isi pesan (kemungkinan pesan media)"}
 
-    guest_name = data.get("notifyName") or phone
-    session_id = f"wa-{phone}"
+    # WhatsApp punya fitur privasi "LID" (Linked ID) - sebagian pengirim dilaporkan WAHA
+    # lewat identifier "xxxx@lid", BUKAN "xxxx@c.us", dan angka di "xxxx" itu SAMA SEKALI
+    # BUKAN nomor telepon asli (ditemukan lewat laporan user 2026-07-18: link pembayaran
+    # gagal terkirim karena no_hp yang tersimpan ternyata LID, bukan nomor asli). Untuk
+    # domain selain c.us/s.whatsapp.net, JANGAN perlakukan raw_id sebagai nomor telepon -
+    # biarkan `whatsapp` kosong supaya AI (lewat create_booking dkk) tetap MEMINTA tamu
+    # ketik nomor WA asli secara eksplisit, bukan diam-diam pakai LID yang salah.
+    is_real_phone = domain in ("c.us", "s.whatsapp.net")
+    phone = raw_id if is_real_phone else None
+    guest_name = data.get("notifyName") or (phone if is_real_phone else "Tamu WhatsApp")
+    session_id = f"wa-{raw_id}"
 
     hasil = await _run_chat_turn(session_id, message, guest_name, phone, None, None, channel="whatsapp")
     if hasil.get("reply"):
