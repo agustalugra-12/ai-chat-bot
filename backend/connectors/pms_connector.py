@@ -34,12 +34,14 @@ PMS_DEFAULT_ENDPOINTS = {
 # Kapabilitas yang BENAR-BENAR tersambung ke kode (toggle di luar daftar ini boleh
 # disimpan tapi tidak akan pernah bikin AI melakukan apa pun - endpoint PMS-nya belum ada).
 # Jangan tambah entry baru di sini tanpa juga menyambungkan handler-nya di server.py.
-PMS_CAPABILITY_WIRED = {"check_availability", "create_booking", "create_maintenance_ticket", "check_booking_status"}
+PMS_CAPABILITY_WIRED = {"check_availability", "create_booking", "create_maintenance_ticket", "check_booking_status",
+                         "create_service_request"}
 PMS_DEFAULT_CAPABILITIES = {
     "check_availability": True,
     "create_booking": True,
     "check_booking_status": True,
     "create_maintenance_ticket": True,
+    "create_service_request": True,  # reuse endpoint tiket yang sama (tipe="service_request")
     "refund": False,                 # belum diimplementasikan
     "ota_sync": False,                # belum diimplementasikan
     "payment": False,                 # belum diimplementasikan
@@ -190,13 +192,16 @@ async def _pms_buat_booking_request(args: dict) -> dict:
 
 
 async def _pms_buat_tiket(tipe: str, deskripsi: str, whatsapp: str, guest_name: str = "") -> dict:
-    """Kirim tiket komplain/maintenance ke Pelangi PMS (reuse endpoint yang SUDAH ADA
-    sejak awal di sisi PMS, `/api/integrasi-ai-bot/tiket` - sebelumnya tidak pernah
+    """Kirim tiket komplain/maintenance/service_request ke Pelangi PMS (reuse endpoint yang
+    SUDAH ADA sejak awal di sisi PMS, `/api/integrasi-ai-bot/tiket` - sebelumnya tidak pernah
     dipanggil dari ai-chat-bot, tiket AI selalu nyasar ke `db.service_requests` lokal
-    yang tidak pernah dilihat staf PMS."""
+    yang tidak pernah dilihat staf PMS. `tipe` menentukan capability mana yang dicek -
+    complaint & maintenance masih dipayungi `create_maintenance_ticket`, service_request
+    (extra bed/towel/laundry/dll dari tool create_service_request) toggle sendiri."""
+    cap_key = "create_service_request" if tipe == "service_request" else "create_maintenance_ticket"
     cfg = await _pms_config()
-    if not cfg["capabilities"].get("create_maintenance_ticket"):
-        return {"ok": False, "error": "Fitur Buat Tiket Maintenance dinonaktifkan di panel Integrasi PMS"}
+    if not cfg["capabilities"].get(cap_key):
+        return {"ok": False, "error": f"Fitur '{cap_key}' dinonaktifkan di panel Integrasi PMS"}
     if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
         return {"ok": False, "error": "PMS URL/API Key belum dikonfigurasi"}
     payload = {"tipe": tipe, "deskripsi": deskripsi, "no_hp": whatsapp, "nama_tamu": guest_name}

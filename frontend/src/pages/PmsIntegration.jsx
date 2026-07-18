@@ -12,13 +12,14 @@ const CAP_LABELS = {
   create_booking: "Buat Booking",
   check_booking_status: "Cek Status Booking",
   create_maintenance_ticket: "Buat Tiket Maintenance",
+  create_service_request: "Buat Permintaan Layanan",
   refund: "Refund",
   ota_sync: "OTA Sync",
   payment: "Payment",
   checkin: "Check-in",
 };
-const CAP_WIRED = new Set(["check_availability", "create_booking", "create_maintenance_ticket", "check_booking_status"]);
-const CAP_ORDER = ["check_availability", "create_booking", "check_booking_status", "create_maintenance_ticket", "refund", "ota_sync", "payment", "checkin"];
+const CAP_WIRED = new Set(["check_availability", "create_booking", "create_maintenance_ticket", "check_booking_status", "create_service_request"]);
+const CAP_ORDER = ["check_availability", "create_booking", "check_booking_status", "create_maintenance_ticket", "create_service_request", "refund", "ota_sync", "payment", "checkin"];
 
 const SYNC_KINDS = [
   { key: "hotel_profile", label: "Hotel Profile" },

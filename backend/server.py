@@ -41,7 +41,6 @@ from models import (
     MenuItem, MenuItemIn,
     PromptIn, PromptVersion,
     Room, RoomIn,
-    ServiceRequest, ServiceRequestIn, ServiceRequestUpdate,
     Settings, SettingsIn,
     ToolCatalogItem, ToolIn,
     User,
@@ -416,37 +415,11 @@ async def guest_bookings(whatsapp: str, booking_id: Optional[str] = None):
     return [{**d, "id": d.pop("_id")} for d in docs]
 
 
-# ---------------------------------------------------------------------------
-# SERVICE REQUESTS
-# ---------------------------------------------------------------------------
-@api.get("/service-requests")
-async def sr_list(status_filter: Optional[str] = Query(None, alias="status"),
-                  user=Depends(get_current_user)):
-    q = {}
-    if status_filter:
-        q["status"] = status_filter
-    docs = await db.service_requests.find(q).sort("created_at", -1).to_list(500)
-    return [{**d, "id": d.pop("_id")} for d in docs]
-
-
-@api.post("/service-requests")
-async def sr_create(body: ServiceRequestIn, user=Depends(get_current_user)):
-    doc = {"_id": new_id(), **body.model_dump(),
-           "status": "new", "created_at": utc_now_iso()}
-    await db.service_requests.insert_one(doc)
-    return {**doc, "id": doc.pop("_id")}
-
-
-@api.patch("/service-requests/{item_id}")
-async def sr_update(item_id: str, body: ServiceRequestUpdate, user=Depends(get_current_user)):
-    upd = {k: v for k, v in body.model_dump().items() if v is not None}
-    if not upd:
-        raise HTTPException(400, "Empty update")
-    res = await db.service_requests.update_one({"_id": item_id}, {"$set": upd})
-    if not res.matched_count:
-        raise HTTPException(404, "Not found")
-    doc = await db.service_requests.find_one({"_id": item_id})
-    return {**doc, "id": doc.pop("_id")}
+# SERVICE REQUESTS: dihapus 2026-07-19 — sebelumnya endpoint lokal (db.service_requests)
+# yang tidak pernah dilihat staf PMS (bug). Sekarang create_service_request diteruskan
+# langsung ke Pelangi PMS (lihat _tool_create_service_request, reuse endpoint tiket) - PMS
+# jadi satu-satunya tempat staf melihat & menyelesaikan permintaan ini (halaman baru
+# /service-requests di PMS), tidak ada lagi salinan lokal di ai-chat-bot.
 
 
 # ---------------------------------------------------------------------------
@@ -729,23 +702,35 @@ async def _tool_create_booking(args: dict, conv: dict) -> dict:
         return {"ok": False, "tool": "create_booking", "error": str(e)}
 
 
+SERVICE_TYPE_LABEL = {
+    "extra_bed": "Extra Bed", "extra_towel": "Extra Towel", "mineral_water": "Air Mineral",
+    "cleaning": "Cleaning", "laundry": "Laundry", "motor_rental": "Sewa Motor",
+    "airport_pickup": "Airport Pickup", "extra_breakfast": "Extra Breakfast",
+}
+
+
 @register_tool("create_service_request", {"restaurant_order", "laundry_request", "housekeeping_request",
                                            "room_service", "airport_pickup", "motor_rental"})
 async def _tool_create_service_request(args: dict, conv: dict) -> dict:
+    """Diteruskan ke Pelangi PMS sebagai tiket (tipe='service_request', reuse mekanisme
+    komplain/maintenance yang sama supaya staf benar-benar melihat & bisa menindaklanjuti -
+    sebelumnya cuma tersimpan di db.service_requests lokal ai-chat-bot yang tidak pernah
+    dilihat staf PMS (bug ditemukan 2026-07-19)."""
     try:
-        doc = {
-            "_id": new_id(),
-            "guest_name": args.get("guest_name") or conv.get("guest_name") or "Guest",
-            "whatsapp": args.get("whatsapp") or conv.get("whatsapp") or "-",
-            "booking_id": args.get("booking_id"),
-            "service_type": args["service_type"],
-            "quantity": int(args.get("quantity", 1)),
-            "notes": args.get("notes"),
-            "status": "new",
-            "created_at": utc_now_iso(),
-        }
-        await db.service_requests.insert_one(doc)
-        return {"ok": True, "tool": "create_service_request", "request_id": doc["_id"]}
+        service_type = args.get("service_type")
+        if not service_type:
+            return {"ok": False, "tool": "create_service_request", "error": "missing service_type"}
+        label = SERVICE_TYPE_LABEL.get(service_type, service_type)
+        qty = int(args.get("quantity", 1))
+        notes = (args.get("notes") or "").strip()
+        deskripsi = f"{label} x{qty}" + (f". Catatan: {notes}" if notes else "")
+        whatsapp = args.get("whatsapp") or conv.get("whatsapp") or ""
+        guest_name = args.get("guest_name") or conv.get("guest_name") or ""
+        hasil = await _pms_buat_tiket("service_request", deskripsi, whatsapp, guest_name)
+        if not hasil.get("ok"):
+            return {"ok": False, "tool": "create_service_request", "error": hasil.get("error")}
+        tiket = hasil.get("tiket") or {}
+        return {"ok": True, "tool": "create_service_request", "request_id": tiket.get("id")}
     except Exception as e:
         return {"ok": False, "tool": "create_service_request", "error": str(e)}
 

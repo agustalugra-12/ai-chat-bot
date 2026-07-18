@@ -64,7 +64,7 @@ TOOL_DOCS = {
     "create_booking": '- create_booking (BUKAN booking final, cuma permintaan yang ditinjau resepsionis) : args {"guest_name":"...","whatsapp":"...","tipe":"day_use"|"menginap","room_tipe":__ROOM_TIPE__,"tanggal_checkin":"YYYY-MM-DD","jam_checkin":"HH:mm" (wajib jika day_use),"tanggal_checkout":"YYYY-MM-DD" (wajib jika menginap),"jumlah_kamar":1,"jumlah_tamu":1,"payment_option":"dp50"|"full" (opsional)}',
     "lookup_booking": '- lookup_booking : args {"whatsapp":"..."}',
     "cancel_booking": '- cancel_booking : args {"booking_id":"..."}',
-    "create_service_request": '- create_service_request : args {"guest_name":"...","whatsapp":"...","service_type":"extra_bed|extra_towel|mineral_water|cleaning|laundry|motor_rental|airport_pickup|extra_breakfast","quantity":1,"notes":"..."}',
+    "create_service_request": '- create_service_request (tiket masuk ke PMS, dipantau staf) : args {"guest_name":"...","whatsapp":"...","service_type":"extra_bed|extra_towel|mineral_water|cleaning|laundry|motor_rental|airport_pickup|extra_breakfast","quantity":1,"notes":"..."}',
     "create_maintenance_ticket": '- create_maintenance_ticket (tiket masuk ke PMS, dipantau staf) : args {"tipe":"complaint"|"maintenance","deskripsi":"...","guest_name":"...","whatsapp":"..."}. Pakai "maintenance" utk kerusakan fasilitas (AC/TV/air/listrik dst), "complaint" utk keluhan pelayanan/kebersihan yang BUKAN kerusakan alat.',
     "request_handover": '- request_handover : args {"reason":"..."}',
     "remember_guest_fact": '- remember_guest_fact : args {"whatsapp":"...","fact":"..."}. WAJIB dipanggil SETIAP KALI tamu minta sesuatu "dicatat"/"diingat", atau menyebutkan preferensi kamar, alergi/pantangan, nama panggilan, kebiasaan yang relevan untuk kunjungan berikutnya. JANGAN PERNAH bilang "sudah saya catat"/"baik, dicatat" ke tamu TANPA benar-benar memanggil tool ini di baris yang sama - mengaku mencatat tanpa memanggil tool = BOHONG, datanya tidak benar-benar tersimpan. JANGAN dipakai untuk data booking/transaksi (itu sudah otomatis tersimpan di PMS) - HANYA fakta personal/preferensi tamu.',
@@ -102,12 +102,13 @@ def build_dynamic_prompt(bot: dict, room_types: Optional[List[str]] = None) -> s
         exposed.add("cancel_booking")
     if "request_handover" in tool_codes:
         exposed.add("request_handover")
-    # any service-request-like tool → expose create_service_request
+    # any service-request-like tool → expose create_service_request (tiket masuk PMS,
+    # bukan db.service_requests lokal - lihat _tool_create_service_request di server.py)
     service_like = {"restaurant_order", "laundry_request", "housekeeping_request",
                     "room_service", "airport_pickup", "motor_rental"}
     if service_like.intersection(tool_codes):
         exposed.add("create_service_request")
-    # maintenance_request/complaint_ticket → tiket masuk PMS (bukan db.service_requests lokal)
+    # maintenance_request/complaint_ticket → tiket masuk PMS
     maintenance_like = {"maintenance_request", "complaint_ticket"}
     if maintenance_like.intersection(tool_codes):
         exposed.add("create_maintenance_ticket")

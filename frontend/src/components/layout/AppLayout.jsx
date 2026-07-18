@@ -3,7 +3,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
 import {
   LayoutDashboard, MessagesSquare, BotMessageSquare, BookOpenText,
-  BedDouble, UtensilsCrossed, CalendarCheck2, Bell, FileTerminal,
+  BedDouble, UtensilsCrossed, CalendarCheck2, FileTerminal,
   BarChart3, Settings as SettingsIcon, LogOut, Sparkles, FileStack,
   Bot, Wrench, Target, Waypoints, ChevronDown, ChevronRight, Plug, ShieldCheck, ShieldAlert, Users,
 } from "lucide-react";
@@ -33,7 +33,6 @@ const dataSection = [
 
 const opsSection = [
   { to: "/bookings", label: "Booking", icon: CalendarCheck2, tid: "nav-bookings" },
-  { to: "/service-requests", label: "Service Requests", icon: Bell, tid: "nav-service" },
 ];
 
 const bottomNav = [

@@ -11,7 +11,6 @@ import KnowledgeBase from "@/pages/KnowledgeBase";
 import Rooms from "@/pages/Rooms";
 import RestaurantMenu from "@/pages/RestaurantMenu";
 import Bookings from "@/pages/Bookings";
-import ServiceRequests from "@/pages/ServiceRequests";
 import PromptManagement from "@/pages/PromptManagement";
 import Analytics from "@/pages/Analytics";
 import Settings from "@/pages/Settings";
@@ -54,7 +53,6 @@ function App() {
             <Route path="rooms" element={<Rooms />} />
             <Route path="menu" element={<RestaurantMenu />} />
             <Route path="bookings" element={<Bookings />} />
-            <Route path="service-requests" element={<ServiceRequests />} />
             <Route path="prompt" element={<PromptManagement />} />
             <Route path="rag" element={<RagDocuments />} />
             <Route path="ai/bots" element={<BotList />} />
