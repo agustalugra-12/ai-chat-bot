@@ -1,4 +1,10 @@
-"""Pelangi Homestay Guest AI — FastAPI backend."""
+"""Pelangi AI — AI Customer Service Platform (FastAPI backend).
+
+Brain Platform reusable lintas channel (WhatsApp/website chat/dst, lihat
+connectors/waha_connector.py untuk adapter WhatsApp) & lintas bisnis (Business System
+Connector, lihat connectors/pms_connector.py untuk integrasi Pelangi PMS) - bukan
+"AI WhatsApp Bot" yang terikat satu channel/satu bisnis (PRD v2, 2026-07-19).
+"""
 import os
 import asyncio
 import logging
@@ -120,7 +126,7 @@ async def _audit_log(user: dict, action: str, detail: str = "") -> None:
         pass  # logging tidak boleh menggagalkan alur utama
 
 
-app = FastAPI(title="Pelangi Homestay Guest AI")
+app = FastAPI(title="Pelangi AI — Customer Service Platform")
 api = APIRouter(prefix="/api")
 
 logging.basicConfig(

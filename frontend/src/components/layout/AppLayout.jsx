@@ -73,7 +73,7 @@ export default function AppLayout() {
           </div>
           <div>
             <div className="font-[Manrope] font-bold text-[15px] leading-tight">Pelangi AI</div>
-            <div className="text-[11px] text-[hsl(var(--muted-foreground))] uppercase tracking-widest">Guest Console</div>
+            <div className="text-[11px] text-[hsl(var(--muted-foreground))] uppercase tracking-widest">Customer Service Platform</div>
           </div>
         </div>
 
