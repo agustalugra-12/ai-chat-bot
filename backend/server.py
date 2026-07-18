@@ -113,6 +113,7 @@ PMS_INTEGRATION_DEFAULT = {
     "pms_base_url": "",
     "pms_api_key": "",
     "webhook_token": None,
+    "send_message_api_key": None,
     "bot_whatsapp_number": "",
     "endpoints": dict(PMS_DEFAULT_ENDPOINTS),
     "capabilities": dict(PMS_DEFAULT_CAPABILITIES),
@@ -125,7 +126,7 @@ PMS_INTEGRATION_DEFAULT = {
 
 async def _pms_config() -> dict:
     """Config PMS Integration siap pakai - auto-seed dari env lama + auto-generate
-    webhook_token kalau dokumen belum pernah dibuat (migrasi aman, sama pola dengan
+    webhook_token/send_message_api_key kalau belum ada (migrasi aman, sama pola dengan
     `webhook_token` di Pelangi PMS sendiri)."""
     cfg = await db.pms_integration_config.find_one({"_id": "singleton"})
     if not cfg:
@@ -133,8 +134,12 @@ async def _pms_config() -> dict:
         cfg["pms_base_url"] = PMS_API_BASE_URL
         cfg["pms_api_key"] = PMS_API_KEY
         cfg["webhook_token"] = WAHA_WEBHOOK_TOKEN or secrets.token_hex(20)
+        cfg["send_message_api_key"] = secrets.token_hex(20)
         cfg["updated_at"] = utc_now_iso()
         await db.pms_integration_config.insert_one(cfg)
+    elif not cfg.get("send_message_api_key"):
+        cfg["send_message_api_key"] = secrets.token_hex(20)
+        await db.pms_integration_config.update_one({"_id": "singleton"}, {"$set": {"send_message_api_key": cfg["send_message_api_key"]}})
     merged = {**PMS_INTEGRATION_DEFAULT, **cfg}
     merged["endpoints"] = {**PMS_DEFAULT_ENDPOINTS, **(cfg.get("endpoints") or {})}
     merged["capabilities"] = {**PMS_DEFAULT_CAPABILITIES, **(cfg.get("capabilities") or {})}
@@ -1433,10 +1438,10 @@ async def pms_integration_sync(jenis: str, user=Depends(get_current_user)):
     return result
 
 
-async def _waha_send_text(chat_id: str, text: str) -> None:
+async def _waha_send_text(chat_id: str, text: str) -> bool:
     if not WAHA_BASE_URL or not WAHA_API_KEY:
         logging.getLogger("waha").warning("WAHA_BASE_URL/WAHA_API_KEY belum diisi — balasan tidak terkirim ke tamu")
-        return
+        return False
     try:
         async with httpx.AsyncClient(timeout=15) as http:
             resp = await http.post(
@@ -1446,8 +1451,43 @@ async def _waha_send_text(chat_id: str, text: str) -> None:
             )
             if resp.status_code >= 400:
                 logging.getLogger("waha").warning(f"WAHA sendText gagal HTTP {resp.status_code}: {resp.text[:300]}")
+                return False
+            return True
     except Exception as e:
         logging.getLogger("waha").warning(f"Gagal memanggil WAHA sendText: {e}")
+        return False
+
+
+class SendMessageIn(BaseModel):
+    to: str
+    message: str
+
+
+@api.post("/send-message")
+async def send_message_relay(body: SendMessageIn, request: Request, _rl: None = Depends(rate_limiter(30, 10))):
+    """Relay pesan keluar sistem (BUKAN balasan AI) - dipanggil Pelangi PMS untuk notifikasi
+    yang PMS sendiri yang memutuskan isinya (link pembayaran Tripay saat booking request
+    disetujui, konfirmasi tolak, dst - lihat routes/booking_requests.py di repo PMS).
+    Sengaja kontraknya sama persis dengan provider WA generik lama ({to, message} +
+    Authorization Bearer) supaya PMS bisa memakai mekanisme `_kirim_via_provider` yang SUDAH
+    ADA tanpa perlu perubahan kode PMS - cukup arahkan Konfigurasi Webhook (provider
+    "Lainnya/Custom API") ke endpoint ini. Auth pakai `send_message_api_key` sendiri
+    (BUKAN pms_api_key - itu arah sebaliknya, ai-chat-bot->PMS), supaya kedua arah panggilan
+    punya kredensial masing-masing yang bisa di-revoke terpisah."""
+    cfg = await _pms_config()
+    auth = request.headers.get("Authorization", "")
+    key = auth[7:] if auth.startswith("Bearer ") else ""
+    if not cfg.get("send_message_api_key") or not key or not secrets.compare_digest(key, cfg["send_message_api_key"]):
+        raise HTTPException(401, "API key tidak valid")
+
+    digits = re.sub(r"\D", "", body.to or "")
+    if not digits or not body.message.strip():
+        raise HTTPException(400, "to/message tidak valid")
+    ok = await _waha_send_text(f"{digits}@c.us", body.message)
+    await _pms_log("/send-message", "POST", 200 if ok else 502, 0, ok, f"to {digits}")
+    if not ok:
+        raise HTTPException(502, "Gagal mengirim pesan lewat WAHA")
+    return {"ok": True}
 
 
 @api.post("/webhook/waha")
