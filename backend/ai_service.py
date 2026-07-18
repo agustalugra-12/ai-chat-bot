@@ -47,9 +47,12 @@ ALL_TOOL_CODES = [
 ]
 
 
+# __ROOM_TIPE__ diganti build_dynamic_prompt() dengan tipe kamar LIVE dari PMS (bukan
+# hardcode) - ai-chat-bot dirancang reusable lintas bisnis (bukan cuma Pelangi), jadi
+# prompt tool TIDAK BOLEH menyebut nama tipe kamar tetap punya satu hotel tertentu.
 TOOL_DOCS = {
-    "check_availability": '- check_availability : args {"tanggal_checkin":"YYYY-MM-DD","tanggal_checkout":"YYYY-MM-DD" (opsional, hanya menginap >1 malam),"tipe":"Standard"|"Cottage" (opsional)}',
-    "create_booking": '- create_booking (BUKAN booking final, cuma permintaan yang ditinjau resepsionis) : args {"guest_name":"...","whatsapp":"...","tipe":"day_use"|"menginap","room_tipe":"Standard"|"Cottage","tanggal_checkin":"YYYY-MM-DD","jam_checkin":"HH:mm" (wajib jika day_use),"tanggal_checkout":"YYYY-MM-DD" (wajib jika menginap),"jumlah_kamar":1,"jumlah_tamu":1,"payment_option":"dp50"|"full" (opsional)}',
+    "check_availability": '- check_availability : args {"tanggal_checkin":"YYYY-MM-DD","tanggal_checkout":"YYYY-MM-DD" (opsional, hanya menginap >1 malam),"tipe":__ROOM_TIPE__ (opsional)}',
+    "create_booking": '- create_booking (BUKAN booking final, cuma permintaan yang ditinjau resepsionis) : args {"guest_name":"...","whatsapp":"...","tipe":"day_use"|"menginap","room_tipe":__ROOM_TIPE__,"tanggal_checkin":"YYYY-MM-DD","jam_checkin":"HH:mm" (wajib jika day_use),"tanggal_checkout":"YYYY-MM-DD" (wajib jika menginap),"jumlah_kamar":1,"jumlah_tamu":1,"payment_option":"dp50"|"full" (opsional)}',
     "lookup_booking": '- lookup_booking : args {"whatsapp":"..."}',
     "cancel_booking": '- cancel_booking : args {"booking_id":"..."}',
     "create_service_request": '- create_service_request : args {"guest_name":"...","whatsapp":"...","service_type":"extra_bed|extra_towel|mineral_water|cleaning|laundry|motor_rental|airport_pickup|extra_breakfast","quantity":1,"notes":"..."}',
@@ -71,8 +74,11 @@ SERVICE_MAP = {
 }
 
 
-def build_dynamic_prompt(bot: dict) -> str:
-    """Build the runtime system prompt from a bot config."""
+def build_dynamic_prompt(bot: dict, room_types: Optional[List[str]] = None) -> str:
+    """Build the runtime system prompt from a bot config. `room_types` HARUS diisi live
+    dari PMS (lihat _pms_ketersediaan di server.py) - jangan pernah hardcode nama tipe
+    kamar di sini, supaya ai-chat-bot tetap bisa dipakai bisnis lain dengan tipe kamar
+    berbeda tanpa ubah kode."""
     tool_codes = bot.get("tool_codes", [])
     # Which AI-tools to expose
     # remember_guest_fact SELALU ada, tidak digating per bot - baseline memory hygiene.
@@ -98,6 +104,8 @@ def build_dynamic_prompt(bot: dict) -> str:
         exposed.add("create_maintenance_ticket")
 
     tool_docs = "\n".join(TOOL_DOCS[t] for t in exposed if t in TOOL_DOCS) or "(tidak ada tool)"
+    room_tipe_literal = " | ".join(f'"{t}"' for t in room_types) if room_types else '"(tanya check_availability dulu untuk tau tipe kamar yang ada)"'
+    tool_docs = tool_docs.replace("__ROOM_TIPE__", room_tipe_literal)
 
     allowed_services = bot.get("allowed_service_types") or []
     service_note = ""

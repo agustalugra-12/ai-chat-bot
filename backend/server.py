@@ -657,14 +657,15 @@ async def _load_active_prompt() -> str:
     return (doc or {}).get("content") or DEFAULT_SYSTEM_PROMPT
 
 
-async def _system_prompt_for(bot: Optional[dict]) -> str:
+async def _system_prompt_for(bot: Optional[dict], room_types: Optional[List[str]] = None) -> str:
     """Satu-satunya jalur pembentuk system prompt, dipakai baik ada AIBot spesifik maupun
-    tidak (jalur legacy /prompt) - GUARDRAIL/MENGIRIM FOTO/daftar Tool SELALU dirender
-    fresh oleh build_dynamic_prompt(), tidak pernah dari salinan statis yang bisa basi."""
+    tidak (jalur legacy /prompt) - GUARDRAIL/MENGIRIM FOTO/daftar Tool/tipe kamar SELALU
+    dirender fresh oleh build_dynamic_prompt() dari data live, tidak pernah dari salinan
+    statis yang bisa basi atau nama tipe kamar yang di-hardcode."""
     if bot:
-        return build_dynamic_prompt(bot)
+        return build_dynamic_prompt(bot, room_types=room_types)
     header = await _load_active_prompt()
-    return build_dynamic_prompt({"prompt": header, "tool_codes": ALL_TOOL_CODES})
+    return build_dynamic_prompt({"prompt": header, "tool_codes": ALL_TOOL_CODES}, room_types=room_types)
 
 
 async def _load_bot(bot_id: Optional[str], bot_code: Optional[str]) -> dict:
@@ -855,8 +856,10 @@ async def _get_guest_profile(whatsapp: Optional[str]) -> Optional[dict]:
     return await db.guest_profiles.find_one({"_id": key})
 
 
-async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None, whatsapp: Optional[str] = None) -> str:
-    rooms = await _pms_ketersediaan()
+async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None, whatsapp: Optional[str] = None,
+                          rooms: Optional[List[dict]] = None) -> str:
+    if rooms is None:
+        rooms = await _pms_ketersediaan()
     menu = await db.menu.find({}).to_list(500)
     kb_q = {"is_active": True}
     if bot and bot.get("knowledge_categories"):
@@ -1072,9 +1075,13 @@ async def _run_chat_turn(
     allowed_tool_codes = set(bot.get("tool_codes", [])) if bot else set()
     allowed_services = set(bot.get("allowed_service_types", [])) if bot else set()
 
-    # Build prompt inputs
-    system_prompt = await _system_prompt_for(bot)
-    context = await _build_context(query=message, bot=bot, whatsapp=conv.get("whatsapp") or whatsapp)
+    # Build prompt inputs - ketersediaan diambil SEKALI, dipakai untuk context (harga/stok)
+    # DAN prompt (daftar tipe kamar valid untuk tool), supaya tidak 2x panggil PMS per pesan
+    # dan supaya tipe kamar yang disebut AI selalu konsisten dengan yang di-tampilkan.
+    rooms_now = await _pms_ketersediaan()
+    room_types = sorted({r["tipe"] for r in rooms_now if r.get("tipe")})
+    system_prompt = await _system_prompt_for(bot, room_types=room_types)
+    context = await _build_context(query=message, bot=bot, whatsapp=conv.get("whatsapp") or whatsapp, rooms=rooms_now)
     history_text = compact_history(conv["messages"][:-1], max_turns=12)
 
     # First AI turn
