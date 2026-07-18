@@ -42,7 +42,7 @@ from models import (
     Workflow, WorkflowIn, WorkflowStep,
 )
 from ai_service import (
-    DEFAULT_SYSTEM_PROMPT, ai_reply, compact_history,
+    ALL_TOOL_CODES, DEFAULT_SYSTEM_PROMPT, ai_reply, compact_history,
     build_context_block, build_dynamic_prompt, parse_tool_call,
     SERVICE_MAP,
 )
@@ -618,6 +618,16 @@ async def _load_active_prompt() -> str:
     return (doc or {}).get("content") or DEFAULT_SYSTEM_PROMPT
 
 
+async def _system_prompt_for(bot: Optional[dict]) -> str:
+    """Satu-satunya jalur pembentuk system prompt, dipakai baik ada AIBot spesifik maupun
+    tidak (jalur legacy /prompt) - GUARDRAIL/MENGIRIM FOTO/daftar Tool SELALU dirender
+    fresh oleh build_dynamic_prompt(), tidak pernah dari salinan statis yang bisa basi."""
+    if bot:
+        return build_dynamic_prompt(bot)
+    header = await _load_active_prompt()
+    return build_dynamic_prompt({"prompt": header, "tool_codes": ALL_TOOL_CODES})
+
+
 async def _load_bot(bot_id: Optional[str], bot_code: Optional[str]) -> dict:
     """Load a bot config; falls back to booking_marketing."""
     if bot_id:
@@ -948,7 +958,7 @@ async def _run_chat_turn(
     allowed_services = set(bot.get("allowed_service_types", [])) if bot else set()
 
     # Build prompt inputs
-    system_prompt = build_dynamic_prompt(bot) if bot else await _load_active_prompt()
+    system_prompt = await _system_prompt_for(bot)
     context = await _build_context(query=message, bot=bot)
     history_text = compact_history(conv["messages"][:-1], max_turns=12)
 
