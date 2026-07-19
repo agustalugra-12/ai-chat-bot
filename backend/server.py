@@ -49,7 +49,7 @@ from models import (
 )
 from ai_service import (
     ALL_TOOL_CODES, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_SYSTEM_PROMPT, ai_reply,
-    compact_history, build_context_block, build_dynamic_prompt, parse_tool_call,
+    compact_history, build_context_block, build_dynamic_prompt, parse_tool_call, parse_img_markers,
     LLM_PROVIDER_OPTIONS, SERVICE_MAP,
 )
 from cloudinary_service import upload_image, upload_raw, delete_asset
@@ -65,7 +65,7 @@ from seed import seed_all
 # Lihat connectors/__init__.py untuk penjelasan pembagian tanggung jawabnya.
 from connectors.waha_connector import (
     WAHA_BASE_URL, WAHA_API_KEY, WAHA_SESSION, WAHA_WEBHOOK_TOKEN,
-    _waha_call, _waha_send_text, _waha_list_sessions, _waha_ensure_session,
+    _waha_call, _waha_send_text, _waha_send_image, _waha_list_sessions, _waha_ensure_session,
 )
 from connectors.pms_connector import (
     PMS_API_BASE_URL, PMS_API_KEY, PMS_DEFAULT_ENDPOINTS,
@@ -1388,7 +1388,18 @@ async def webhook_waha(request: Request, token: Optional[str] = None, _: None = 
         # bersamaan. HANYA di jalur WhatsApp asli - Chat Simulator (staf uji coba) tetap
         # instan supaya tidak memperlambat proses testing.
         await asyncio.sleep(random.uniform(3, 5))
-        await _waha_send_text(chat_id, hasil["reply"], session=waha_session)
+        # Marker [[IMG: url]] dikonversi jadi foto SUNGGUHAN via WAHA sendImage, bukan
+        # dikirim sebagai teks mentah (bug ditemukan 2026-07-19 dari riwayat chat nyata -
+        # tamu menerima literal "[[IMG: https://...]]"). Caption tiap foto = nama room
+        # kalau URL-nya cocok dengan foto room (photo_url/images) yang tersimpan, supaya
+        # rapi & jelas foto kamar yang mana - bukan cuma link polos.
+        clean_text, image_urls = parse_img_markers(hasil["reply"])
+        if clean_text:
+            await _waha_send_text(chat_id, clean_text, session=waha_session)
+        for url in image_urls:
+            room = await db.rooms.find_one({"$or": [{"photo_url": url}, {"images.url": url}]})
+            caption = room["name"] if room else ""
+            await _waha_send_image(chat_id, url, caption, session=waha_session)
     return {"ok": True}
 
 

@@ -245,6 +245,7 @@ class SettingsIn(BaseModel):
     address: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
+    maps_url: Optional[str] = None
     checkin_time: Optional[str] = None
     checkout_time: Optional[str] = None
     whatsapp_enabled: Optional[bool] = None

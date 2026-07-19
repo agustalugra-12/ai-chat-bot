@@ -69,6 +69,35 @@ async def _waha_send_text(chat_id: str, text: str, session: str = WAHA_SESSION) 
         return False
 
 
+async def _waha_send_image(chat_id: str, image_url: str, caption: str = "", session: str = WAHA_SESSION) -> bool:
+    """Kirim foto SUNGGUHAN (bukan cuma link teks) - dipanggil untuk tiap marker
+    [[IMG: url]] yang AI sisipkan di balasannya (lihat parse_img_markers di
+    ai_service.py). Ditemukan 2026-07-19 lewat riwayat chat nyata: marker itu
+    SEBELUMNYA tidak pernah diproses sama sekali, jadi tamu menerima teks mentah
+    "[[IMG: https://...]]" alih-alih foto - bug ditemukan & baru diperbaiki di sini."""
+    if not WAHA_BASE_URL or not WAHA_API_KEY:
+        logging.getLogger("waha").warning("WAHA_BASE_URL/WAHA_API_KEY belum diisi — foto tidak terkirim ke tamu")
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.post(
+                f"{WAHA_BASE_URL.rstrip('/')}/api/sendImage",
+                headers={"X-Api-Key": WAHA_API_KEY},
+                json={
+                    "session": session, "chatId": chat_id,
+                    "file": {"mimetype": "image/jpeg", "url": image_url},
+                    "caption": caption or "",
+                },
+            )
+            if resp.status_code >= 400:
+                logging.getLogger("waha").warning(f"WAHA sendImage gagal HTTP {resp.status_code}: {resp.text[:300]}")
+                return False
+            return True
+    except Exception as e:
+        logging.getLogger("waha").warning(f"Gagal memanggil WAHA sendImage: {e}")
+        return False
+
+
 async def _waha_list_sessions() -> list:
     """Semua session WAHA (nomor WA) yang ada, apapun statusnya - dipakai panel koneksi
     supaya owner lihat semua nomor sekaligus, bukan cuma satu."""

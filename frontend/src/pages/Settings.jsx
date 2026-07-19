@@ -237,6 +237,10 @@ export default function Settings() {
           <F label="Alamat">
             <input data-testid="set-address" value={s.address || ""} onChange={(e) => setS({ ...s, address: e.target.value })} className="w-full px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm" />
           </F>
+          <F label="Link Google Maps">
+            <input data-testid="set-maps-url" value={s.maps_url || ""} onChange={(e) => setS({ ...s, maps_url: e.target.value })} placeholder="https://maps.app.goo.gl/..." className="w-full px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm" />
+            <div className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1">Dibagikan AI kalau tamu tanya lokasi/peta. Ambil dari Google Maps → cari lokasi → tombol "Bagikan" → salin link.</div>
+          </F>
           <div className="grid grid-cols-2 gap-3">
             <F label="Telepon"><input data-testid="set-phone" value={s.phone || ""} onChange={(e) => setS({ ...s, phone: e.target.value })} className="w-full px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm" /></F>
             <F label="Email"><input data-testid="set-email" value={s.email || ""} onChange={(e) => setS({ ...s, email: e.target.value })} className="w-full px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm" /></F>

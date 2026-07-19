@@ -172,10 +172,11 @@ Tulis balasan alami ke tamu dulu (1-4 kalimat), lalu marker [[IMG: ...]] bila ki
 def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], settings: dict) -> str:
     """Build a compact context string for the AI."""
     parts = []
+    maps_line = f"Google Maps: {settings['maps_url']}\n" if settings.get("maps_url") else ""
     parts.append(f"# INFO HOTEL\nNama: {settings.get('hotel_name','Pelangi Homestay')}\n"
                  f"Alamat: {settings.get('address','-')}\n"
                  f"Check-in: {settings.get('checkin_time','14:00')} | Check-out: {settings.get('checkout_time','12:00')}\n"
-                 f"Telepon: {settings.get('phone','-')}\n")
+                 f"Telepon: {settings.get('phone','-')}\n" + maps_line)
 
     if rooms:
         # Data live dari Pelangi PMS (bukan data lokal ai-chat-bot) - lihat _pms_ketersediaan
@@ -213,6 +214,21 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
                 parts.append(f"Foto: {', '.join(urls[:5])}")
 
     return "\n".join(parts)
+
+
+def parse_img_markers(response_text: str) -> tuple:
+    """Cabut semua marker [[IMG: url]] dari teks balasan AI, kembalikan (teks_bersih,
+    [url, ...]) - dipanggil SEBELUM parse_tool_call (marker TOOL ada di baris paling
+    akhir, IMG bisa di tengah teks). Ditemukan 2026-07-19: marker ini sudah lama ada di
+    prompt (lihat build_dynamic_prompt) tapi TIDAK PERNAH benar-benar diproses di
+    server.py - tamu menerima teks mentah "[[IMG: https://...]]" alih-alih foto
+    sungguhan selama ini."""
+    urls = re.findall(r"\[\[IMG:\s*(\S+?)\s*\]\]", response_text)
+    clean = re.sub(r"\[\[IMG:\s*\S+?\s*\]\]", "", response_text)
+    clean = re.sub(r"[ \t]{2,}", " ", clean)  # rapikan spasi ganda bekas marker inline
+    clean = re.sub(r"[ \t]+\n", "\n", clean)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, urls
 
 
 def parse_tool_call(response_text: str):
