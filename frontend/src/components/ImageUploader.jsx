@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
-import { Upload, X, Loader2 } from "lucide-react";
+import { Upload, X, Loader2, Star } from "lucide-react";
 
 /**
  * ImageUploader - handles multi-image upload to Cloudinary via backend.
@@ -11,8 +11,10 @@ import { Upload, X, Loader2 } from "lucide-react";
  *   folder: "pelangi/kb" | "pelangi/rooms" | "pelangi/menu"
  *   max: number of images (default 5)
  *   tid: data-testid prefix
+ *   primaryUrl / onSetPrimary: opsional - kalau diisi, tiap thumbnail dapat tombol
+ *   bintang untuk pilih foto utama dari galeri (bukan ketik URL manual).
  */
-export function ImageUploader({ value = [], onChange, folder = "pelangi/kb", max = 5, tid = "uploader" }) {
+export function ImageUploader({ value = [], onChange, folder = "pelangi/kb", max = 5, tid = "uploader", primaryUrl, onSetPrimary }) {
   const inputRef = useRef();
   const [busy, setBusy] = useState(false);
 
@@ -57,6 +59,17 @@ export function ImageUploader({ value = [], onChange, folder = "pelangi/kb", max
         {(value || []).map((img, i) => (
           <div key={img.public_id || i} className="relative w-20 h-20 rounded-md overflow-hidden border border-[hsl(var(--border))] group" data-testid={`${tid}-thumb-${i}`}>
             <img src={img.url} alt="" className="w-full h-full object-cover" />
+            {onSetPrimary && (
+              <button
+                type="button"
+                data-testid={`${tid}-primary-${i}`}
+                onClick={() => onSetPrimary(img.url)}
+                title="Jadikan foto utama"
+                className={`absolute top-1 left-1 w-5 h-5 rounded-full grid place-items-center transition-opacity ${img.url === primaryUrl ? "bg-amber-400 text-white opacity-100" : "bg-white/80 text-[hsl(var(--muted-foreground))] opacity-0 group-hover:opacity-100 hover:text-amber-500"}`}
+              >
+                <Star className="w-3 h-3" fill={img.url === primaryUrl ? "currentColor" : "none"} />
+              </button>
+            )}
             <button
               type="button"
               data-testid={`${tid}-remove-${i}`}

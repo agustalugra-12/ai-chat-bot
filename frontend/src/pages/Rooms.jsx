@@ -123,10 +123,6 @@ export default function Rooms() {
               <input data-testid="room-form-units" type="number" value={form.total_units} onChange={(e) => setForm({ ...form, total_units: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm" />
             </div>
             <div className="col-span-2">
-              <label className="text-xs font-medium">URL Foto Utama (opsional)</label>
-              <input data-testid="room-form-photo" value={form.photo_url || ""} onChange={(e) => setForm({ ...form, photo_url: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm" />
-            </div>
-            <div className="col-span-2">
               <label className="text-xs font-medium">Galeri Foto (dikirim AI ke tamu)</label>
               <div className="mt-1">
                 <ImageUploader
@@ -135,7 +131,10 @@ export default function Rooms() {
                   folder="pelangi/rooms"
                   max={6}
                   tid="room-uploader"
+                  primaryUrl={form.photo_url}
+                  onSetPrimary={(url) => setForm({ ...form, photo_url: url })}
                 />
+                <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1.5">Klik ikon bintang pada foto untuk jadikan foto utama (ditampilkan di kartu kamar).</p>
               </div>
             </div>
             <div className="col-span-2">
