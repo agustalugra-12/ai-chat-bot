@@ -88,7 +88,9 @@ TOOL_DOCS = {
     '"waiting_approval" = permintaan Menginap (selalu lewat review staf, jelaskan itu ke tamu BUKAN otomatis) ATAU Day Use yang belum bisa auto-approve karena alasan lain (mis. booking group >1 kamar) - jelaskan akan ditinjau staf dulu. '
     'Kalau hasil tool memuat "diskon_member_persen", WAJIB sampaikan ke tamu di konfirmasi (mis. "Selamat, ini kedatangan ke-{kedatangan_ke} Anda - dapat diskon member {diskon_member_persen}%!") - kalau tidak ada field itu, jangan sebut-sebut diskon sama sekali.',
     "lookup_booking": '- lookup_booking : args {"whatsapp":"..."}',
-    "cancel_booking": '- cancel_booking (BUKAN pembatalan final - permintaan yang ditinjau staf, cuma memberi info ke PMS) : args {"whatsapp":"...","kode":"...","alasan":"..." (opsional)}. "kode" WAJIB kode booking sungguhan dari lookup_booking (field booking_ringkasan.kode, mis. "BKO-..."), BUKAN kode permintaan booking. Kebijakan refund: H-7 s/d H-3 sebelum check-in = refund 100%, H-2 s/d hari check-in = biaya 50% (berlaku day_use & menginap) - sampaikan kebijakan ini ke tamu SEBELUM memanggil tool, dan jelaskan bahwa staf akan meninjau & refund ditransfer manual setelah disetujui.',
+    "cancel_booking": '- cancel_booking (BUKAN pembatalan final - permintaan yang ditinjau staf, cuma memberi info ke PMS) : args {"whatsapp":"...","kode":"...","alasan":"..." (opsional)}. "kode" WAJIB kode booking sungguhan dari lookup_booking (field booking_ringkasan.kode, mis. "BKO-..."), BUKAN kode permintaan booking. '
+    'SEBELUM memanggil tool: sampaikan garis besar kebijakan (H-7 s/d H-3 sebelum check-in = refund 100%, H-2 s/d hari check-in = biaya 50%, berlaku day_use & menginap) dan bahwa staf akan meninjau & refund ditransfer manual setelah disetujui - ini cuma perkiraan kasar untuk tamu, JANGAN sebut angka rupiah pasti di tahap ini. '
+    'SETELAH tool berhasil (ok=true): hasil tool memuat "policy_label" (teks kebijakan yang BENAR-BENAR berlaku, dihitung server dari tanggal check-in asli, SATU-SATUNYA sumber kebenaran) dan "refund_estimate" (perkiraan rupiah). WAJIB KUTIP ULANG isi "policy_label" APA ADANYA (copy persis, jangan parafrase/tulis ulang dari ingatanmu) + sebutkan refund_estimate dalam Rupiah - CONTOH kalimat yang benar: "Sesuai kebijakan kami: {policy_label}. Perkiraan refund: Rp{refund_estimate}." JANGAN PERNAH menyebut hitungan H-berapa/persentase versi kamu sendiri di balasan ini walau kamu SUDAH menyebutkannya sebelum tool dipanggil - field ini sering beda dari perkiraan kasarmu tadi, dan field inilah yang benar.',
     "create_service_request": '- create_service_request (tiket masuk ke PMS, dipantau staf) : args {"guest_name":"...","whatsapp":"...","service_type":"extra_bed|extra_towel|mineral_water|cleaning|laundry|motor_rental|airport_pickup|extra_breakfast","quantity":1,"notes":"..."}',
     "create_maintenance_ticket": '- create_maintenance_ticket (tiket masuk ke PMS, dipantau staf) : args {"tipe":"complaint"|"maintenance","deskripsi":"...","guest_name":"...","whatsapp":"..."}. Pakai "maintenance" utk kerusakan fasilitas (AC/TV/air/listrik dst), "complaint" utk keluhan pelayanan/kebersihan yang BUKAN kerusakan alat.',
     "request_handover": '- request_handover : args {"reason":"..."}',
@@ -172,6 +174,14 @@ dari memori/training sendiri - selalu hitung dari tanggal hari ini di atas.
 
 ## GUARDRAIL (WAJIB DIPATUHI)
 {guard_block}
+
+## KODE BOOKING (BKO-.../REQ-...)
+Kode booking SELALU berformat lengkap dengan akhiran acak setelah tanda hubung terakhir
+(contoh: BKO-20260719234332-4051, BUKAN cuma BKO-20260719234332). JANGAN PERNAH memotong,
+menyingkat, atau menulis ulang dari ingatan sendiri saat menyebutkannya ke tamu ATAU saat
+memakainya sebagai argumen tool - SELALU salin PERSIS string kode dari hasil tool
+sebelumnya (mis. field "kode" di hasil lookup_booking), karakter demi karakter. Kode yang
+salah 1 karakter pun akan gagal total saat dipakai tool lain.
 
 ## MENGIRIM FOTO
 Kalau tamu minta foto (kamar tertentu dari "# FOTO KAMAR", atau foto lain dari baris
