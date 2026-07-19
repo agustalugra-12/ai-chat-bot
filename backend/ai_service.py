@@ -9,6 +9,7 @@ Handles:
 import os
 import json
 import re
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
@@ -76,7 +77,11 @@ ALL_TOOL_CODES = [
 # prompt tool TIDAK BOLEH menyebut nama tipe kamar tetap punya satu hotel tertentu.
 TOOL_DOCS = {
     "check_availability": '- check_availability : args {"tanggal_checkin":"YYYY-MM-DD","tanggal_checkout":"YYYY-MM-DD" (opsional, hanya menginap >1 malam),"tipe":__ROOM_TIPE__ (opsional)}',
-    "create_booking": '- create_booking (BUKAN booking final, cuma permintaan yang ditinjau resepsionis) : args {"guest_name":"...","whatsapp":"...","tipe":"day_use"|"menginap","room_tipe":__ROOM_TIPE__,"tanggal_checkin":"YYYY-MM-DD","jam_checkin":"HH:mm" (wajib jika day_use),"tanggal_checkout":"YYYY-MM-DD" (wajib jika menginap),"jumlah_kamar":1,"jumlah_tamu":1,"payment_option":"dp50"|"full" (opsional)}. Kalau hasil tool memuat "diskon_member_persen", WAJIB sampaikan ke tamu di konfirmasi (mis. "Selamat, ini kedatangan ke-{kedatangan_ke} Anda - dapat diskon member {diskon_member_persen}%!") - kalau tidak ada field itu, jangan sebut-sebut diskon sama sekali.',
+    "create_booking": '- create_booking : args {"guest_name":"...","whatsapp":"...","tipe":"day_use"|"menginap","room_tipe":__ROOM_TIPE__,"tanggal_checkin":"YYYY-MM-DD","jam_checkin":"HH:mm" (wajib jika day_use),"tanggal_checkout":"YYYY-MM-DD" (wajib jika menginap),"jumlah_kamar":1,"jumlah_tamu":1,"payment_option":"dp50"|"full" (WAJIB - lihat aturan di bawah)}. '
+    'ATURAN WAJIB sebelum memanggil tool ini: SELALU tanya dulu ke tamu secara eksplisit "mau bayar DP 50% atau lunas?" dan TUNGGU jawabannya - JANGAN PERNAH memanggil create_booking tanpa payment_option terisi jawaban tamu yang sebenarnya, walau tamu sudah kasih semua data lain sekaligus dalam 1 pesan (nama+HP+tanggal+kamar). Kalau tamu belum jawab soal DP/lunas, balas dulu menanyakan itu, JANGAN panggil tool. '
+    'Untuk Day Use: begitu payment_option terisi dan kamar tersedia, sistem OTOMATIS mengonfirmasi booking & mengirim link bayar - JANGAN bilang "akan segera diproses" atau "ditinjau dulu", karena day use LANGSUNG jadi begitu tool ini dipanggil (lihat hasil tool: kalau ada field "checkout_url", itu sudah booking sungguhan+link bayar, sampaikan ke tamu apa adanya, JANGAN bilang menunggu). '
+    'Untuk Menginap: tetap perlu ditinjau staf dulu (jelaskan ke tamu bahwa akan dikonfirmasi staf, BUKAN otomatis). '
+    'Kalau hasil tool memuat "diskon_member_persen", WAJIB sampaikan ke tamu di konfirmasi (mis. "Selamat, ini kedatangan ke-{kedatangan_ke} Anda - dapat diskon member {diskon_member_persen}%!") - kalau tidak ada field itu, jangan sebut-sebut diskon sama sekali.',
     "lookup_booking": '- lookup_booking : args {"whatsapp":"..."}',
     "cancel_booking": '- cancel_booking (BUKAN pembatalan final - permintaan yang ditinjau staf, cuma memberi info ke PMS) : args {"whatsapp":"...","kode":"...","alasan":"..." (opsional)}. "kode" WAJIB kode booking sungguhan dari lookup_booking (field booking_ringkasan.kode, mis. "BKO-..."), BUKAN kode permintaan booking. Kebijakan refund: H-7 s/d H-3 sebelum check-in = refund 100%, H-2 s/d hari check-in = biaya 50% (berlaku day_use & menginap) - sampaikan kebijakan ini ke tamu SEBELUM memanggil tool, dan jelaskan bahwa staf akan meninjau & refund ditransfer manual setelah disetujui.',
     "create_service_request": '- create_service_request (tiket masuk ke PMS, dipantau staf) : args {"guest_name":"...","whatsapp":"...","service_type":"extra_bed|extra_towel|mineral_water|cleaning|laundry|motor_rental|airport_pickup|extra_breakfast","quantity":1,"notes":"..."}',
@@ -144,7 +149,18 @@ def build_dynamic_prompt(bot: dict, room_types: Optional[List[str]] = None) -> s
 
     header = bot.get("prompt") or ""
 
+    hari_id = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
+    now_wib = datetime.now(timezone.utc) + timedelta(hours=7)
+    tanggal_line = f"{hari_id[now_wib.weekday()]}, {now_wib.strftime('%Y-%m-%d')} (jam {now_wib.strftime('%H:%M')} WIB)"
+
     return f"""{header}
+
+## TANGGAL & WAKTU SAAT INI
+Hari ini: {tanggal_line}. WAJIB pakai ini sebagai acuan SATU-SATUNYA untuk menghitung
+tanggal - baik yang relatif ("besok", "lusa", "minggu depan", "hari Sabtu ini") maupun
+yang disebut tanpa tahun (mis. "25 Juli" = tahun berjalan di atas, KECUALI kalau
+tanggalnya sudah lewat tahun ini baru pakai tahun depan). JANGAN PERNAH menebak tahun
+dari memori/training sendiri - selalu hitung dari tanggal hari ini di atas.
 
 ## PERSONA
 {persona_line}

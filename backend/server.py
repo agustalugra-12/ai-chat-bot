@@ -705,6 +705,9 @@ async def _tool_create_booking(args: dict, conv: dict) -> dict:
                 return {"ok": False, "tool": "create_booking", "error": f"missing {k}"}
         if args["tipe"] not in ("day_use", "menginap"):
             return {"ok": False, "tool": "create_booking", "error": "tipe harus 'day_use' atau 'menginap'"}
+        if args.get("payment_option") not in ("dp50", "full"):
+            return {"ok": False, "tool": "create_booking",
+                     "error": "payment_option wajib diisi 'dp50' atau 'full' - TANYA dulu ke tamu mau DP 50% atau lunas, JANGAN panggil tool ini sebelum tamu menjawab"}
         hasil = await _pms_buat_booking_request(args)
         if not hasil.get("ok"):
             return {"ok": False, "tool": "create_booking", "error": hasil.get("error")}
