@@ -52,7 +52,7 @@ from ai_service import (
     LLM_PROVIDER_OPTIONS, SERVICE_MAP,
 )
 from cloudinary_service import upload_image, upload_raw, delete_asset
-from rag_service import extract_text, chunk_text, bm25_search, build_rag_context
+from rag_service import extract_text, chunk_text, hybrid_search, build_rag_context, get_embeddings_batch
 from seed import seed_all
 
 # ---------------------------------------------------------------------------
@@ -644,9 +644,9 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
     # RAG augmentation
     if query:
         try:
-            chunks = await db.rag_chunks.find({}, {"_id": 1, "doc_id": 1, "doc_title": 1, "text": 1}).to_list(2000)
-            chunks_norm = [{"id": c["_id"], "doc_id": c["doc_id"], "doc_title": c.get("doc_title", "doc"), "text": c["text"]} for c in chunks]
-            hits = bm25_search(query, chunks_norm, k=5)
+            chunks = await db.rag_chunks.find({}, {"_id": 1, "doc_id": 1, "doc_title": 1, "text": 1, "embedding": 1}).to_list(2000)
+            chunks_norm = [{"id": c["_id"], "doc_id": c["doc_id"], "doc_title": c.get("doc_title", "doc"), "text": c["text"], "embedding": c.get("embedding")} for c in chunks]
+            hits = await hybrid_search(query, chunks_norm, k=5)
             rag = build_rag_context(hits)
             if rag:
                 base = base + "\n\n" + rag
@@ -1520,6 +1520,12 @@ async def rag_docs_upload(
     # 3. Chunk & store
     chunks = chunk_text(text, chunk_size=600, overlap=100)
     doc_id = new_id()
+
+    # 4. Embed tiap chunk (batch 1x call) - gagal/tidak dikonfigurasi TIDAK PERNAH
+    # menggagalkan upload, chunk-nya tetap tersimpan & tetap bisa dicari lewat BM25
+    # (lihat hybrid_search di rag_service.py).
+    embeddings = await get_embeddings_batch(chunks) if chunks else None
+
     doc = {
         "_id": doc_id,
         "title": filename,
@@ -1528,6 +1534,7 @@ async def rag_docs_upload(
         "public_id": cloud.get("public_id"),
         "chunk_count": len(chunks),
         "char_count": len(text),
+        "embedded": bool(embeddings),
         "created_at": utc_now_iso(),
         "created_by": user.get("email"),
     }
@@ -1535,7 +1542,8 @@ async def rag_docs_upload(
 
     chunk_docs = [{
         "_id": new_id(), "doc_id": doc_id, "doc_title": filename,
-        "index": i, "text": ch, "created_at": utc_now_iso(),
+        "index": i, "text": ch, "embedding": (embeddings[i] if embeddings else None),
+        "created_at": utc_now_iso(),
     } for i, ch in enumerate(chunks)]
     if chunk_docs:
         await db.rag_chunks.insert_many(chunk_docs)
@@ -1558,10 +1566,12 @@ async def rag_docs_delete(doc_id: str, user=Depends(get_current_user)):
 
 @api.get("/rag/search")
 async def rag_search(q: str, k: int = 5, user=Depends(get_current_user)):
-    """Debug endpoint: run BM25 over all chunks."""
-    chunks = await db.rag_chunks.find({}, {"_id": 1, "doc_id": 1, "doc_title": 1, "text": 1}).to_list(2000)
-    norm = [{"id": c["_id"], "doc_id": c["doc_id"], "doc_title": c.get("doc_title", "doc"), "text": c["text"]} for c in chunks]
-    hits = bm25_search(q, norm, k=k)
+    """Debug endpoint: run hybrid BM25+semantic search over all chunks."""
+    chunks = await db.rag_chunks.find({}, {"_id": 1, "doc_id": 1, "doc_title": 1, "text": 1, "embedding": 1}).to_list(2000)
+    norm = [{"id": c["_id"], "doc_id": c["doc_id"], "doc_title": c.get("doc_title", "doc"), "text": c["text"], "embedding": c.get("embedding")} for c in chunks]
+    hits = await hybrid_search(q, norm, k=k)
+    for h in hits:
+        h.pop("embedding", None)
     return {"query": q, "hits": hits}
 
 

@@ -95,6 +95,7 @@ export default function RagDocuments() {
                     <div className="font-medium truncate">{d.title}</div>
                     <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
                       <Badge tone="muted">{d.chunk_count} chunks</Badge>
+                      <Badge tone={d.embedded ? "success" : "warn"}>{d.embedded ? "semantic search" : "keyword search saja"}</Badge>
                       <span className="ml-2">{(d.char_count / 1000).toFixed(1)}k karakter</span>
                       <span className="ml-2">· {new Date(d.created_at).toLocaleString("id-ID")}</span>
                     </div>
