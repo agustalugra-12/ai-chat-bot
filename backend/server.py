@@ -700,7 +700,13 @@ async def _tool_create_booking(args: dict, conv: dict) -> dict:
             return {"ok": False, "tool": "create_booking", "error": hasil.get("error")}
         await db.conversations.update_one({"_id": conv["_id"]}, {"$set": {"booking_created": True}})
         br = hasil.get("booking_request") or {}
-        return {"ok": True, "tool": "create_booking", "booking_request_id": br.get("id"), "kode": br.get("kode")}
+        result = {"ok": True, "tool": "create_booking", "booking_request_id": br.get("id"), "kode": br.get("kode")}
+        # Program Loyalitas Kedatangan - kalau tamu dapat diskon member, sampaikan di sini
+        # supaya AI menyebutkannya ke tamu (lihat instruksi di TOOL_DOCS ai_service.py).
+        if br.get("preview_diskon_persen"):
+            result["diskon_member_persen"] = br["preview_diskon_persen"]
+            result["kedatangan_ke"] = br["preview_kedatangan_ke"]
+        return result
     except Exception as e:
         return {"ok": False, "tool": "create_booking", "error": str(e)}
 
