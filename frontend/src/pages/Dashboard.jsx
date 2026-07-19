@@ -7,14 +7,15 @@ import { ArrowUpRight, Zap, MessagesSquare, CalendarCheck2, Clock3, TrendingUp }
 export default function Dashboard() {
   const [data, setData] = useState(null);
   const [convs, setConvs] = useState([]);
-  const [srs, setSrs] = useState([]);
 
   useEffect(() => {
+    // Service Requests dipindah ke PMS (2026-07-19, reuse sistem tiket) - ai-chat-bot
+    // tidak lagi punya data ini sendiri, jadi tidak dipanggil di sini lagi (endpoint-nya
+    // sudah dihapus, dulu bikin Promise.all ini gagal total & seluruh Dashboard kosong).
     Promise.all([
       api.get("/analytics/summary").then((r) => r.data),
       api.get("/conversations").then((r) => r.data.slice(0, 6)),
-      api.get("/service-requests").then((r) => r.data.filter((s) => s.status !== "done").slice(0, 5)),
-    ]).then(([a, c, s]) => { setData(a); setConvs(c); setSrs(s); });
+    ]).then(([a, c]) => { setData(a); setConvs(c); });
   }, []);
 
   const fmt = (ms) => {
@@ -53,9 +54,9 @@ export default function Dashboard() {
             hint={<span className="inline-flex items-center gap-1"><Clock3 className="w-3 h-3" /> rata-rata</span>} />
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 gap-6">
           {/* Recent conversations */}
-          <div className="pelangi-panel lg:col-span-2">
+          <div className="pelangi-panel">
             <div className="flex items-center justify-between px-5 py-4 border-b border-[hsl(var(--border))]">
               <div>
                 <div className="font-[Manrope] font-semibold">Percakapan Terbaru</div>
@@ -89,29 +90,6 @@ export default function Dashboard() {
                     </Badge>
                   </div>
                 </Link>
-              ))}
-            </div>
-          </div>
-
-          {/* Service requests */}
-          <div className="pelangi-panel">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-[hsl(var(--border))]">
-              <div>
-                <div className="font-[Manrope] font-semibold">Service Requests</div>
-                <div className="text-xs text-[hsl(var(--muted-foreground))]">Perlu ditindaklanjuti</div>
-              </div>
-              <Link to="/service-requests" className="text-xs text-[hsl(var(--primary))] font-medium inline-flex items-center gap-1" data-testid="link-see-all-sr">
-                Lihat <ArrowUpRight className="w-3 h-3" />
-              </Link>
-            </div>
-            <div className="divide-y divide-[hsl(var(--border))]">
-              {srs.length === 0 && <div className="p-6 text-center text-sm text-[hsl(var(--muted-foreground))]">Kosong. Semua request selesai ✓</div>}
-              {srs.map((s) => (
-                <div key={s.id} className="px-5 py-3">
-                  <div className="text-sm font-medium">{s.service_type.replace(/_/g, " ")}</div>
-                  <div className="text-xs text-[hsl(var(--muted-foreground))]">{s.guest_name} · qty {s.quantity}</div>
-                  <div className="mt-1"><Badge tone={s.status === "new" ? "warn" : "primary"}>{s.status}</Badge></div>
-                </div>
               ))}
             </div>
           </div>
