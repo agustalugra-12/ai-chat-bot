@@ -69,9 +69,12 @@ from connectors.waha_connector import (
 from connectors.pms_connector import (
     PMS_API_BASE_URL, PMS_API_KEY, PMS_DEFAULT_ENDPOINTS,
     PMS_CAPABILITY_WIRED, PMS_DEFAULT_CAPABILITIES, PMS_INTEGRATION_DEFAULT,
-    SYNC_KINDS, SYNC_NOT_AVAILABLE,
+    SYNC_KINDS,
     _pms_config, _pms_log, _pms_ketersediaan, _pms_buat_booking_request,
-    _pms_buat_tiket, _pms_status_booking, _sync_business_rules,
+    _pms_buat_tiket, _pms_status_booking, _pms_ajukan_pembatalan, _sync_business_rules,
+)
+from connectors.webpelangi_connector import (
+    _web_content_config, _sync_hotel_profile, _sync_faq,
 )
 
 
@@ -766,6 +769,27 @@ async def _tool_lookup_booking(args: dict, conv: dict) -> dict:
     return {"ok": True, "tool": "lookup_booking", "result": hasil.get("permintaan") or []}
 
 
+@register_tool("cancel_booking", {"cancel_booking"})
+async def _tool_cancel_booking(args: dict, conv: dict) -> dict:
+    """Non-binding - AI TIDAK PERNAH langsung membatalkan booking sungguhan (sama seperti
+    create_booking), cuma menyampaikan info ke PMS lewat _pms_ajukan_pembatalan; PMS
+    mencatat & staf approve/reject manual. `kode` WAJIB kode booking sungguhan (BKO-...,
+    didapat dari lookup_booking -> booking_ringkasan.kode), bukan kode booking_request."""
+    kode = (args.get("kode") or "").strip()
+    if not kode:
+        return {"ok": False, "tool": "cancel_booking", "error": "missing kode - pakai lookup_booking dulu untuk dapat kode booking"}
+    wa = args.get("whatsapp") or conv.get("whatsapp")
+    if not wa:
+        return {"ok": False, "tool": "cancel_booking", "error": "missing whatsapp"}
+    hasil = await _pms_ajukan_pembatalan(kode, wa, args.get("alasan") or "")
+    if not hasil.get("ok"):
+        return {"ok": False, "tool": "cancel_booking", "error": hasil.get("error")}
+    return {
+        "ok": True, "tool": "cancel_booking", "kode": hasil.get("kode"),
+        "policy_label": hasil.get("policy_label"), "refund_estimate": hasil.get("refund_estimate"),
+    }
+
+
 @register_tool("request_handover", {"request_handover"})
 async def _tool_request_handover(args: dict, conv: dict) -> dict:
     await db.conversations.update_one(
@@ -1163,21 +1187,12 @@ async def guest_profiles_list(search: Optional[str] = None, limit: int = Query(1
 
 @api.post("/pms-integration/sync/{jenis}")
 async def pms_integration_sync(jenis: str, user=Depends(get_current_user)):
-    """`rule` benar-benar sync dari PMS (routes/business_rules.py di sana). hotel_profile/
-    faq/prompt masih placeholder JUJUR - PMS belum expose endpoint-nya, tombol tetap ada
-    (sesuai desain panel) tapi melapor apa adanya, BUKAN pura-pura berhasil."""
+    """Cuma `rule` (Business Rules) yang benar-benar dimiliki PMS - lihat
+    connectors/webpelangi_connector.py untuk sync hotel_profile/FAQ (sumbernya web-pelangi,
+    bukan PMS)."""
     if jenis not in SYNC_KINDS:
         raise HTTPException(404, f"Jenis sync tidak dikenal: {jenis}")
-
-    if jenis in SYNC_NOT_AVAILABLE:
-        result = {
-            "ok": False,
-            "message": f"Endpoint PMS untuk '{jenis}' belum tersedia - sync ini akan aktif setelah endpoint terkait dibangun di PMS.",
-            "at": utc_now_iso(),
-        }
-    else:
-        result = await _sync_business_rules()
-
+    result = await _sync_business_rules()
     await db.pms_integration_config.update_one(
         {"_id": "singleton"}, {"$set": {f"last_sync.{jenis}": result}}, upsert=True,
     )
@@ -1185,6 +1200,41 @@ async def pms_integration_sync(jenis: str, user=Depends(get_current_user)):
     return result
 
 
+# ---------------------------------------------------------------------------
+# WEB CONTENT INTEGRATION (web-pelangi - sumber hotel_profile/FAQ, BUKAN PMS)
+# ---------------------------------------------------------------------------
+WEB_CONTENT_SYNC_KINDS = {"hotel_profile": _sync_hotel_profile, "faq": _sync_faq}
+
+
+@api.get("/web-content-integration")
+async def web_content_integration_get(user=Depends(get_current_user)):
+    return await _web_content_config()
+
+
+class WebContentIntegrationIn(BaseModel):
+    base_url: Optional[str] = None
+
+
+@api.put("/web-content-integration")
+async def web_content_integration_update(body: WebContentIntegrationIn, user=Depends(get_current_user)):
+    upd = {k: v for k, v in body.model_dump().items() if v is not None}
+    upd["updated_at"] = utc_now_iso()
+    await db.web_content_integration_config.update_one({"_id": "singleton"}, {"$set": upd}, upsert=True)
+    await _audit_log(user, "update_web_content_integration", "Update konfigurasi sync konten web-pelangi")
+    return await _web_content_config()
+
+
+@api.post("/web-content-integration/sync/{jenis}")
+async def web_content_integration_sync(jenis: str, user=Depends(get_current_user)):
+    fn = WEB_CONTENT_SYNC_KINDS.get(jenis)
+    if not fn:
+        raise HTTPException(404, f"Jenis sync tidak dikenal: {jenis}")
+    result = await fn()
+    await db.web_content_integration_config.update_one(
+        {"_id": "singleton"}, {"$set": {f"last_sync.{jenis}": result}}, upsert=True,
+    )
+    await _audit_log(user, f"web_content_sync_{jenis}", result.get("message", ""))
+    return result
 
 
 class SendMessageIn(BaseModel):

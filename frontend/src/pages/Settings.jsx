@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { PageHeader, Badge } from "@/components/ui-parts";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
-import { Save, Wifi, WifiOff, Loader2, RefreshCw } from "lucide-react";
+import { Save, Wifi, WifiOff, Loader2, RefreshCw, Globe, Check, XCircle } from "lucide-react";
 
 const WAHA_STATUS_LABEL = {
   WORKING: { label: "Terhubung", tone: "success" },
@@ -180,6 +180,91 @@ function ModelLLM({ s, setS }) {
   );
 }
 
+const WEB_SYNC_KINDS = [
+  { key: "hotel_profile", label: "Profil Hotel", hint: "Nama, alamat, telepon, email → Informasi Hotel di atas" },
+  { key: "faq", label: "FAQ", hint: "Pertanyaan umum → Knowledge Base kategori FAQ" },
+];
+
+function SinkronisasiWebPelangi() {
+  const [cfg, setCfg] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [result, setResult] = useState({});
+
+  const load = async () => setCfg((await api.get("/web-content-integration")).data);
+  useEffect(() => { load(); }, []);
+
+  const saveUrl = async () => {
+    try {
+      await api.put("/web-content-integration", { base_url: cfg.base_url });
+      toast.success("URL tersimpan");
+    } catch (e) { toast.error(e?.response?.data?.detail || "Gagal menyimpan"); }
+  };
+
+  const doSync = async (jenis) => {
+    setBusy(jenis);
+    try {
+      const { data } = await api.post(`/web-content-integration/sync/${jenis}`);
+      setResult((r) => ({ ...r, [jenis]: data }));
+      if (data.ok) toast.success(data.message); else toast.error(data.message);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Gagal sync");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (!cfg) return null;
+
+  return (
+    <div className="pelangi-panel p-5 space-y-4">
+      <div className="flex items-center gap-2 font-[Manrope] font-semibold">
+        <Globe className="w-4 h-4" /> Sinkronisasi Konten Web-Pelangi
+      </div>
+      <div className="text-xs text-[hsl(var(--muted-foreground))]">
+        Profil hotel & FAQ ditarik dari situs marketing (pelangihomestay.com) supaya tidak perlu diisi dua kali.
+      </div>
+      <div>
+        <label className="text-xs font-medium">URL API Konten</label>
+        <div className="mt-1 flex gap-2">
+          <input
+            data-testid="web-content-url"
+            value={cfg.base_url || ""}
+            onChange={(e) => setCfg({ ...cfg, base_url: e.target.value })}
+            className="flex-1 px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm"
+          />
+          <button onClick={saveUrl} className="text-sm px-3 py-2 rounded-md border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]">Simpan</button>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {WEB_SYNC_KINDS.map((s) => {
+          const res = result[s.key] || cfg.last_sync?.[s.key];
+          return (
+            <div key={s.key} className="px-3 py-2 rounded-md border border-[hsl(var(--border))] space-y-1">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium">{s.label}</div>
+                  <div className="text-[11px] text-[hsl(var(--muted-foreground))]">{s.hint}</div>
+                </div>
+                <button
+                  data-testid={`web-sync-${s.key}`} onClick={() => doSync(s.key)} disabled={busy === s.key}
+                  className="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md border border-[hsl(var(--border))] hover:bg-stone-50 disabled:opacity-50 shrink-0"
+                >
+                  {busy === s.key ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />} Sync
+                </button>
+              </div>
+              {res && (
+                <div className={`text-[11px] flex items-center gap-1 ${res.ok ? "text-emerald-600" : "text-red-600"}`}>
+                  {res.ok ? <Check className="w-3 h-3" /> : <XCircle className="w-3 h-3" />} {res.message}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function Settings() {
   const [s, setS] = useState(null);
 
@@ -254,6 +339,7 @@ export default function Settings() {
         </div>
 
         <ModelLLM s={s} setS={setS} />
+        <SinkronisasiWebPelangi />
         <KoneksiWhatsApp />
       </div>
     </div>

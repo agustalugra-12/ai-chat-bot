@@ -29,20 +29,22 @@ PMS_DEFAULT_ENDPOINTS = {
     "tiket_path": "/api/integrasi-ai-bot/tiket",
     "rules_path": "/api/integrasi-ai-bot/rules",
     "booking_status_path": "/api/integrasi-ai-bot/booking-status",
+    "cancel_request_path": "/api/integrasi-ai-bot/cancel-request",
 }
 
 # Kapabilitas yang BENAR-BENAR tersambung ke kode (toggle di luar daftar ini boleh
 # disimpan tapi tidak akan pernah bikin AI melakukan apa pun - endpoint PMS-nya belum ada).
 # Jangan tambah entry baru di sini tanpa juga menyambungkan handler-nya di server.py.
 PMS_CAPABILITY_WIRED = {"check_availability", "create_booking", "create_maintenance_ticket", "check_booking_status",
-                         "create_service_request"}
+                         "create_service_request", "cancel_booking"}
 PMS_DEFAULT_CAPABILITIES = {
     "check_availability": True,
     "create_booking": True,
     "check_booking_status": True,
     "create_maintenance_ticket": True,
     "create_service_request": True,  # reuse endpoint tiket yang sama (tipe="service_request")
-    "refund": False,                 # belum diimplementasikan
+    "cancel_booking": True,          # non-binding - PMS cuma mencatat permintaan, staf approve/reject manual
+    "refund": False,                 # belum diimplementasikan (transfer uang tetap manual staf)
     "ota_sync": False,                # belum diimplementasikan
     "payment": False,                 # belum diimplementasikan
     "checkin": False,                 # belum diimplementasikan
@@ -254,8 +256,41 @@ async def _pms_status_booking(whatsapp: str) -> dict:
         return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}
 
 
-SYNC_KINDS = {"hotel_profile", "faq", "prompt", "rule"}
-SYNC_NOT_AVAILABLE = {"hotel_profile", "faq", "prompt"}  # PMS belum expose endpointnya
+async def _pms_ajukan_pembatalan(kode: str, whatsapp: str, alasan: str = "") -> dict:
+    """Ajukan permintaan pembatalan booking ke Pelangi PMS - NON-BINDING, sama seperti
+    _pms_buat_booking_request (AI TIDAK PERNAH mengeksekusi pembatalan sungguhan langsung,
+    cuma menyampaikan info; PMS mencatat & staf approve/reject manual, lihat
+    routes/pembatalan.py di repo PMS untuk kebijakan refund H-3/50%)."""
+    cfg = await _pms_config()
+    if not cfg["capabilities"].get("cancel_booking"):
+        return {"ok": False, "error": "Fitur Cancel Booking dinonaktifkan di panel Integrasi PMS"}
+    if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
+        return {"ok": False, "error": "PMS URL/API Key belum dikonfigurasi"}
+    payload = {"kode": kode, "no_hp": whatsapp, "alasan": alasan}
+    path = cfg["endpoints"].get("cancel_request_path", PMS_DEFAULT_ENDPOINTS["cancel_request_path"])
+    started = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            resp = await http.post(
+                f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, json=payload,
+            )
+        latency_ms = int((time.time() - started) * 1000)
+        if resp.status_code >= 400:
+            await _pms_log(path, "POST", resp.status_code, latency_ms, False, resp.text)
+            return {"ok": False, "error": f"PMS menolak: HTTP {resp.status_code} {resp.text[:200]}"}
+        await _pms_log(path, "POST", resp.status_code, latency_ms, True)
+        return resp.json()
+    except Exception as e:
+        await _pms_log(path, "POST", None, int((time.time() - started) * 1000), False, str(e))
+        return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}
+
+
+# hotel_profile/faq/prompt DIHAPUS dari sini 2026-07-19 - premis awalnya salah, PMS tidak
+# pernah punya data ini (PMS murni operasional: booking/kamar/tarif). hotel_profile & FAQ
+# sekarang sync dari web-pelangi (lihat connectors/webpelangi_connector.py), prompt 100%
+# milik ai-chat-bot sendiri (tidak ada yang perlu disinkron).
+SYNC_KINDS = {"rule"}
 
 
 async def _sync_business_rules() -> dict:

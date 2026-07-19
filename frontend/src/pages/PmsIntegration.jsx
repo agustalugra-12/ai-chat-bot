@@ -13,19 +13,17 @@ const CAP_LABELS = {
   check_booking_status: "Cek Status Booking",
   create_maintenance_ticket: "Buat Tiket Maintenance",
   create_service_request: "Buat Permintaan Layanan",
+  cancel_booking: "Ajukan Pembatalan Booking",
   refund: "Refund",
   ota_sync: "OTA Sync",
   payment: "Payment",
   checkin: "Check-in",
 };
-const CAP_WIRED = new Set(["check_availability", "create_booking", "create_maintenance_ticket", "check_booking_status", "create_service_request"]);
-const CAP_ORDER = ["check_availability", "create_booking", "check_booking_status", "create_maintenance_ticket", "create_service_request", "refund", "ota_sync", "payment", "checkin"];
+const CAP_WIRED = new Set(["check_availability", "create_booking", "create_maintenance_ticket", "check_booking_status", "create_service_request", "cancel_booking"]);
+const CAP_ORDER = ["check_availability", "create_booking", "check_booking_status", "create_maintenance_ticket", "create_service_request", "cancel_booking", "refund", "ota_sync", "payment", "checkin"];
 
 const SYNC_KINDS = [
-  { key: "hotel_profile", label: "Hotel Profile" },
-  { key: "faq", label: "FAQ" },
-  { key: "prompt", label: "Prompt" },
-  { key: "rule", label: "Rule" },
+  { key: "rule", label: "Business Rule" },
 ];
 
 function F({ label, hint, children }) {
