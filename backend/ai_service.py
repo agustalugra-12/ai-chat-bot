@@ -13,18 +13,33 @@ from typing import Optional, Dict, Any, List
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")  # di deployment ini: key OpenAI asli
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_PROVIDER = "openai"
 
-# Provider/model dipilih owner lewat Settings (db.settings.llm_provider/llm_model) - semua
-# di bawah ini jalan lewat EMERGENT_LLM_KEY yang sama (universal key, di-proxy
-# emergentintegrations), tidak butuh API key terpisah per provider.
-LLM_PROVIDER_OPTIONS = {
+# Provider/model dipilih owner lewat Settings (db.settings.llm_provider/llm_model). Bug
+# ditemukan 2026-07-19: EMERGENT_LLM_KEY di deployment ini adalah key OpenAI asli
+# (sk-proj-...), BUKAN "sk-emergent-..." universal key yang di-proxy emergentintegrations
+# ke banyak provider sekaligus - jadi TIDAK otomatis bisa dipakai untuk memanggil
+# Anthropic/Gemini. Provider hanya muncul di sini (dan di dropdown Settings) kalau API
+# key-nya benar-benar dikonfigurasi (lihat _provider_api_key) - tambahkan
+# ANTHROPIC_API_KEY/GEMINI_API_KEY di .env untuk mengaktifkan provider itu, tidak perlu
+# ubah kode.
+_PROVIDER_MODELS = {
     "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"],
     "anthropic": ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"],
     "gemini": ["gemini-2.0-flash", "gemini-1.5-pro"],
 }
+_PROVIDER_KEY_ENV = {"openai": "EMERGENT_LLM_KEY", "anthropic": "ANTHROPIC_API_KEY", "gemini": "GEMINI_API_KEY"}
+
+
+def _provider_api_key(provider: str) -> str:
+    return os.environ.get(_PROVIDER_KEY_ENV.get(provider, ""), "")
+
+
+LLM_PROVIDER_OPTIONS = {p: models for p, models in _PROVIDER_MODELS.items() if _provider_api_key(p)}
 
 
 # SENGAJA cuma berisi persona/peran/data-access - GUARDRAIL, MENGIRIM FOTO, dan daftar
@@ -257,14 +272,19 @@ async def ai_reply(
     """Single-shot call. History is passed as compacted text within the system prompt.
 
     provider/model dapat di-override lewat Settings (lihat GET/PUT /settings di server.py,
-    field llm_provider/llm_model) - default konstanta di atas dipakai kalau belum diisi."""
+    field llm_provider/llm_model) - default konstanta di atas dipakai kalau belum diisi ATAU
+    kalau provider yang dipilih ternyata tidak (lagi) punya API key dikonfigurasi (lihat
+    LLM_PROVIDER_OPTIONS), supaya tidak pernah nyoba manggil provider dengan key yang salah."""
+    if provider not in LLM_PROVIDER_OPTIONS:
+        provider, model = DEFAULT_PROVIDER, DEFAULT_MODEL
+    api_key = _provider_api_key(provider) or EMERGENT_LLM_KEY
     full_system = (
         f"{system_prompt}\n\n"
         f"=== KONTEKS SAAT INI ===\n{context_block}\n=== AKHIR KONTEKS ===\n\n"
         f"=== RIWAYAT PERCAKAPAN SEBELUMNYA ===\n{history_text or '(kosong)'}\n=== AKHIR RIWAYAT ==="
     )
     chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
+        api_key=api_key,
         session_id=session_id,
         system_message=full_system,
     ).with_model(provider or DEFAULT_PROVIDER, model or DEFAULT_MODEL)
