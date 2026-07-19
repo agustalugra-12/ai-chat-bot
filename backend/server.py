@@ -65,7 +65,7 @@ from seed import seed_all
 # Lihat connectors/__init__.py untuk penjelasan pembagian tanggung jawabnya.
 from connectors.waha_connector import (
     WAHA_BASE_URL, WAHA_API_KEY, WAHA_SESSION, WAHA_WEBHOOK_TOKEN,
-    _waha_call, _waha_send_text,
+    _waha_call, _waha_send_text, _waha_list_sessions, _waha_ensure_session,
 )
 from connectors.pms_connector import (
     PMS_API_BASE_URL, PMS_API_KEY, PMS_DEFAULT_ENDPOINTS,
@@ -524,7 +524,10 @@ async def convs_reply(conv_id: str, body: ConvReplyIn, user=Depends(get_current_
 
     sent_to_whatsapp = False
     if conv.get("channel") == "whatsapp" and conv.get("whatsapp"):
-        await _waha_send_text(f"{conv['whatsapp']}@c.us", text)
+        # Balas lewat nomor WA yang SAMA dengan yang tamu hubungi (bisa beda-beda sejak
+        # multi-nomor per AI bot, 2026-07-19) - fallback ke default kalau conv lama belum
+        # punya field ini (dibuat sebelum fitur ini ada).
+        await _waha_send_text(f"{conv['whatsapp']}@c.us", text, session=conv.get("waha_session") or WAHA_SESSION)
         sent_to_whatsapp = True
 
     await _audit_log(user, "conversation_manual_reply", f"conv {conv_id}: {text[:200]}")
@@ -847,11 +850,17 @@ async def _handle_tool(tool: str, args: dict, conv: dict) -> Optional[dict]:
 async def _run_chat_turn(
     session_id: str, message: str, guest_name: Optional[str], whatsapp: Optional[str],
     bot_id: Optional[str], bot_code: Optional[str], channel: str = "simulator",
+    waha_session: Optional[str] = None,
 ) -> dict:
     """Inti alur 1 giliran chat (load bot, build context, panggil AI, tool-calling,
     simpan percakapan) — dipakai `/chat/message` (simulator, staf login) DAN webhook WAHA
     (`/webhook/waha`, tamu WhatsApp asli) supaya tidak ada logika AI ganda yang bisa
-    saling menyimpang antara jalur uji coba staf dan jalur tamu sungguhan."""
+    saling menyimpang antara jalur uji coba staf dan jalur tamu sungguhan.
+
+    `waha_session` = nomor WA (session WAHA) mana yang menerima pesan ini - disimpan di
+    percakapan supaya balasan staf manual (human handover, bisa terjadi jauh setelah
+    webhook request ini selesai) tetap keluar lewat nomor yang SAMA dengan yang tamu
+    hubungi, bukan selalu nomor default (2026-07-19, multi-nomor WA per AI bot)."""
     started = time.time()
 
     conv = await db.conversations.find_one({"session_id": session_id})
@@ -863,6 +872,7 @@ async def _run_chat_turn(
             "guest_name": guest_name,
             "whatsapp": whatsapp,
             "channel": channel,
+            "waha_session": waha_session,
             "messages": [],
             "status": "active",
             "resolution": "unresolved",
@@ -996,46 +1006,79 @@ async def chat_message(body: ChatSendRequest, user=Depends(get_current_user)):
 
 
 
-@api.get("/waha/status")
-async def waha_status(user=Depends(get_current_user)):
-    _, data = await _waha_call("GET", f"/api/sessions/{WAHA_SESSION}")
+def _webhook_url_for(token: str) -> str:
+    return f"http://host.docker.internal:8002/api/webhook/waha?token={token}"
+
+
+@api.get("/waha/sessions")
+async def waha_sessions_list(user=Depends(get_current_user)):
+    """Semua nomor WA yang ada (WAHA session) digabung dengan AI bot yang terhubung ke
+    masing-masing (kalau ada) - satu tempat untuk lihat semua koneksi sekaligus, dipakai
+    panel Koneksi WhatsApp di tiap bot (BotDetail) maupun ringkasan kalau dibutuhkan."""
+    sessions = await _waha_list_sessions()
+    bots = await db.ai_bots.find({"channel_type": "whatsapp", "channel_id": {"$ne": None, "$ne": ""}}).to_list(50)
+    bot_by_session = {b["channel_id"]: {"id": b["_id"], "name": b.get("name")} for b in bots}
+    out = []
+    for s in sessions:
+        out.append({**s, "linked_bot": bot_by_session.get(s.get("name"))})
+    return out
+
+
+@api.get("/waha/sessions/{session}/status")
+async def waha_session_status(session: str, user=Depends(get_current_user)):
+    _, data = await _waha_call("GET", f"/api/sessions/{session}")
     return data
 
 
-@api.post("/waha/connect")
-async def waha_connect(body: dict, user=Depends(get_current_user)):
-    """Mulai/pairing ulang sesi WhatsApp lewat kode angka (bukan QR - lebih gampang
-    dipakai tanpa perlu scan gambar). PENTING: WhatsApp membatasi sementara akun yang
-    terlalu sering connect/disconnect dalam waktu singkat ("reachout timelock") - jangan
-    panggil endpoint ini berulang-ulang kalau baru saja gagal, tunggu beberapa menit."""
-    phone = (body or {}).get("phone_number", "").strip()
+class WahaConnectIn(BaseModel):
+    phone_number: str
+    bot_id: Optional[str] = None  # kalau diisi, session ini otomatis ditautkan ke bot ini
+
+
+@api.post("/waha/sessions/{session}/connect")
+async def waha_session_connect(session: str, body: WahaConnectIn, user=Depends(get_current_user)):
+    """Mulai/pairing ulang 1 nomor WhatsApp (session WAHA) lewat kode angka (bukan QR -
+    lebih gampang dipakai tanpa perlu scan gambar). Kalau session belum pernah dibuat di
+    WAHA (nomor baru), otomatis dibuat dulu. PENTING: WhatsApp membatasi sementara akun
+    yang terlalu sering connect/disconnect dalam waktu singkat ("reachout timelock") -
+    jangan panggil endpoint ini berulang-ulang kalau baru saja gagal, tunggu beberapa menit."""
+    phone = (body.phone_number or "").strip()
     if not phone:
         raise HTTPException(400, "phone_number wajib diisi (format 62xxx)")
 
-    _, cur = await _waha_call("GET", f"/api/sessions/{WAHA_SESSION}")
+    cfg = await _pms_config()
+    token = cfg.get("webhook_token") or WAHA_WEBHOOK_TOKEN
+    await _waha_ensure_session(session, _webhook_url_for(token))
+
+    _, cur = await _waha_call("GET", f"/api/sessions/{session}")
     if cur.get("status") not in ("SCAN_QR_CODE",):
-        await _waha_call("POST", f"/api/sessions/{WAHA_SESSION}/logout")
+        await _waha_call("POST", f"/api/sessions/{session}/logout")
         await asyncio.sleep(2)
-        start_status, start_data = await _waha_call("POST", f"/api/sessions/{WAHA_SESSION}/start")
+        start_status, start_data = await _waha_call("POST", f"/api/sessions/{session}/start")
         if start_status >= 400:
             raise HTTPException(start_status, start_data.get("error") or "Gagal memulai sesi WAHA")
         await asyncio.sleep(3)
 
     code_status, code_data = await _waha_call(
-        "POST", f"/api/{WAHA_SESSION}/auth/request-code", {"phoneNumber": phone},
+        "POST", f"/api/{session}/auth/request-code", {"phoneNumber": phone},
     )
     if code_status >= 400:
         raise HTTPException(code_status, code_data.get("message") or code_data.get("error") or "Gagal meminta kode pairing")
-    await _audit_log(user, "waha_connect", f"phone {phone}")
+
+    if body.bot_id:
+        await db.ai_bots.update_one(
+            {"_id": body.bot_id}, {"$set": {"channel_type": "whatsapp", "channel_id": session}},
+        )
+    await _audit_log(user, "waha_connect", f"session {session}, phone {phone}")
     return code_data
 
 
-@api.post("/waha/disconnect")
-async def waha_disconnect(user=Depends(get_current_user)):
-    status, data = await _waha_call("POST", f"/api/sessions/{WAHA_SESSION}/logout")
+@api.post("/waha/sessions/{session}/disconnect")
+async def waha_session_disconnect(session: str, user=Depends(get_current_user)):
+    status, data = await _waha_call("POST", f"/api/sessions/{session}/logout")
     if status >= 400:
         raise HTTPException(status, data.get("error") or "Gagal memutus sesi WAHA")
-    await _audit_log(user, "waha_disconnect")
+    await _audit_log(user, "waha_disconnect", f"session {session}")
     return {"ok": True}
 
 
@@ -1308,6 +1351,16 @@ async def webhook_waha(request: Request, token: Optional[str] = None, _: None = 
     if not raw_id or not message:
         return {"ok": True, "diabaikan": "tanpa nomor pengirim/isi pesan (kemungkinan pesan media)"}
 
+    # Multi-nomor WA (2026-07-19): WAHA menyertakan nama session (nomor mana yang terima
+    # pesan ini) di tiap payload webhook - dipakai cari AI bot mana yang ditautkan ke
+    # nomor itu (lihat AiBot.channel_id/channel_type di BotDetail tab Koneksi WhatsApp).
+    # Kalau belum ada bot yang ditautkan ke session ini, fallback ke perilaku lama
+    # (bot_id=None -> _load_bot jatuh ke booking_marketing) supaya nomor yang sudah
+    # terhubung dari sebelum fitur ini ada tetap jalan tanpa perlu setup ulang.
+    waha_session = payload.get("session") or WAHA_SESSION
+    linked_bot = await db.ai_bots.find_one({"channel_type": "whatsapp", "channel_id": waha_session})
+    bot_id = linked_bot["_id"] if linked_bot else None
+
     # WhatsApp punya fitur privasi "LID" (Linked ID) - sebagian pengirim dilaporkan WAHA
     # lewat identifier "xxxx@lid", BUKAN "xxxx@c.us", dan angka di "xxxx" itu SAMA SEKALI
     # BUKAN nomor telepon asli (ditemukan lewat laporan user 2026-07-18: link pembayaran
@@ -1318,9 +1371,15 @@ async def webhook_waha(request: Request, token: Optional[str] = None, _: None = 
     is_real_phone = domain in ("c.us", "s.whatsapp.net")
     phone = raw_id if is_real_phone else None
     guest_name = data.get("notifyName") or (phone if is_real_phone else "Tamu WhatsApp")
-    session_id = f"wa-{raw_id}"
+    # session_id disertakan nomor bot (waha_session) - tamu yang sama chat ke 2 nomor
+    # berbeda (mis. tanya booking ke satu nomor, komplain ke nomor lain) harus jadi 2
+    # percakapan terpisah, bukan tercampur jadi 1 riwayat.
+    session_id = f"wa-{waha_session}-{raw_id}"
 
-    hasil = await _run_chat_turn(session_id, message, guest_name, phone, None, None, channel="whatsapp")
+    hasil = await _run_chat_turn(
+        session_id, message, guest_name, phone, bot_id, None,
+        channel="whatsapp", waha_session=waha_session,
+    )
     if hasil.get("reply"):
         # Jeda 3-5 detik sebelum kirim balasan (dikonfirmasi user 2026-07-19) - biar terasa
         # seperti orang mengetik balasan (bukan bot yang membalas instan dalam hitungan
@@ -1329,7 +1388,7 @@ async def webhook_waha(request: Request, token: Optional[str] = None, _: None = 
         # bersamaan. HANYA di jalur WhatsApp asli - Chat Simulator (staf uji coba) tetap
         # instan supaya tidak memperlambat proses testing.
         await asyncio.sleep(random.uniform(3, 5))
-        await _waha_send_text(chat_id, hasil["reply"])
+        await _waha_send_text(chat_id, hasil["reply"], session=waha_session)
     return {"ok": True}
 
 

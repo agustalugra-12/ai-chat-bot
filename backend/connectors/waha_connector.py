@@ -5,19 +5,26 @@ payload sendText/sesi). server.py (dan connector lain seperti pms_connector untu
 fallback webhook_token) memanggil fungsi di sini, tidak pernah membentuk request WAHA
 sendiri - supaya kalau WAHA diganti provider WA lain suatu saat, cuma modul ini yang
 perlu diubah.
+
+Multi-session (2026-07-19): WAHA mendukung banyak nomor WhatsApp sekaligus, tiap nomor
+adalah 1 "session" bernama bebas (bukan cuma "default" bawaan). Dipakai supaya tiap AI
+bot (lihat AI List) bisa punya nomor WA sendiri-sendiri (mis. satu untuk booking/info,
+satu lagi untuk komplain/layanan tamu) - lihat server.py webhook_waha() untuk cara
+routing pesan masuk ke bot yang tepat berdasarkan session mana yang menerimanya.
 """
 import logging
 import os
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import httpx
 
-# WAHA memanggil /webhook/waha di server.py saat ada pesan WhatsApp masuk; balasan AI
-# dikirim balik ke tamu dengan PMS ini memanggil WAHA (arah keluar), bukan lewat response
-# webhook.
+# WAHA memanggil /webhook/waha di server.py saat ada pesan WhatsApp masuk (payload-nya
+# selalu menyertakan nama session pengirim); balasan AI dikirim balik ke tamu dengan PMS
+# ini memanggil WAHA (arah keluar, harus lewat session yang SAMA dengan yang menerima
+# pesan), bukan lewat response webhook.
 WAHA_BASE_URL = os.environ.get("WAHA_BASE_URL", "")
 WAHA_API_KEY = os.environ.get("WAHA_API_KEY", "")
-WAHA_SESSION = os.environ.get("WAHA_SESSION", "default")
+WAHA_SESSION = os.environ.get("WAHA_SESSION", "default")  # session/nomor default/utama
 WAHA_WEBHOOK_TOKEN = os.environ.get("WAHA_WEBHOOK_TOKEN", "")
 
 
@@ -42,7 +49,7 @@ async def _waha_call(method: str, path: str, json_body: Optional[dict] = None) -
         return 502, {"error": f"Gagal menghubungi WAHA: {e}"}
 
 
-async def _waha_send_text(chat_id: str, text: str) -> bool:
+async def _waha_send_text(chat_id: str, text: str, session: str = WAHA_SESSION) -> bool:
     if not WAHA_BASE_URL or not WAHA_API_KEY:
         logging.getLogger("waha").warning("WAHA_BASE_URL/WAHA_API_KEY belum diisi — balasan tidak terkirim ke tamu")
         return False
@@ -51,7 +58,7 @@ async def _waha_send_text(chat_id: str, text: str) -> bool:
             resp = await http.post(
                 f"{WAHA_BASE_URL.rstrip('/')}/api/sendText",
                 headers={"X-Api-Key": WAHA_API_KEY},
-                json={"session": WAHA_SESSION, "chatId": chat_id, "text": text},
+                json={"session": session, "chatId": chat_id, "text": text},
             )
             if resp.status_code >= 400:
                 logging.getLogger("waha").warning(f"WAHA sendText gagal HTTP {resp.status_code}: {resp.text[:300]}")
@@ -60,3 +67,23 @@ async def _waha_send_text(chat_id: str, text: str) -> bool:
     except Exception as e:
         logging.getLogger("waha").warning(f"Gagal memanggil WAHA sendText: {e}")
         return False
+
+
+async def _waha_list_sessions() -> list:
+    """Semua session WAHA (nomor WA) yang ada, apapun statusnya - dipakai panel koneksi
+    supaya owner lihat semua nomor sekaligus, bukan cuma satu."""
+    status, data = await _waha_call("GET", "/api/sessions?all=true")
+    return data if status < 400 and isinstance(data, list) else []
+
+
+async def _waha_ensure_session(session: str, webhook_url: str) -> tuple[int, dict]:
+    """Pastikan session dengan nama ini ADA di WAHA (bukan cuma 'default' bawaan) -
+    dipanggil sebelum start/pairing kalau session belum pernah dibuat. Aman dipanggil
+    berkali-kali (kalau sudah ada, WAHA balas error yang kita abaikan)."""
+    status, data = await _waha_call("GET", f"/api/sessions/{session}")
+    if status < 400:
+        return status, data
+    return await _waha_call("POST", "/api/sessions", {
+        "name": session, "start": False,
+        "config": {"webhooks": [{"url": webhook_url, "events": ["message"]}]},
+    })
