@@ -1315,7 +1315,12 @@ async def send_message_relay(body: SendMessageIn, request: Request, _rl: None = 
     if not cfg.get("send_message_api_key") or not key or not secrets.compare_digest(key, cfg["send_message_api_key"]):
         raise HTTPException(401, "API key tidak valid")
 
-    digits = re.sub(r"\D", "", body.to or "")
+    # Ditemukan 2026-07-19 dari laporan user (link pembayaran diklik "Terima" di PMS tapi
+    # tidak sampai ke tamu): nomor yang tamu ketik sendiri lewat chat sering format lokal
+    # "0877..." (bukan "62877..."), sebelumnya cuma dibuang karakter non-digit tanpa
+    # dikonversi ke 62 - "0877...@c.us" BUKAN JID WhatsApp yang valid, WAHA gagal kirim
+    # diam-diam. Reuse _normalize_phone yang sama dipakai Guest Profile supaya konsisten.
+    digits = _normalize_phone(body.to or "")
     if not digits or not body.message.strip():
         raise HTTPException(400, "to/message tidak valid")
     ok = await _waha_send_text(f"{digits}@c.us", body.message)
