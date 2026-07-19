@@ -16,6 +16,10 @@ import httpx
 from db import db, new_id, utc_now_iso
 
 WEB_CONTENT_DEFAULT_URL = os.environ.get("WEB_CONTENT_URL", "https://pelangihomestay.com/api/content")
+# Halaman publik Rooms (mendukung deep-link ?room=<slug> yang otomatis buka detail kamar
+# itu, dibangun 2026-07-19) - dipakai AI kirim 1 link rapi ke tamu alih-alih banyak link
+# foto Cloudinary mentah berjejer (lihat _build_context di server.py).
+WEBSITE_ROOMS_URL = os.environ.get("WEBSITE_ROOMS_URL", "https://pelangihomestay.com/rooms")
 
 WEB_CONTENT_INTEGRATION_DEFAULT = {
     "_id": "singleton",

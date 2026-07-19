@@ -154,10 +154,12 @@ def build_dynamic_prompt(bot: dict, room_types: Optional[List[str]] = None) -> s
 
 ## MENGIRIM FOTO
 Ada 2 sumber foto di KONTEKS, caranya BEDA - jangan tertukar:
-1. Foto KAMAR (bagian "# FOTO KAMAR" di konteks) - tamu minta lihat foto kamar tertentu
-   (mis. "foto kamar standard", "kirim semua foto cottage"): tulis LINK-nya APA ADANYA
-   sebagai teks biasa di balasan Anda (satu link per baris kalau lebih dari satu), supaya
-   tamu bisa tap untuk buka. JANGAN pakai marker [[IMG:]] untuk foto kamar.
+1. Foto KAMAR (bagian "# LINK FOTO KAMAR" di konteks) - tamu minta lihat foto kamar
+   tertentu (mis. "foto kamar standard", "kirim foto cottage"): tulis SATU link di
+   bawah nama kamar itu APA ADANYA sebagai teks polos di balasan Anda (mis. "Silakan
+   lihat di sini: https://..."), supaya tamu bisa tap untuk buka galeri lengkap di
+   website. JANGAN pakai format markdown [teks](url) - WhatsApp TIDAK merender itu,
+   tamu akan lihat tanda kurung mentah. JANGAN pakai marker [[IMG:]] untuk foto kamar.
 2. Foto lain dari Knowledge Base (baris "Foto:" di bawah artikel KB, mis. foto fasilitas/
    suasana umum) - sertakan sebagai marker [[IMG: https://...]] (boleh beberapa), sistem
    akan mengirimnya sebagai foto sungguhan (bukan link).
@@ -201,18 +203,18 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
         )
 
     if room_photos:
+        # SATU link rapi per kamar ke halaman Rooms publik (bukan daftar link Cloudinary
+        # mentah satu-satu) - permintaan user 2026-07-19: banyak link foto bikin tamu
+        # bingung. Link ini otomatis buka galeri lengkap + fasilitas di halaman website.
         parts.append(
-            "\n# FOTO KAMAR (link asli - kalau tamu minta foto kamar tertentu, kirim link di "
-            "bawah nama kamar yang cocok APA ADANYA sebagai teks biasa di balasan Anda, JANGAN "
-            "pakai marker [[IMG:]] untuk ini, JANGAN mengarang/menebak link dari kamar lain)"
+            "\n# LINK FOTO KAMAR (kalau tamu minta foto kamar tertentu, kirim SATU link di "
+            "bawah nama kamar yang cocok APA ADANYA sebagai teks biasa di balasan Anda - link "
+            "itu membuka galeri foto lengkap kamar tsb di website. JANGAN pakai marker [[IMG:]] "
+            "untuk ini, JANGAN mengarang/menebak link dari kamar lain)"
         )
         for r in room_photos:
-            urls = ([r["photo_url"]] if r.get("photo_url") else []) + [
-                img.get("url") for img in (r.get("images") or []) if isinstance(img, dict) and img.get("url")
-            ]
-            urls = list(dict.fromkeys(u for u in urls if u))  # buang duplikat, pertahankan urutan
-            if urls:
-                parts.append(f"## {r.get('name', '(tanpa nama)')}\n" + "\n".join(urls))
+            if r.get("website_url"):
+                parts.append(f"## {r.get('name', '(tanpa nama)')}\n{r['website_url']}")
 
     if menu:
         parts.append("\n# MENU RESTORAN")
