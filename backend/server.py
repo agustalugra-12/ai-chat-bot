@@ -75,7 +75,7 @@ from connectors.pms_connector import (
     _pms_buat_tiket, _pms_status_booking, _pms_ajukan_pembatalan, _sync_business_rules,
 )
 from connectors.webpelangi_connector import (
-    _web_content_config, _sync_hotel_profile, _sync_faq, WEBSITE_ROOMS_URL,
+    _web_content_config, _sync_hotel_profile, _sync_faq,
 )
 
 
@@ -624,12 +624,7 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
     # Ditemukan 2026-07-19 dari laporan user: tanpa ini AI cuma punya akses ke foto KB
     # (galeri/facilities umum), jadi saat diminta foto kamar AI asal kirim foto KB yang
     # salah - bukan foto kamar sungguhan.
-    room_photos = await db.rooms.find({}, {"name": 1, "room_type": 1, "photo_url": 1, "images": 1}).to_list(50)
-    for r in room_photos:
-        # 1 link rapi ke halaman Rooms publik (deep-link ?room=<slug> auto-buka galeri
-        # kamar itu) - permintaan user 2026-07-19: banyak link foto Cloudinary mentah
-        # bikin tamu bingung, satu link ke halaman website jauh lebih rapi.
-        r["website_url"] = f"{WEBSITE_ROOMS_URL}?room={(r.get('room_type') or '').lower()}"
+    room_photos = await db.rooms.find({}, {"name": 1, "photo_url": 1, "images": 1}).to_list(50)
     base = build_context_block(rooms, menu, kb, settings, room_photos)
 
     # Business Rules (Rule Engine tahap 1) - SENGAJA terpisah dari Knowledge Base (KB isinya
@@ -1407,7 +1402,13 @@ async def webhook_waha(request: Request, token: Optional[str] = None, _: None = 
         clean_text, image_urls = parse_img_markers(hasil["reply"])
         if clean_text:
             await _waha_send_text(chat_id, clean_text, session=waha_session)
-        for url in image_urls:
+        for i, url in enumerate(image_urls):
+            if i > 0:
+                # Jeda singkat ANTAR foto (beda dari jeda 3-5 detik di atas, yang cuma
+                # sekali sebelum mulai kirim) - supaya kiriman 6 foto sekaligus terasa
+                # seperti dikirim satu-satu secara wajar, bukan burst instan yang
+                # mencurigakan (2026-07-19, dikonfirmasi user kirim SEMUA foto kamar).
+                await asyncio.sleep(random.uniform(1, 2))
             room = await db.rooms.find_one({"$or": [{"photo_url": url}, {"images.url": url}]})
             caption = room["name"] if room else ""
             await _waha_send_image(chat_id, url, caption, session=waha_session)
