@@ -713,7 +713,19 @@ async def _tool_create_booking(args: dict, conv: dict) -> dict:
             return {"ok": False, "tool": "create_booking", "error": hasil.get("error")}
         await db.conversations.update_one({"_id": conv["_id"]}, {"$set": {"booking_created": True}})
         br = hasil.get("booking_request") or {}
-        result = {"ok": True, "tool": "create_booking", "booking_request_id": br.get("id"), "kode": br.get("kode")}
+        # "status" WAJIB disertakan - ini satu-satunya cara AI tahu hasil sebenarnya:
+        # waiting_payment (Day Use auto-approved, ada checkout_url), rejected (Day Use
+        # auto-ditolak krn benar-benar penuh, 2026-07-19), atau waiting_approval (Menginap/
+        # fallback, staf yang proses). Tanpa ini AI bisa salah bilang "sedang diproses" utk
+        # booking yang sebenarnya sudah ditolak.
+        result = {
+            "ok": True, "tool": "create_booking", "booking_request_id": br.get("id"),
+            "kode": br.get("kode"), "status": br.get("status"),
+        }
+        if br.get("checkout_url"):
+            result["checkout_url"] = br["checkout_url"]
+        if br.get("status") == "rejected":
+            result["rejected_reason"] = br.get("rejected_reason")
         # Program Loyalitas Kedatangan - kalau tamu dapat diskon member, sampaikan di sini
         # supaya AI menyebutkannya ke tamu (lihat instruksi di TOOL_DOCS ai_service.py).
         if br.get("preview_diskon_persen"):

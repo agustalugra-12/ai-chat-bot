@@ -76,11 +76,16 @@ ALL_TOOL_CODES = [
 # hardcode) - ai-chat-bot dirancang reusable lintas bisnis (bukan cuma Pelangi), jadi
 # prompt tool TIDAK BOLEH menyebut nama tipe kamar tetap punya satu hotel tertentu.
 TOOL_DOCS = {
-    "check_availability": '- check_availability : args {"tanggal_checkin":"YYYY-MM-DD","tanggal_checkout":"YYYY-MM-DD" (opsional, hanya menginap >1 malam),"tipe":__ROOM_TIPE__ (opsional)}',
+    "check_availability": '- check_availability : args {"tanggal_checkin":"YYYY-MM-DD","tanggal_checkout":"YYYY-MM-DD" (opsional, hanya menginap >1 malam),"tipe":__ROOM_TIPE__ (opsional)}. '
+    'Setiap tipe SELALU muncul di hasil, termasuk yang "kamar_tersedia":0 (PENUH) - itu bukan error, sampaikan jujur ke tamu bahwa tipe itu penuh tanggal tsb. '
+    'Kalau ada field "estimasi_kosong_lagi" pada tipe yang penuh, boleh sampaikan sebagai PERKIRAAN kamar Day Use yang akan checkout (bukan jaminan pasti). '
+    'Kalau TIDAK ADA field itu pada tipe yang penuh, JANGAN PERNAH mengarang/menjanjikan kapan kamar kosong lagi (biasanya karena penuh oleh tamu Menginap yang belum checkout) - cukup bilang penuh, tawarkan tanggal lain atau tipe kamar lain.',
     "create_booking": '- create_booking : args {"guest_name":"...","whatsapp":"...","tipe":"day_use"|"menginap","room_tipe":__ROOM_TIPE__,"tanggal_checkin":"YYYY-MM-DD","jam_checkin":"HH:mm" (wajib jika day_use),"tanggal_checkout":"YYYY-MM-DD" (wajib jika menginap),"jumlah_kamar":1,"jumlah_tamu":1,"payment_option":"dp50"|"full" (WAJIB - lihat aturan di bawah)}. '
     'ATURAN WAJIB sebelum memanggil tool ini: SELALU tanya dulu ke tamu secara eksplisit "mau bayar DP 50% atau lunas?" dan TUNGGU jawabannya - JANGAN PERNAH memanggil create_booking tanpa payment_option terisi jawaban tamu yang sebenarnya, walau tamu sudah kasih semua data lain sekaligus dalam 1 pesan (nama+HP+tanggal+kamar). Kalau tamu belum jawab soal DP/lunas, balas dulu menanyakan itu, JANGAN panggil tool. '
-    'Untuk Day Use: begitu payment_option terisi dan kamar tersedia, sistem OTOMATIS mengonfirmasi booking & mengirim link bayar - JANGAN bilang "akan segera diproses" atau "ditinjau dulu", karena day use LANGSUNG jadi begitu tool ini dipanggil (lihat hasil tool: kalau ada field "checkout_url", itu sudah booking sungguhan+link bayar, sampaikan ke tamu apa adanya, JANGAN bilang menunggu). '
-    'Untuk Menginap: tetap perlu ditinjau staf dulu (jelaskan ke tamu bahwa akan dikonfirmasi staf, BUKAN otomatis). '
+    'SETELAH memanggil tool ini, WAJIB baca field "status" di hasil untuk tahu apa yang benar-benar terjadi - JANGAN asumsi selalu berhasil: '
+    '"waiting_payment" = Day Use OTOMATIS terkonfirmasi, field "checkout_url" berisi link bayar sungguhan, sampaikan link itu apa adanya, JANGAN bilang "akan segera diproses"/"ditinjau dulu". '
+    '"rejected" = kamar BENAR-BENAR PENUH (auto-ditolak, lihat field "rejected_reason"), WAJIB minta maaf jujur ke tamu bahwa kamar penuh tanggal itu dan tawarkan tanggal/tipe lain - JANGAN PERNAH bilang "sudah diproses"/"silakan bayar" untuk status ini. '
+    '"waiting_approval" = permintaan Menginap (selalu lewat review staf, jelaskan itu ke tamu BUKAN otomatis) ATAU Day Use yang belum bisa auto-approve karena alasan lain (mis. booking group >1 kamar) - jelaskan akan ditinjau staf dulu. '
     'Kalau hasil tool memuat "diskon_member_persen", WAJIB sampaikan ke tamu di konfirmasi (mis. "Selamat, ini kedatangan ke-{kedatangan_ke} Anda - dapat diskon member {diskon_member_persen}%!") - kalau tidak ada field itu, jangan sebut-sebut diskon sama sekali.',
     "lookup_booking": '- lookup_booking : args {"whatsapp":"..."}',
     "cancel_booking": '- cancel_booking (BUKAN pembatalan final - permintaan yang ditinjau staf, cuma memberi info ke PMS) : args {"whatsapp":"...","kode":"...","alasan":"..." (opsional)}. "kode" WAJIB kode booking sungguhan dari lookup_booking (field booking_ringkasan.kode, mis. "BKO-..."), BUKAN kode permintaan booking. Kebijakan refund: H-7 s/d H-3 sebelum check-in = refund 100%, H-2 s/d hari check-in = biaya 50% (berlaku day_use & menginap) - sampaikan kebijakan ini ke tamu SEBELUM memanggil tool, dan jelaskan bahwa staf akan meninjau & refund ditransfer manual setelah disetujui.',
@@ -202,16 +207,27 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
 
     if rooms:
         # Data live dari Pelangi PMS (bukan data lokal ai-chat-bot) - lihat _pms_ketersediaan
-        # di server.py. Skema: {"tipe","tarif_day_use","tarif_menginap","kamar_tersedia"}.
+        # di server.py. Skema: {"tipe","tarif_day_use","tarif_menginap","kamar_tersedia",
+        # "estimasi_kosong_lagi"?, "estimasi_kamar_nomor"?} - dua field terakhir HANYA ada
+        # kalau penuhnya tipe itu HARI INI karena kamar Day Use yang akan checkout (2026-07-19,
+        # lihat ai_bot_ketersediaan di integrasi_ai_bot.py) - kalau tipe 0 kamar TANPA field
+        # itu, artinya penuh karena tamu Menginap (atau bukan hari ini) - JANGAN PERNAH
+        # menawarkan estimasi kosong dalam kondisi itu, wajib bilang "penuh" apa adanya.
         parts.append(f"# KETERSEDIAAN KAMAR HARI INI ({rooms[0].get('_tanggal', '-')}, live dari PMS)")
         for r in rooms:
-            parts.append(
+            baris = (
                 f"- Tipe {r['tipe']}: {r['kamar_tersedia']} kamar kosong | "
                 f"Day Use Rp {int(r['tarif_day_use']):,} (6 jam) | Menginap Rp {int(r['tarif_menginap']):,}/malam"
             )
+            if r["kamar_tersedia"] == 0 and r.get("estimasi_kosong_lagi"):
+                baris += (f" | PENUH tapi Kamar {r['estimasi_kamar_nomor']} diperkirakan siap lagi "
+                          f"mulai {r['estimasi_kosong_lagi']} (Day Use akan checkout, PERKIRAAN bukan jaminan)")
+            elif r["kamar_tersedia"] == 0:
+                baris += " | PENUH (tidak ada estimasi kapan kosong - jangan menebak/menjanjikan waktu)"
+            parts.append(baris)
         parts.append(
-            "(Ini snapshot HARI INI saja - untuk tanggal lain atau tipe kamar yang di sini tampil "
-            "0 kamar kosong, WAJIB panggil tool check_availability, jangan menyimpulkan dari data di atas.)"
+            "(Ini snapshot HARI INI saja - untuk tanggal lain, WAJIB panggil tool check_availability, "
+            "jangan menyimpulkan dari data di atas.)"
         )
 
     if room_photos:
