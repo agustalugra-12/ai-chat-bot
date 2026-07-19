@@ -619,7 +619,13 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
         kb_q["category"] = {"$in": bot["knowledge_categories"]}
     kb = await db.knowledge_base.find(kb_q).to_list(500)
     settings = await db.settings.find_one({"_id": "singleton"}) or {}
-    base = build_context_block(rooms, menu, kb, settings)
+    # Foto kamar (nama + galeri) - koleksi db.rooms LOKAL ai-chat-bot (bukan _pms_ketersediaan
+    # di atas, yang cuma tipe/tarif/stok live dari PMS, TIDAK ADA field foto sama sekali).
+    # Ditemukan 2026-07-19 dari laporan user: tanpa ini AI cuma punya akses ke foto KB
+    # (galeri/facilities umum), jadi saat diminta foto kamar AI asal kirim foto KB yang
+    # salah - bukan foto kamar sungguhan.
+    room_photos = await db.rooms.find({}, {"name": 1, "photo_url": 1, "images": 1}).to_list(50)
+    base = build_context_block(rooms, menu, kb, settings, room_photos)
 
     # Business Rules (Rule Engine tahap 1) - SENGAJA terpisah dari Knowledge Base (KB isinya
     # info umum hotel/wisata/FAQ, ini kebijakan operasional dari PMS: DP/cancellation/

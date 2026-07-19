@@ -153,9 +153,16 @@ def build_dynamic_prompt(bot: dict, room_types: Optional[List[str]] = None) -> s
 {guard_block}
 
 ## MENGIRIM FOTO
-Jika tamu meminta foto dan URL foto tersedia di KONTEKS ("Foto:"), sertakan sebagai marker:
-[[IMG: https://...]]
-Boleh beberapa marker. JANGAN mengarang URL.
+Ada 2 sumber foto di KONTEKS, caranya BEDA - jangan tertukar:
+1. Foto KAMAR (bagian "# FOTO KAMAR" di konteks) - tamu minta lihat foto kamar tertentu
+   (mis. "foto kamar standard", "kirim semua foto cottage"): tulis LINK-nya APA ADANYA
+   sebagai teks biasa di balasan Anda (satu link per baris kalau lebih dari satu), supaya
+   tamu bisa tap untuk buka. JANGAN pakai marker [[IMG:]] untuk foto kamar.
+2. Foto lain dari Knowledge Base (baris "Foto:" di bawah artikel KB, mis. foto fasilitas/
+   suasana umum) - sertakan sebagai marker [[IMG: https://...]] (boleh beberapa), sistem
+   akan mengirimnya sebagai foto sungguhan (bukan link).
+JANGAN PERNAH mengarang/menebak URL foto dari kamar/topik lain - hanya pakai yang benar-benar
+ada di KONTEKS untuk kamar/topik yang ditanya.
 
 ## TOOLS YANG BOLEH DIPANGGIL
 Format panggilan: baris terpisah di akhir balasan Anda:
@@ -169,7 +176,8 @@ Tulis balasan alami ke tamu dulu (1-4 kalimat), lalu marker [[IMG: ...]] bila ki
 """
 
 
-def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], settings: dict) -> str:
+def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], settings: dict,
+                         room_photos: Optional[List[dict]] = None) -> str:
     """Build a compact context string for the AI."""
     parts = []
     maps_line = f"Google Maps: {settings['maps_url']}\n" if settings.get("maps_url") else ""
@@ -191,6 +199,20 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
             "(Ini snapshot HARI INI saja - untuk tanggal lain atau tipe kamar yang di sini tampil "
             "0 kamar kosong, WAJIB panggil tool check_availability, jangan menyimpulkan dari data di atas.)"
         )
+
+    if room_photos:
+        parts.append(
+            "\n# FOTO KAMAR (link asli - kalau tamu minta foto kamar tertentu, kirim link di "
+            "bawah nama kamar yang cocok APA ADANYA sebagai teks biasa di balasan Anda, JANGAN "
+            "pakai marker [[IMG:]] untuk ini, JANGAN mengarang/menebak link dari kamar lain)"
+        )
+        for r in room_photos:
+            urls = ([r["photo_url"]] if r.get("photo_url") else []) + [
+                img.get("url") for img in (r.get("images") or []) if isinstance(img, dict) and img.get("url")
+            ]
+            urls = list(dict.fromkeys(u for u in urls if u))  # buang duplikat, pertahankan urutan
+            if urls:
+                parts.append(f"## {r.get('name', '(tanpa nama)')}\n" + "\n".join(urls))
 
     if menu:
         parts.append("\n# MENU RESTORAN")
