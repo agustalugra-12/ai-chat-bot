@@ -8,6 +8,7 @@ Connector, lihat connectors/pms_connector.py untuk integrasi Pelangi PMS) - buka
 import os
 import asyncio
 import logging
+import random
 import re
 import secrets
 import time
@@ -1321,6 +1322,13 @@ async def webhook_waha(request: Request, token: Optional[str] = None, _: None = 
 
     hasil = await _run_chat_turn(session_id, message, guest_name, phone, None, None, channel="whatsapp")
     if hasil.get("reply"):
+        # Jeda 3-5 detik sebelum kirim balasan (dikonfirmasi user 2026-07-19) - biar terasa
+        # seperti orang mengetik balasan (bukan bot yang membalas instan dalam hitungan
+        # milidetik, pola yang gampang dikenali WhatsApp sebagai bot & bisa memicu
+        # pembatasan/reachout timelock), sekaligus meredam beban kalau banyak pesan masuk
+        # bersamaan. HANYA di jalur WhatsApp asli - Chat Simulator (staf uji coba) tetap
+        # instan supaya tidak memperlambat proses testing.
+        await asyncio.sleep(random.uniform(3, 5))
         await _waha_send_text(chat_id, hasil["reply"])
     return {"ok": True}
 
