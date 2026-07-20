@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, APIRouter, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
 
@@ -1380,6 +1381,37 @@ async def send_document_relay(body: SendDocumentIn, request: Request, _rl: None 
     await _pms_log("/send-document", "POST", 200 if ok else 502, 0, ok, f"to {digits}")
     if not ok:
         raise HTTPException(502, "Gagal mengirim dokumen lewat WAHA")
+    return {"ok": True}
+
+
+WHATSAPP_CLOUD_VERIFY_TOKEN = os.environ.get("WHATSAPP_CLOUD_VERIFY_TOKEN", "")
+
+
+@api.get("/webhook/whatsapp-cloud")
+async def whatsapp_cloud_webhook_verify(request: Request):
+    """Verifikasi webhook Meta Cloud API (2026-07-20, tahap awal migrasi WAHA -> WABA resmi,
+    dipicu insiden blokir WhatsApp dari reconnect-storm WAHA). Meta memanggil GET ini SEKALI
+    saat tombol "Verify and Save" diklik di dashboard Meta, kirim hub.mode=subscribe,
+    hub.verify_token, & hub.challenge lewat query string. Kalau token cocok, WAJIB balas
+    PERSIS isi hub.challenge sebagai plain text (bukan JSON/objek) - itu aturan resmi Meta,
+    format lain akan ditolak dan verifikasi gagal."""
+    params = request.query_params
+    mode = params.get("hub.mode")
+    token = params.get("hub.verify_token")
+    challenge = params.get("hub.challenge") or ""
+    if mode == "subscribe" and WHATSAPP_CLOUD_VERIFY_TOKEN and token == WHATSAPP_CLOUD_VERIFY_TOKEN:
+        return PlainTextResponse(challenge)
+    raise HTTPException(403, "Verifikasi webhook gagal - token tidak cocok")
+
+
+@api.post("/webhook/whatsapp-cloud")
+async def whatsapp_cloud_webhook_receive(request: Request):
+    """Terima notifikasi pesan masuk/update status dari Meta Cloud API. TAHAP AWAL (2026-07-20)
+    - cuma log payload dulu supaya setup webhook di dashboard Meta bisa diselesaikan; belum
+    disambungkan ke _run_chat_turn (alur balas AI sungguhan) - itu menyusul setelah akun WABA
+    & kredensial (access token, phone_number_id) selesai di-setup di sisi Meta."""
+    payload = await request.json()
+    logging.getLogger("whatsapp_cloud").info(f"Webhook Cloud API diterima: {payload}")
     return {"ok": True}
 
 
