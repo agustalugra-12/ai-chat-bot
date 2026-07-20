@@ -760,7 +760,8 @@ async def _tool_create_service_request(args: dict, conv: dict) -> dict:
         deskripsi = f"{label} x{qty}" + (f". Catatan: {notes}" if notes else "")
         whatsapp = args.get("whatsapp") or conv.get("whatsapp") or ""
         guest_name = args.get("guest_name") or conv.get("guest_name") or ""
-        hasil = await _pms_buat_tiket("service_request", deskripsi, whatsapp, guest_name)
+        room_nomor = (args.get("room_nomor") or "").strip()
+        hasil = await _pms_buat_tiket("service_request", deskripsi, whatsapp, guest_name, room_nomor)
         if not hasil.get("ok"):
             return {"ok": False, "tool": "create_service_request", "error": hasil.get("error")}
         tiket = hasil.get("tiket") or {}
@@ -780,7 +781,8 @@ async def _tool_create_maintenance_ticket(args: dict, conv: dict) -> dict:
             return {"ok": False, "tool": "create_maintenance_ticket", "error": "missing deskripsi"}
         whatsapp = args.get("whatsapp") or conv.get("whatsapp") or ""
         guest_name = args.get("guest_name") or conv.get("guest_name") or ""
-        hasil = await _pms_buat_tiket(tipe, deskripsi, whatsapp, guest_name)
+        room_nomor = (args.get("room_nomor") or "").strip()
+        hasil = await _pms_buat_tiket(tipe, deskripsi, whatsapp, guest_name, room_nomor)
         if not hasil.get("ok"):
             return {"ok": False, "tool": "create_maintenance_ticket", "error": hasil.get("error")}
         tiket = hasil.get("tiket") or {}

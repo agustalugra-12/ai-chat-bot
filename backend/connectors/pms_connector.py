@@ -193,20 +193,23 @@ async def _pms_buat_booking_request(args: dict) -> dict:
         return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}
 
 
-async def _pms_buat_tiket(tipe: str, deskripsi: str, whatsapp: str, guest_name: str = "") -> dict:
+async def _pms_buat_tiket(tipe: str, deskripsi: str, whatsapp: str, guest_name: str = "", room_nomor: str = "") -> dict:
     """Kirim tiket komplain/maintenance/service_request ke Pelangi PMS (reuse endpoint yang
     SUDAH ADA sejak awal di sisi PMS, `/api/integrasi-ai-bot/tiket` - sebelumnya tidak pernah
     dipanggil dari ai-chat-bot, tiket AI selalu nyasar ke `db.service_requests` lokal
     yang tidak pernah dilihat staf PMS. `tipe` menentukan capability mana yang dicek -
     complaint & maintenance masih dipayungi `create_maintenance_ticket`, service_request
-    (extra bed/towel/laundry/dll dari tool create_service_request) toggle sendiri."""
+    (extra bed/towel/laundry/dll dari tool create_service_request) toggle sendiri.
+    `room_nomor` (2026-07-20) - kalau tamu sebutkan nomor kamarnya sendiri di chat, dikirim
+    ke PMS supaya diprioritaskan di atas pencarian otomatis by no_hp (yang bisa gagal kosong
+    kalau nomor WA tamu tidak persis cocok dengan yang tercatat di checkin/booking)."""
     cap_key = "create_service_request" if tipe == "service_request" else "create_maintenance_ticket"
     cfg = await _pms_config()
     if not cfg["capabilities"].get(cap_key):
         return {"ok": False, "error": f"Fitur '{cap_key}' dinonaktifkan di panel Integrasi PMS"}
     if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
         return {"ok": False, "error": "PMS URL/API Key belum dikonfigurasi"}
-    payload = {"tipe": tipe, "deskripsi": deskripsi, "no_hp": whatsapp, "nama_tamu": guest_name}
+    payload = {"tipe": tipe, "deskripsi": deskripsi, "no_hp": whatsapp, "nama_tamu": guest_name, "room_nomor": room_nomor or None}
     path = cfg["endpoints"]["tiket_path"]
     started = time.time()
     try:
