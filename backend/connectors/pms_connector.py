@@ -30,6 +30,7 @@ PMS_DEFAULT_ENDPOINTS = {
     "rules_path": "/api/integrasi-ai-bot/rules",
     "booking_status_path": "/api/integrasi-ai-bot/booking-status",
     "cancel_request_path": "/api/integrasi-ai-bot/cancel-request",
+    "alert_owner_path": "/api/integrasi-ai-bot/alert-owner",
 }
 
 # Kapabilitas yang BENAR-BENAR tersambung ke kode (toggle di luar daftar ini boleh
@@ -326,3 +327,24 @@ async def _sync_business_rules() -> dict:
     except Exception as e:
         await _pms_log(path, "GET", None, int((time.time() - started) * 1000), False, f"sync rule: {e}")
         return {"ok": False, "message": f"Gagal menghubungi PMS: {e}", "at": utc_now_iso()}
+
+
+async def _pms_alert_owner(pesan: str) -> bool:
+    """Relay alert Telegram ke owner lewat bot Telegram PMS yang sudah ada (2026-07-20) -
+    dipakai waha_health_monitor untuk lapor masalah koneksi WhatsApp SENDIRI (bukan reuse
+    endpoint tiket/booking, ini murni notifikasi infrastruktur). Best-effort, tidak raise -
+    kegagalan alert tidak boleh mengganggu logika health monitor itu sendiri."""
+    cfg = await _pms_config()
+    if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
+        return False
+    path = cfg["endpoints"].get("alert_owner_path", PMS_DEFAULT_ENDPOINTS["alert_owner_path"])
+    try:
+        async with httpx.AsyncClient(timeout=10) as http:
+            resp = await http.post(
+                f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, json={"pesan": pesan},
+            )
+        return resp.status_code < 400
+    except Exception as e:
+        logging.getLogger("waha_health").warning(f"Gagal kirim alert owner: {e}")
+        return False

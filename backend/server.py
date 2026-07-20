@@ -77,6 +77,7 @@ from connectors.pms_connector import (
 from connectors.webpelangi_connector import (
     _web_content_config, _sync_hotel_profile, _sync_faq,
 )
+from waha_health_monitor import waha_health_monitor_loop
 
 
 # ---- Rate Limiting ----
@@ -146,6 +147,7 @@ logger = logging.getLogger("pelangi")
 async def on_startup():
     await seed_all(db)
     logger.info("Seed complete")
+    asyncio.create_task(waha_health_monitor_loop())
 
 
 @app.on_event("shutdown")
