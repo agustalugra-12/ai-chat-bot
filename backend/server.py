@@ -79,6 +79,9 @@ from connectors.webpelangi_connector import (
     _web_content_config, _sync_hotel_profile, _sync_faq,
 )
 from waha_health_monitor import waha_health_monitor_loop
+from connectors.whatsapp_cloud_connector import (
+    WHATSAPP_CLOUD_PHONE_NUMBER_ID, _wa_cloud_send_text, _wa_cloud_send_image, _wa_cloud_send_document,
+)
 
 
 # ---- Rate Limiting ----
@@ -1406,13 +1409,57 @@ async def whatsapp_cloud_webhook_verify(request: Request):
 
 @api.post("/webhook/whatsapp-cloud")
 async def whatsapp_cloud_webhook_receive(request: Request):
-    """Terima notifikasi pesan masuk/update status dari Meta Cloud API. TAHAP AWAL (2026-07-20)
-    - cuma log payload dulu supaya setup webhook di dashboard Meta bisa diselesaikan; belum
-    disambungkan ke _run_chat_turn (alur balas AI sungguhan) - itu menyusul setelah akun WABA
-    & kredensial (access token, phone_number_id) selesai di-setup di sisi Meta."""
+    """Terima pesan masuk dari Meta Cloud API & balas lewat AI - pola SAMA PERSIS dengan
+    webhook_waha (reuse _run_chat_turn) supaya AI yang menjawab tamu konsisten apa pun
+    jalur WhatsApp-nya (WAHA lama vs Cloud API baru). Bedanya cuma bentuk payload masuk
+    (struktur resmi Meta: entry[0].changes[0].value.messages[0]) & fungsi kirim balasan
+    (_wa_cloud_send_text/_wa_cloud_send_image, bukan _waha_send_*).
+
+    TAHAP AWAL (2026-07-20): kredensial di .env masih WABA & nomor UJI COBA Meta, bukan
+    nomor Admin asli - aman untuk tes end-to-end dulu. `phone_number_id` dipakai sebagai
+    padanan `channel_id` WAHA untuk multi-nomor (channel_type="whatsapp_cloud" di ai_bots),
+    fallback ke bot default (booking_marketing) kalau belum ada yang ditautkan."""
     payload = await request.json()
-    logging.getLogger("whatsapp_cloud").info(f"Webhook Cloud API diterima: {payload}")
-    return {"ok": True}
+    try:
+        entry = (payload.get("entry") or [{}])[0]
+        change = (entry.get("changes") or [{}])[0]
+        value = change.get("value") or {}
+        messages = value.get("messages") or []
+        if not messages:
+            return {"ok": True, "diabaikan": "bukan pesan masuk (mis. status update pengiriman)"}
+        msg = messages[0]
+        if msg.get("type") != "text":
+            return {"ok": True, "diabaikan": f"tipe pesan '{msg.get('type')}' belum didukung"}
+
+        phone = msg.get("from") or ""
+        message_text = ((msg.get("text") or {}).get("body") or "").strip()
+        if not phone or not message_text:
+            return {"ok": True, "diabaikan": "tanpa nomor pengirim/isi pesan"}
+
+        contacts = value.get("contacts") or []
+        guest_name = ((contacts[0].get("profile") or {}) if contacts else {}).get("name") or phone
+        phone_number_id = (value.get("metadata") or {}).get("phone_number_id") or WHATSAPP_CLOUD_PHONE_NUMBER_ID
+
+        linked_bot = await db.ai_bots.find_one({"channel_type": "whatsapp_cloud", "channel_id": phone_number_id})
+        bot_id = linked_bot["_id"] if linked_bot else None
+        session_id = f"wac-{phone_number_id}-{phone}"
+
+        hasil = await _run_chat_turn(session_id, message_text, guest_name, phone, bot_id, None, channel="whatsapp")
+        if hasil.get("reply"):
+            await asyncio.sleep(random.uniform(3, 5))
+            clean_text, image_urls = parse_img_markers(hasil["reply"])
+            if clean_text:
+                await _wa_cloud_send_text(phone, clean_text, phone_number_id=phone_number_id)
+            for i, url in enumerate(image_urls):
+                if i > 0:
+                    await asyncio.sleep(random.uniform(1, 2))
+                room = await db.rooms.find_one({"$or": [{"photo_url": url}, {"images.url": url}]})
+                caption = room["name"] if room else ""
+                await _wa_cloud_send_image(phone, url, caption, phone_number_id=phone_number_id)
+        return {"ok": True}
+    except Exception as e:
+        logging.getLogger("whatsapp_cloud").warning(f"Gagal proses webhook Cloud API: {e}")
+        return {"ok": True}
 
 
 @api.post("/webhook/waha")
