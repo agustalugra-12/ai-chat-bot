@@ -98,6 +98,34 @@ async def _waha_send_image(chat_id: str, image_url: str, caption: str = "", sess
         return False
 
 
+async def _waha_send_file(chat_id: str, filename: str, mimetype: str, data_base64: str, caption: str = "", session: str = WAHA_SESSION) -> bool:
+    """Kirim dokumen SUNGGUHAN (PDF dst) sebagai attachment WA - pola sama dengan
+    _waha_send_image, tapi pakai /api/sendFile & data base64 langsung (bukan url) karena
+    dokumennya digenerate on-the-fly di pemanggil (mis. slip gaji PDF, routes/payroll.py
+    di repo PMS lewat relay /send-document), tidak pernah di-hosting di mana pun dulu."""
+    if not WAHA_BASE_URL or not WAHA_API_KEY:
+        logging.getLogger("waha").warning("WAHA_BASE_URL/WAHA_API_KEY belum diisi — dokumen tidak terkirim ke tamu")
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=30) as http:
+            resp = await http.post(
+                f"{WAHA_BASE_URL.rstrip('/')}/api/sendFile",
+                headers={"X-Api-Key": WAHA_API_KEY},
+                json={
+                    "session": session, "chatId": chat_id,
+                    "file": {"mimetype": mimetype, "filename": filename, "data": data_base64},
+                    "caption": caption or "",
+                },
+            )
+            if resp.status_code >= 400:
+                logging.getLogger("waha").warning(f"WAHA sendFile gagal HTTP {resp.status_code}: {resp.text[:300]}")
+                return False
+            return True
+    except Exception as e:
+        logging.getLogger("waha").warning(f"Gagal memanggil WAHA sendFile: {e}")
+        return False
+
+
 async def _waha_list_sessions() -> list:
     """Semua session WAHA (nomor WA) yang ada, apapun statusnya - dipakai panel koneksi
     supaya owner lihat semua nomor sekaligus, bukan cuma satu."""

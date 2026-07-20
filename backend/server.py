@@ -65,7 +65,7 @@ from seed import seed_all
 # Lihat connectors/__init__.py untuk penjelasan pembagian tanggung jawabnya.
 from connectors.waha_connector import (
     WAHA_BASE_URL, WAHA_API_KEY, WAHA_SESSION, WAHA_WEBHOOK_TOKEN,
-    _waha_call, _waha_send_text, _waha_send_image, _waha_list_sessions, _waha_ensure_session,
+    _waha_call, _waha_send_text, _waha_send_image, _waha_send_file, _waha_list_sessions, _waha_ensure_session,
 )
 from connectors.pms_connector import (
     PMS_API_BASE_URL, PMS_API_KEY, PMS_DEFAULT_ENDPOINTS,
@@ -1344,6 +1344,35 @@ async def send_message_relay(body: SendMessageIn, request: Request, _rl: None = 
     await _pms_log("/send-message", "POST", 200 if ok else 502, 0, ok, f"to {digits}")
     if not ok:
         raise HTTPException(502, "Gagal mengirim pesan lewat WAHA")
+    return {"ok": True}
+
+
+class SendDocumentIn(BaseModel):
+    to: str
+    filename: str
+    mimetype: str = "application/pdf"
+    data_base64: str
+    caption: str = ""
+
+
+@api.post("/send-document")
+async def send_document_relay(body: SendDocumentIn, request: Request, _rl: None = Depends(rate_limiter(10, 10))):
+    """Sibling dari /send-message tapi untuk FILE (2026-07-20, dipakai routes/payroll.py di
+    repo PMS untuk kirim slip gaji PDF ke WA staf) - auth & pola identik dengan
+    send_message_relay, cuma payloadnya dokumen base64 bukan teks."""
+    cfg = await _pms_config()
+    auth = request.headers.get("Authorization", "")
+    key = auth[7:] if auth.startswith("Bearer ") else ""
+    if not cfg.get("send_message_api_key") or not key or not secrets.compare_digest(key, cfg["send_message_api_key"]):
+        raise HTTPException(401, "API key tidak valid")
+
+    digits = _normalize_phone(body.to or "")
+    if not digits or not body.data_base64:
+        raise HTTPException(400, "to/data_base64 tidak valid")
+    ok = await _waha_send_file(f"{digits}@c.us", body.filename, body.mimetype, body.data_base64, body.caption)
+    await _pms_log("/send-document", "POST", 200 if ok else 502, 0, ok, f"to {digits}")
+    if not ok:
+        raise HTTPException(502, "Gagal mengirim dokumen lewat WAHA")
     return {"ok": True}
 
 
