@@ -731,6 +731,11 @@ async def _tool_create_booking(args: dict, conv: dict) -> dict:
         if br.get("preview_diskon_persen"):
             result["diskon_member_persen"] = br["preview_diskon_persen"]
             result["kedatangan_ke"] = br["preview_kedatangan_ke"]
+        # Rincian harga (2026-07-20, permintaan user: tamu WAJIB dijelaskan harga kamar,
+        # service fee 3%, & diskon setelah menawarkan DP/lunas) - None kalau room_tipe tidak
+        # valid, AI tetap lanjut tanpa rincian (lihat _hitung_preview_harga di PMS).
+        if br.get("preview_harga"):
+            result["rincian_harga"] = br["preview_harga"]
         return result
     except Exception as e:
         return {"ok": False, "tool": "create_booking", "error": str(e)}
