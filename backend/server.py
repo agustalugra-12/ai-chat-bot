@@ -1209,6 +1209,37 @@ async def _run_chat_turn(
             )
             final_text = final_text_tanpa_link or "Baik, link pembayaran sudah dikirim ke WhatsApp Kakak secara terpisah ya."
 
+    # Jaring pengaman level KODE (2026-07-24) - insiden nyata ditemukan lewat pengujian
+    # Chat Simulator (bukan laporan tamu): meski prompt SUDAH menegaskan "extra bed HANYA
+    # tersedia untuk tipe Cottage, Standard TIDAK BISA pakai extra bed sama sekali" (lihat
+    # SYSTEM_PROMPT di ai_service.py), model tetap mengarang kebijakan usia-anak palsu &
+    # menyetujui extra bed untuk kamar Standard lengkap dengan harga karangan sendiri -
+    # bahkan lanjut menanyakan tanggal check-in seolah booking itu valid. Sama seperti
+    # kasus service-fee/cancel_booking, prompt-only tidak cukup. Sinyal deteksi presisi
+    # tinggi: kalau balasan menyebut "extra bed" BERSAMA nama tipe kamar non-Cottage tanpa
+    # sama sekali menyebut "Cottage" - jawaban yang BENAR (baik menyetujui utk Cottage
+    # maupun menolak utk tipe lain) SELALU harus menyebut "Cottage" karena itu satu-satunya
+    # tipe yang valid, jadi ketidakhadirannya adalah sinyal kuat klaim tsb salah/karangan.
+    if re.search(r"extra\s*bed", final_text, re.IGNORECASE) and "cottage" not in final_text.lower():
+        logging.getLogger("hallucination_guard").warning(
+            f"extra bed non-Cottage hallucination terdeteksi & dikoreksi - conv {conv.get('_id')}, "
+            f"teks asli: {final_text!r}"
+        )
+        final_text = (
+            "Mohon maaf Kak, ada koreksi ya - extra bed hanya tersedia untuk tipe kamar Cottage "
+            "(kapasitas jadi 3 dewasa + 1 anak). Untuk tipe kamar lain (termasuk Standard), extra bed "
+            "tidak tersedia sama sekali, bukan soal stok/usia anak, memang tidak ditawarkan untuk tipe "
+            "itu. Kalau Kakak butuh kapasitas lebih dari 2 dewasa + 1 anak per kamar, saya sarankan "
+            "pilih kamar Cottage ya. Mau saya bantu cek ketersediaannya? 😊"
+        )
+        try:
+            await _pms_alert_owner(
+                f"⚠️ AI sempat mengarang kebijakan extra bed untuk kamar non-Cottage (auto-dikoreksi sistem) - "
+                f"tamu {conv.get('whatsapp') or whatsapp}"
+            )
+        except Exception:
+            pass
+
     ai_msg = {
         "role": "assistant",
         "content": final_text,
