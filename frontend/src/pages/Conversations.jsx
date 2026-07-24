@@ -121,7 +121,7 @@ export default function Conversations() {
             <>
               <div className="bg-white border-b border-[hsl(var(--border))] px-6 py-4 flex items-center justify-between">
                 <div>
-                  <div className="font-[Manrope] font-semibold text-lg">{selected.guest_name || "Tamu Anonim"}</div>
+                  <div className="font-[Fraunces] font-semibold text-lg">{selected.guest_name || "Tamu Anonim"}</div>
                   <div className="text-xs text-[hsl(var(--muted-foreground))]">{selected.whatsapp} · {selected.channel} · session {selected.session_id.slice(0, 8)}…</div>
                 </div>
                 <div className="flex items-center gap-2">

@@ -118,7 +118,7 @@ export default function KnowledgeBase() {
                       {!item.is_active && <Badge tone="muted">nonaktif</Badge>}
                       {item.images?.length > 0 && <Badge tone="success">{item.images.length} foto</Badge>}
                     </div>
-                    <div className="font-[Manrope] font-semibold">{item.title}</div>
+                    <div className="font-[Fraunces] font-semibold">{item.title}</div>
                     <div className="text-sm text-[hsl(var(--muted-foreground))] mt-1 whitespace-pre-wrap line-clamp-3">{item.content}</div>
                     {item.images?.length > 0 && (
                       <div className="mt-2 flex gap-1.5">
@@ -205,7 +205,7 @@ export function Modal({ title, children, onClose }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40" data-testid="modal-backdrop">
       <div className="bg-white rounded-xl w-full max-w-lg border border-[hsl(var(--border))] shadow-xl max-h-[90vh] flex flex-col" data-testid="modal">
         <div className="flex items-center justify-between px-5 py-4 border-b border-[hsl(var(--border))] shrink-0">
-          <div className="font-[Manrope] font-semibold">{title}</div>
+          <div className="font-[Fraunces] font-semibold">{title}</div>
           <button data-testid="modal-close" onClick={onClose} className="p-1.5 rounded-md hover:bg-[hsl(var(--muted))] shrink-0"><X className="w-4 h-4" /></button>
         </div>
         <div className="p-5 overflow-y-auto pelangi-scroll">{children}</div>

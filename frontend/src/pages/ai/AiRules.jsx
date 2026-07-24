@@ -39,7 +39,7 @@ function BotRulesCard({ bot, onSaved }) {
       >
         <div className="flex items-center gap-2">
           {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-          <span className="font-[Manrope] font-semibold">{bot.name}</span>
+          <span className="font-[Fraunces] font-semibold">{bot.name}</span>
           <Badge tone={bot.status === "active" ? "success" : "muted"}>{bot.status}</Badge>
           <span className="text-xs text-[hsl(var(--muted-foreground))]">{rules.length} aturan</span>
         </div>

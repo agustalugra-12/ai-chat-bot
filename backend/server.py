@@ -21,6 +21,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, APIRouter, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import PlainTextResponse
+from pymongo.errors import DuplicateKeyError
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
 
@@ -73,7 +74,8 @@ from connectors.pms_connector import (
     PMS_CAPABILITY_WIRED, PMS_DEFAULT_CAPABILITIES, PMS_INTEGRATION_DEFAULT,
     SYNC_KINDS,
     _pms_config, _pms_log, _pms_ketersediaan, _pms_buat_booking_request,
-    _pms_buat_tiket, _pms_status_booking, _pms_ajukan_pembatalan, _sync_business_rules,
+    _pms_buat_tiket, _pms_status_booking, _pms_status_member, _pms_ajukan_pembatalan, _sync_business_rules,
+    _pms_alert_owner, _pms_preview_harga,
 )
 from connectors.webpelangi_connector import (
     _web_content_config, _sync_hotel_profile, _sync_faq,
@@ -152,6 +154,8 @@ async def on_startup():
     await seed_all(db)
     logger.info("Seed complete")
     asyncio.create_task(waha_health_monitor_loop())
+    await db.wa_cloud_dedup.create_index("wamid", unique=True)
+    await db.wa_cloud_dedup.create_index("ts", expireAfterSeconds=86400)
 
 
 @app.on_event("shutdown")
@@ -529,12 +533,12 @@ async def convs_reply(conv_id: str, body: ConvReplyIn, user=Depends(get_current_
     )
 
     sent_to_whatsapp = False
-    if conv.get("channel") == "whatsapp" and conv.get("whatsapp"):
-        # Balas lewat nomor WA yang SAMA dengan yang tamu hubungi (bisa beda-beda sejak
-        # multi-nomor per AI bot, 2026-07-19) - fallback ke default kalau conv lama belum
-        # punya field ini (dibuat sebelum fitur ini ada).
-        await _waha_send_text(f"{conv['whatsapp']}@c.us", text, session=conv.get("waha_session") or WAHA_SESSION)
-        sent_to_whatsapp = True
+    if conv.get("channel") in ("whatsapp", "whatsapp_cloud") and conv.get("whatsapp"):
+        # Balas lewat channel & nomor WA yang SAMA dengan yang tamu hubungi (WAHA atau
+        # Cloud API, bisa beda-beda sejak multi-nomor per AI bot 2026-07-19 dan migrasi
+        # Cloud API 2026-07-21) - fallback ke default kalau conv lama belum punya field ini
+        # (dibuat sebelum fitur ini ada).
+        sent_to_whatsapp = await _send_wa_smart(conv, text)
 
     await _audit_log(user, "conversation_manual_reply", f"conv {conv_id}: {text[:200]}")
     return {"ok": True, "sent_to_whatsapp": sent_to_whatsapp}
@@ -625,12 +629,13 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
         kb_q["category"] = {"$in": bot["knowledge_categories"]}
     kb = await db.knowledge_base.find(kb_q).to_list(500)
     settings = await db.settings.find_one({"_id": "singleton"}) or {}
-    # Foto kamar (nama + galeri) - koleksi db.rooms LOKAL ai-chat-bot (bukan _pms_ketersediaan
-    # di atas, yang cuma tipe/tarif/stok live dari PMS, TIDAK ADA field foto sama sekali).
-    # Ditemukan 2026-07-19 dari laporan user: tanpa ini AI cuma punya akses ke foto KB
-    # (galeri/facilities umum), jadi saat diminta foto kamar AI asal kirim foto KB yang
-    # salah - bukan foto kamar sungguhan.
-    room_photos = await db.rooms.find({}, {"name": 1, "photo_url": 1, "images": 1}).to_list(50)
+    # Foto + fasilitas/deskripsi kamar - koleksi db.rooms LOKAL ai-chat-bot (bukan
+    # _pms_ketersediaan di atas, yang cuma tipe/tarif/stok live dari PMS, TIDAK ADA field
+    # foto/fasilitas sama sekali). Ditemukan 2026-07-19 (foto) & 2026-07-21 (fasilitas) dari
+    # laporan user: tanpa ini AI mengarang fasilitas kamar generik dari pengetahuan umum
+    # (mis. "AC, lemari pakaian") - staf sudah isi fasilitas asli di halaman Room Management
+    # tapi datanya tidak pernah sampai ke context AI sama sekali, cuma foto yang disertakan.
+    room_photos = await db.rooms.find({}, {"name": 1, "photo_url": 1, "images": 1, "facilities": 1, "description": 1}).to_list(50)
     base = build_context_block(rooms, menu, kb, settings, room_photos)
 
     # Business Rules (Rule Engine tahap 1) - SENGAJA terpisah dari Knowledge Base (KB isinya
@@ -701,10 +706,40 @@ async def _tool_check_availability(args: dict, conv: dict) -> dict:
         return {"ok": False, "tool": "check_availability", "error": str(e)}
 
 
+@register_tool("preview_booking", {"create_booking"})
+async def _tool_preview_booking(args: dict, conv: dict) -> dict:
+    """Preview rincian harga (SEBELUM booking_request sungguhan dibuat, tidak menulis apapun
+    ke PMS) - dipakai AI untuk ringkas & minta konfirmasi tamu sebelum create_booking
+    (2026-07-21, permintaan user). Args sama dengan create_booking (minus guest_name/
+    payment_option/jumlah_tamu, tidak relevan utk hitung harga)."""
+    if not args.get("whatsapp"):
+        args = {**args, "whatsapp": conv.get("whatsapp")}
+    required = ["whatsapp", "tipe", "room_tipe", "tanggal_checkin"]
+    for k in required:
+        if not args.get(k):
+            return {"ok": False, "tool": "preview_booking", "error": f"missing {k}"}
+    hasil = await _pms_preview_harga(args)
+    if not hasil.get("ok"):
+        return {"ok": False, "tool": "preview_booking", "error": hasil.get("error")}
+    result = {"ok": True, "tool": "preview_booking", "kedatangan_ke": hasil.get("kedatangan_ke")}
+    if hasil.get("diskon_member_persen"):
+        result["diskon_member_persen"] = hasil["diskon_member_persen"]
+    if hasil.get("diskon_ai_persen"):
+        result["diskon_diskresi_persen"] = hasil["diskon_ai_persen"]
+    if hasil.get("preview_harga"):
+        result["rincian_harga"] = hasil["preview_harga"]
+    return result
+
+
 @register_tool("create_booking", {"create_booking"})
 async def _tool_create_booking(args: dict, conv: dict) -> dict:
     try:
         logging.getLogger("pms").info(f"create_booking args diterima dari AI: {args}")
+        # Fallback nomor WA (2026-07-21) - prompt sudah instruksikan AI pakai nomor tamu dari
+        # konteks tanpa nanya, tapi jangan sampai booking gagal cuma karena AI lupa
+        # menyertakan field ini di tool call - default ke nomor sesi chat yang sesungguhnya.
+        if not args.get("whatsapp") and conv.get("whatsapp"):
+            args["whatsapp"] = conv["whatsapp"]
         required = ["guest_name", "whatsapp", "tipe", "room_tipe", "tanggal_checkin"]
         for k in required:
             if not args.get(k):
@@ -732,11 +767,19 @@ async def _tool_create_booking(args: dict, conv: dict) -> dict:
             result["checkout_url"] = br["checkout_url"]
         if br.get("status") == "rejected":
             result["rejected_reason"] = br.get("rejected_reason")
-        # Program Loyalitas Kedatangan - kalau tamu dapat diskon member, sampaikan di sini
-        # supaya AI menyebutkannya ke tamu (lihat instruksi di TOOL_DOCS ai_service.py).
-        if br.get("preview_diskon_persen"):
-            result["diskon_member_persen"] = br["preview_diskon_persen"]
+        # Program Loyalitas Kedatangan - "kedatangan_ke" SELALU disertakan (permintaan user
+        # 2026-07-21: tamu harus selalu tahu ini kedatangan ke berapa, bukan cuma pas dapat
+        # diskon - bagian dari kesan "dilayani sepenuh hati"), "diskon_member_persen" cuma
+        # ada kalau >0. DIPISAH dari diskon diskresi - preview_diskon_persen di PMS angka
+        # GABUNGAN (max member vs diskresi), field mentah member sendiri ada di
+        # preview_diskon_member_persen supaya AI pakai kalimat yang BENAR sesuai sumbernya
+        # (member = "kedatangan ke-N", diskresi = kalimat kebijakan diskon di TOOL_DOCS).
+        if br.get("preview_kedatangan_ke"):
             result["kedatangan_ke"] = br["preview_kedatangan_ke"]
+        if br.get("preview_diskon_member_persen"):
+            result["diskon_member_persen"] = br["preview_diskon_member_persen"]
+        if br.get("diskon_ai_persen"):
+            result["diskon_diskresi_persen"] = br["diskon_ai_persen"]
         # Rincian harga (2026-07-20, permintaan user: tamu WAJIB dijelaskan harga kamar,
         # service fee 3%, & diskon setelah menawarkan DP/lunas) - None kalau room_tipe tidak
         # valid, AI tetap lanjut tanpa rincian (lihat _hitung_preview_harga di PMS).
@@ -802,6 +845,23 @@ async def _tool_create_maintenance_ticket(args: dict, conv: dict) -> dict:
         return {"ok": False, "tool": "create_maintenance_ticket", "error": str(e)}
 
 
+def _rename_kode_permintaan(items: list) -> list:
+    """PMS ngembaliin tiap item dengan 2 field "kode" yang beda arti - top-level "kode"
+    itu kode PERMINTAAN booking (REQ-...), sedangkan booking_ringkasan[].kode itu kode
+    BOOKING ASLI (BKO-...) yang valid dipakai cancel_booking. Ditemukan 2026-07-21 lewat
+    laporan user: AI ketuker pakai kode REQ- utk cancel_booking (nama field sama-sama
+    "kode", gampang salah), PMS diam-diam tidak menemukan booking dengan kode itu, jadi
+    permintaan pembatalan TIDAK PERNAH benar-benar tersimpan. Ganti nama field top-level
+    supaya SECARA STRUKTUR tidak mungkin ketuker lagi - cuma booking_ringkasan[].kode yang
+    masih bernama "kode"."""
+    out = []
+    for it in items:
+        it2 = dict(it)
+        it2["kode_permintaan"] = it2.pop("kode", None)
+        out.append(it2)
+    return out
+
+
 @register_tool("lookup_booking", {"lookup_booking"})
 async def _tool_lookup_booking(args: dict, conv: dict) -> dict:
     wa = args.get("whatsapp") or conv.get("whatsapp")
@@ -810,24 +870,41 @@ async def _tool_lookup_booking(args: dict, conv: dict) -> dict:
     hasil = await _pms_status_booking(wa)
     if not hasil.get("ok"):
         return {"ok": False, "tool": "lookup_booking", "error": hasil.get("error")}
-    return {"ok": True, "tool": "lookup_booking", "result": hasil.get("permintaan") or []}
+    return {"ok": True, "tool": "lookup_booking", "result": _rename_kode_permintaan(hasil.get("permintaan") or [])}
+
+
+@register_tool("check_member_status", {"create_booking"})
+async def _tool_check_member_status(args: dict, conv: dict) -> dict:
+    """Status Program Loyalitas Kedatangan (2026-07-21, permintaan user: AI proaktif sebut
+    diskon member di AWAL percakapan begitu tamu tunjukkan niat booking, bukan cuma pas
+    booking sudah dibuat). Digate di tool_codes yang sama dengan create_booking - lihat
+    _pms_status_member."""
+    wa = args.get("whatsapp") or conv.get("whatsapp")
+    if not wa:
+        return {"ok": False, "tool": "check_member_status", "error": "missing whatsapp"}
+    hasil = await _pms_status_member(wa)
+    if not hasil.get("ok"):
+        return {"ok": False, "tool": "check_member_status", "error": hasil.get("error")}
+    return {"ok": True, "tool": "check_member_status", "kedatangan_ke": hasil.get("kedatangan_ke"), "diskon_persen": hasil.get("diskon_persen")}
 
 
 @register_tool("cancel_booking", {"cancel_booking"})
 async def _tool_cancel_booking(args: dict, conv: dict) -> dict:
     """Non-binding - AI TIDAK PERNAH langsung membatalkan booking sungguhan (sama seperti
     create_booking), cuma menyampaikan info ke PMS lewat _pms_ajukan_pembatalan; PMS
-    mencatat & staf approve/reject manual. `kode` WAJIB kode booking sungguhan (BKO-...,
-    didapat dari lookup_booking -> booking_ringkasan.kode), bukan kode booking_request."""
+    mencatat & staf approve/reject manual. `kode` OPSIONAL (2026-07-21) - kosong = PMS cari
+    otomatis dari nomor WA (aman kalau tamu cuma punya 1 booking aktif; kalau lebih dari 1,
+    PMS balas error dengan field "kandidat" - lihat instruksi tool ini di TOOL_DOCS)."""
     kode = (args.get("kode") or "").strip()
-    if not kode:
-        return {"ok": False, "tool": "cancel_booking", "error": "missing kode - pakai lookup_booking dulu untuk dapat kode booking"}
     wa = args.get("whatsapp") or conv.get("whatsapp")
     if not wa:
         return {"ok": False, "tool": "cancel_booking", "error": "missing whatsapp"}
     hasil = await _pms_ajukan_pembatalan(kode, wa, args.get("alasan") or "")
     if not hasil.get("ok"):
-        return {"ok": False, "tool": "cancel_booking", "error": hasil.get("error")}
+        result = {"ok": False, "tool": "cancel_booking", "error": hasil.get("error")}
+        if hasil.get("kandidat"):
+            result["kandidat"] = hasil["kandidat"]
+        return result
     return {
         "ok": True, "tool": "cancel_booking", "kode": hasil.get("kode"),
         "policy_label": hasil.get("policy_label"), "refund_estimate": hasil.get("refund_estimate"),
@@ -881,10 +958,50 @@ async def _handle_tool(tool: str, args: dict, conv: dict) -> Optional[dict]:
     return await entry["handler"](args, conv)
 
 
+def _channel_info_from_conv(conv: dict) -> tuple[str, Optional[str]]:
+    """Balik (channel, identifier) dari sebuah percakapan - pakai `session_id` sbg sumber
+    kebenaran (self-describing: prefix "wac-{phone_number_id}-..." utk Cloud API,
+    "wa-{waha_session}-..." utk WAHA) BUKAN cuma field `channel`/`cloud_phone_number_id`,
+    karena field itu baru mulai diisi 2026-07-21 - percakapan yg dibuat sebelum tanggal itu
+    (channel cuma "whatsapp" generik, cloud_phone_number_id None) tetap harus ke-detect
+    benar lewat session_id-nya, bukan diam-diam jatuh ke WAHA."""
+    sid = conv.get("session_id") or ""
+    if sid.startswith("wac-"):
+        parts = sid.split("-")
+        phone_number_id = conv.get("cloud_phone_number_id") or (parts[1] if len(parts) > 1 else None)
+        return "whatsapp_cloud", phone_number_id
+    return "whatsapp", conv.get("waha_session")
+
+
+async def _send_wa_smart(conv: dict, text: str) -> bool:
+    """Kirim pesan ke tamu WhatsApp lewat channel yang SAMA dengan yang dipakai tamu itu
+    ngobrol (WAHA atau Cloud API), lihat `_channel_info_from_conv`. Dipakai baik untuk
+    balasan manual staf (human handover) maupun relay notifikasi dari PMS (/send-message,
+    /send-document) - sebelum ada fungsi ini, KEDUANYA selalu hardcode ke WAHA meski
+    tamunya chat lewat Cloud API (ditemukan 2026-07-21 lewat laporan user: voucher booking
+    gagal terkirim krn WAHA session down, padahal tamu itu chat via Cloud API yang sehat)."""
+    if not conv.get("whatsapp"):
+        return False
+    channel, identifier = _channel_info_from_conv(conv)
+    if channel == "whatsapp_cloud":
+        return await _wa_cloud_send_text(conv["whatsapp"], text, phone_number_id=identifier or "")
+    return await _waha_send_text(f"{conv['whatsapp']}@c.us", text, session=identifier or WAHA_SESSION)
+
+
+async def _send_wa_document_smart(conv: dict, filename: str, mimetype: str, data_base64: str, caption: str = "") -> bool:
+    """Sibling dokumen dari `_send_wa_smart` - sama polanya, dipakai relay /send-document."""
+    if not conv.get("whatsapp"):
+        return False
+    channel, identifier = _channel_info_from_conv(conv)
+    if channel == "whatsapp_cloud":
+        return await _wa_cloud_send_document(conv["whatsapp"], filename, data_base64, caption, phone_number_id=identifier or "")
+    return await _waha_send_file(f"{conv['whatsapp']}@c.us", filename, mimetype, data_base64, caption, session=identifier or WAHA_SESSION)
+
+
 async def _run_chat_turn(
     session_id: str, message: str, guest_name: Optional[str], whatsapp: Optional[str],
     bot_id: Optional[str], bot_code: Optional[str], channel: str = "simulator",
-    waha_session: Optional[str] = None,
+    waha_session: Optional[str] = None, cloud_phone_number_id: Optional[str] = None,
 ) -> dict:
     """Inti alur 1 giliran chat (load bot, build context, panggil AI, tool-calling,
     simpan percakapan) — dipakai `/chat/message` (simulator, staf login) DAN webhook WAHA
@@ -907,6 +1024,7 @@ async def _run_chat_turn(
             "whatsapp": whatsapp,
             "channel": channel,
             "waha_session": waha_session,
+            "cloud_phone_number_id": cloud_phone_number_id,
             "messages": [],
             "status": "active",
             "resolution": "unresolved",
@@ -977,10 +1095,20 @@ async def _run_chat_turn(
         else:
             tool_result = await _handle_tool(tool, args or {}, conv)
         # give AI a chance to acknowledge tool result with a second turn
+        # PENGETATAN 2026-07-21 (insiden nyata berulang: AI narasikan "pembatalan sudah
+        # diajukan" padahal tool yang barusan dipanggil cuma lookup_booking, cancel_booking
+        # TIDAK PERNAH benar-benar dipanggil - lihat catatan cancel_booking di TOOL_DOCS).
+        # Instruksi umum "sampaikan konfirmasi natural" ternyata tidak cukup mencegah model
+        # menyimpulkan/mengarang hasil tool LAIN yang belum dipanggil - dipertegas di sini
+        # supaya narasi TERIKAT KETAT ke tool yang BENAR-BENAR baru saja dieksekusi.
         follow_up_user = (
             f"[SISTEM] Hasil tool `{tool}`: {tool_result}. "
-            f"Sampaikan konfirmasi natural ke tamu (Bahasa Indonesia, sopan, singkat). "
-            f"Jangan panggil tool lagi kecuali tamu memintanya."
+            f"Sampaikan konfirmasi natural ke tamu (Bahasa Indonesia, sopan, singkat) - TAPI JANGAN PERNAH mengklaim "
+            f"hasil/status dari tool LAIN yang BELUM dipanggil di giliran ini. Contoh nyata yang HARUS dihindari: kalau "
+            f"tool yang dipanggil cuma `lookup_booking` (mencari data), JANGAN bilang 'pembatalan sudah diajukan'/'sudah "
+            f"diproses' - itu klaim dari tool `cancel_booking` yang BELUM dipanggil. Kalau tamu jelas ingin lanjut ke "
+            f"aksi berikutnya (mis. batalkan) berdasar hasil lookup ini, TANYA konfirmasi & sebutkan kamu akan proses di "
+            f"langkah berikutnya - JANGAN klaim sudah selesai. Jangan panggil tool lagi kecuali tamu memintanya."
         )
         history_after = compact_history(
             conv["messages"] + [{"role": "assistant", "content": clean_text or "(tool call)"}],
@@ -991,6 +1119,95 @@ async def _run_chat_turn(
         final_text = (clean_text + "\n\n" + follow_clean).strip() if clean_text else follow_clean
     else:
         final_text = clean_text
+
+    # Jaring pengaman level KODE (2026-07-21) - insiden BERULANG (3x dalam 1 sesi, makin
+    # parah): AI (gpt-4o-mini) kadang mengklaim pembatalan "sudah diajukan"/"sedang
+    # ditinjau" TANPA memanggil cancel_booking SAMA SEKALI di giliran ini (bukan cuma salah
+    # tool - kali ini tool==None total). Prompt sudah diperkuat 3x, tetap kambuh - ini
+    # BUKAN lagi masalah instruksi kurang jelas, model ini genuinely tidak reliable untuk
+    # pola ini. Deteksi klaim itu di TEKS BALASAN, kalau cancel_booking TIDAK benar-benar
+    # dipanggil giliran ini, PAKSA panggil sungguhan (kode kosong - PMS auto-cari, aman)
+    # supaya tamu SELALU dapat balasan yang mencerminkan REALITAS, bukan karangan model.
+    if tool != "cancel_booking" and re.search(
+        r"pembatalan[^.]{0,120}(sudah|telah)\s+(di)?ajukan"
+        r"|(sudah|telah)\s+dalam\s+proses\s+pembatalan"
+        r"|permintaan\s+pembatalan[^.]{0,120}(sudah|telah)"
+        r"|(sudah|telah)\s+(kami\s+)?(setujui|disetujui)",
+        final_text, re.IGNORECASE,
+    ):
+        wa_guard = conv.get("whatsapp") or whatsapp
+        koreksi = await _pms_ajukan_pembatalan("", wa_guard, "") if wa_guard else {"ok": False, "error": "missing whatsapp"}
+        if koreksi.get("ok"):
+            final_text = (
+                f"Baik, permintaan pembatalan booking {koreksi.get('kode')} sudah saya ajukan ke staf kami. "
+                f"Sesuai kebijakan: {koreksi.get('policy_label')}. Setelah staf setujui, Anda akan dapat "
+                f"konfirmasi terpisah dengan rincian refund pastinya."
+            )
+        elif koreksi.get("kandidat"):
+            daftar = "\n".join(f"- {k['kode']} ({k.get('room_tipe')}, {k.get('tanggal')})" for k in koreksi["kandidat"])
+            final_text = f"Kak, Anda punya beberapa booking aktif - yang mana yang mau dibatalkan?\n{daftar}"
+        else:
+            final_text = koreksi.get("error") or "Maaf, saya belum bisa memproses pembatalan ini - boleh sebutkan kode booking yang mau dibatalkan?"
+        logging.getLogger("hallucination_guard").warning(
+            f"cancel_booking hallucination terdeteksi & dikoreksi - conv {conv.get('_id')}, wa {wa_guard}, hasil: {koreksi}"
+        )
+        try:
+            await _pms_alert_owner(
+                f"⚠️ AI sempat mengklaim pembatalan tanpa memproses sungguhan (auto-dikoreksi sistem) - "
+                f"tamu {wa_guard}, hasil: {'berhasil diajukan' if koreksi.get('ok') else koreksi.get('error')}"
+            )
+        except Exception:
+            pass
+
+    # Jaring pengaman level KODE (2026-07-22) - insiden nyata: AI menulis RINGKASAN harga
+    # (Nama/Tipe/Harga/Service X%/Total) TANPA memanggil preview_booking sama sekali (tool
+    # giliran ini None/lain), lalu mengarang service fee "10%" dan bahkan NGOTOT ketika tamu
+    # koreksi ("service fee kami 10%") - padahal server SELALU pakai 3% tetap (SERVICE_FEE_PCT
+    # di PMS core.py). Beda dari kasus cancel_booking, di sini kita TIDAK punya cara aman
+    # untuk auto-panggil preview_booking (butuh tipe kamar/tanggal terstruktur yang belum
+    # tentu lengkap) - tapi angka 3% itu KONSTANTA GLOBAL yang tidak pernah berubah per
+    # booking, jadi aman dikoreksi langsung di teks tanpa perlu tool call apapun.
+    _SERVICE_FEE_PERSEN_BENAR = 3
+    def _koreksi_service_fee_persen(m):
+        return m.group(0).replace(m.group(1), str(_SERVICE_FEE_PERSEN_BENAR))
+    final_text_koreksi, _n_koreksi = re.subn(
+        r"[Ss]ervice(?:\s+[Ff]ee)?[^%\n]{0,30}?(\d+)\s*%",
+        _koreksi_service_fee_persen, final_text,
+    )
+    if _n_koreksi and final_text_koreksi != final_text:
+        logging.getLogger("hallucination_guard").warning(
+            f"service fee persen salah terdeteksi & dikoreksi ke {_SERVICE_FEE_PERSEN_BENAR}% - "
+            f"conv {conv.get('_id')}, teks asli: {final_text!r}"
+        )
+        final_text = final_text_koreksi
+
+    # Jaring pengaman level KODE (2026-07-24) - insiden nyata BERULANG: instruksi prompt
+    # "JANGAN ulangi link checkout_url di balasan sendiri" (ditambahkan 2026-07-21 setelah
+    # laporan user pertama) TERBUKTI tidak selalu dipatuhi model - tamu tetap dapat link
+    # yang sama 2x (1x dari pesan WA terpisah yang PMS kirim otomatis, 1x lagi ditempel AI
+    # di balasannya sendiri). Sama seperti kasus service-fee di atas, prompt-only tidak
+    # cukup - paksa hapus link checkout_url dari teks apa pun yang ditulis AI kalau tool
+    # giliran ini create_booking DAN hasilnya benar-benar punya checkout_url (artinya PMS
+    # SUDAH mengirim pesan WA terpisah berisi link itu).
+    if tool == "create_booking" and isinstance(tool_result, dict) and tool_result.get("checkout_url"):
+        url = tool_result["checkout_url"]
+        if url in final_text:
+            # Ikut buang frasa pengantar tepat sebelum link ("...melalui link berikut:")
+            # supaya tidak menyisakan kalimat menggantung ("link berikut: .") - kalau
+            # frasa pengantar tidak ketemu, minimal link/markdown-nya tetap terhapus.
+            final_text_tanpa_link = re.sub(
+                r"(?:[^.\n]*?(?:link|tautan)[^.\n]*?:\s*)?"          # frasa pengantar opsional
+                r"(?:\[[^\]]*\]\(" + re.escape(url) + r"\)|" + re.escape(url) + r")"
+                r"\.?",
+                "", final_text, flags=re.IGNORECASE,
+            )
+            final_text_tanpa_link = re.sub(r"[ \t]{2,}", " ", final_text_tanpa_link)
+            final_text_tanpa_link = re.sub(r"\n{3,}", "\n\n", final_text_tanpa_link).strip()
+            logging.getLogger("hallucination_guard").warning(
+                f"AI menulis ulang link pembayaran padahal PMS sudah kirim terpisah - dihapus dari balasan. "
+                f"conv {conv.get('_id')}, teks asli: {final_text!r}"
+            )
+            final_text = final_text_tanpa_link or "Baik, link pembayaran sudah dikirim ke WhatsApp Kakak secara terpisah ya."
 
     ai_msg = {
         "role": "assistant",
@@ -1351,10 +1568,16 @@ async def send_message_relay(body: SendMessageIn, request: Request, _rl: None = 
     digits = _normalize_phone(body.to or "")
     if not digits or not body.message.strip():
         raise HTTPException(400, "to/message tidak valid")
-    ok = await _waha_send_text(f"{digits}@c.us", body.message)
+    # Cari percakapan terakhir nomor ini utk tau channel yg benar (WAHA atau Cloud API) -
+    # ditemukan 2026-07-21: sebelum ini SELALU hardcode WAHA meski tamunya chat via Cloud
+    # API, jadi notifikasi (voucher, link bayar dst) gagal diam-diam saat WAHA down padahal
+    # Cloud API-nya sehat. Fallback ke WAHA kalau belum pernah ada percakapan (mis. nomor
+    # dari input manual staf) - itu perilaku lama, tetap aman dipertahankan.
+    conv = await db.conversations.find_one({"whatsapp": digits}, sort=[("updated_at", -1)])
+    ok = await _send_wa_smart(conv, body.message) if conv else await _waha_send_text(f"{digits}@c.us", body.message)
     await _pms_log("/send-message", "POST", 200 if ok else 502, 0, ok, f"to {digits}")
     if not ok:
-        raise HTTPException(502, "Gagal mengirim pesan lewat WAHA")
+        raise HTTPException(502, "Gagal mengirim pesan lewat WhatsApp")
     return {"ok": True}
 
 
@@ -1380,10 +1603,15 @@ async def send_document_relay(body: SendDocumentIn, request: Request, _rl: None 
     digits = _normalize_phone(body.to or "")
     if not digits or not body.data_base64:
         raise HTTPException(400, "to/data_base64 tidak valid")
-    ok = await _waha_send_file(f"{digits}@c.us", body.filename, body.mimetype, body.data_base64, body.caption)
+    conv = await db.conversations.find_one({"whatsapp": digits}, sort=[("updated_at", -1)])
+    ok = (
+        await _send_wa_document_smart(conv, body.filename, body.mimetype, body.data_base64, body.caption)
+        if conv else
+        await _waha_send_file(f"{digits}@c.us", body.filename, body.mimetype, body.data_base64, body.caption)
+    )
     await _pms_log("/send-document", "POST", 200 if ok else 502, 0, ok, f"to {digits}")
     if not ok:
-        raise HTTPException(502, "Gagal mengirim dokumen lewat WAHA")
+        raise HTTPException(502, "Gagal mengirim dokumen lewat WhatsApp")
     return {"ok": True}
 
 
@@ -1402,7 +1630,7 @@ async def whatsapp_cloud_webhook_verify(request: Request):
     mode = params.get("hub.mode")
     token = params.get("hub.verify_token")
     challenge = params.get("hub.challenge") or ""
-    if mode == "subscribe" and WHATSAPP_CLOUD_VERIFY_TOKEN and token == WHATSAPP_CLOUD_VERIFY_TOKEN:
+    if mode == "subscribe" and WHATSAPP_CLOUD_VERIFY_TOKEN and secrets.compare_digest(token or "", WHATSAPP_CLOUD_VERIFY_TOKEN):
         return PlainTextResponse(challenge)
     raise HTTPException(403, "Verifikasi webhook gagal - token tidak cocok")
 
@@ -1426,10 +1654,24 @@ async def whatsapp_cloud_webhook_receive(request: Request):
         value = change.get("value") or {}
         messages = value.get("messages") or []
         if not messages:
+            statuses = value.get("statuses") or []
+            for s in statuses:
+                if s.get("status") == "failed":
+                    logging.getLogger("whatsapp_cloud").warning(f"Pesan GAGAL terkirim: {s}")
             return {"ok": True, "diabaikan": "bukan pesan masuk (mis. status update pengiriman)"}
         msg = messages[0]
         if msg.get("type") != "text":
             return {"ok": True, "diabaikan": f"tipe pesan '{msg.get('type')}' belum didukung"}
+
+        wamid = msg.get("id") or ""
+        if wamid:
+            try:
+                await db.wa_cloud_dedup.insert_one({"wamid": wamid, "ts": datetime.now(timezone.utc)})
+            except DuplicateKeyError:
+                # Meta kirim webhook yang sama lebih dari sekali (at-least-once delivery,
+                # terkonfirmasi nyata 2026-07-20 - 1 pesan tamu memicu 2 balasan AI sebelum
+                # dedup ini ada) - pesan dengan wamid yang sama diabaikan diam-diam.
+                return {"ok": True, "diabaikan": "duplikat webhook (wamid sudah diproses)"}
 
         phone = msg.get("from") or ""
         message_text = ((msg.get("text") or {}).get("body") or "").strip()
@@ -1444,7 +1686,10 @@ async def whatsapp_cloud_webhook_receive(request: Request):
         bot_id = linked_bot["_id"] if linked_bot else None
         session_id = f"wac-{phone_number_id}-{phone}"
 
-        hasil = await _run_chat_turn(session_id, message_text, guest_name, phone, bot_id, None, channel="whatsapp")
+        hasil = await _run_chat_turn(
+            session_id, message_text, guest_name, phone, bot_id, None,
+            channel="whatsapp_cloud", cloud_phone_number_id=phone_number_id,
+        )
         if hasil.get("reply"):
             await asyncio.sleep(random.uniform(3, 5))
             clean_text, image_urls = parse_img_markers(hasil["reply"])

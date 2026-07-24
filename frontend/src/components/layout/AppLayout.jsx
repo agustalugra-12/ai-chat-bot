@@ -4,7 +4,7 @@ import { useAuth } from "@/lib/auth";
 import {
   LayoutDashboard, MessagesSquare, BotMessageSquare, BookOpenText,
   BedDouble, UtensilsCrossed, CalendarCheck2, FileTerminal,
-  BarChart3, Settings as SettingsIcon, LogOut, Sparkles, FileStack,
+  BarChart3, Settings as SettingsIcon, LogOut, FileStack,
   Bot, Wrench, Target, Waypoints, ChevronDown, ChevronRight, Plug, ShieldCheck, ShieldAlert, Users,
 } from "lucide-react";
 
@@ -68,11 +68,11 @@ export default function AppLayout() {
     <div className="min-h-screen flex bg-[hsl(var(--background))]">
       <aside className="w-[260px] shrink-0 border-r border-[hsl(var(--border))] bg-white flex flex-col h-screen sticky top-0">
         <div className="px-5 py-6 flex items-center gap-3 border-b border-[hsl(var(--border))]">
-          <div className="w-9 h-9 rounded-lg bg-[hsl(var(--primary))] flex items-center justify-center">
-            <Sparkles className="w-4 h-4 text-white" strokeWidth={2.2} />
+          <div className="w-9 h-9 rounded-lg bg-[hsl(var(--primary))] flex items-center justify-center overflow-hidden">
+            <img src="/pelangi-logo.png" alt="Pelangi Homestay" className="w-6 h-6 object-contain" />
           </div>
           <div>
-            <div className="font-[Manrope] font-bold text-[15px] leading-tight">Pelangi AI</div>
+            <div className="font-[Fraunces] font-bold text-[15px] leading-tight">Pelangi AI</div>
             <div className="text-[11px] text-[hsl(var(--muted-foreground))] uppercase tracking-widest">Customer Service Platform</div>
           </div>
         </div>

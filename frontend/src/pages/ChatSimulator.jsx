@@ -97,7 +97,7 @@ export default function ChatSimulator() {
               <BotMessageSquare className="w-4 h-4" />
             </div>
             <div className="flex-1">
-              <div className="font-[Manrope] font-semibold text-sm">{activeBot?.name || "Pelangi AI"}</div>
+              <div className="font-[Fraunces] font-semibold text-sm">{activeBot?.name || "Pelangi AI"}</div>
               <div className="text-[11px] text-white/70">{activeBot?.description || "Guest Assistant"}</div>
             </div>
             {lastMeta && (

@@ -78,7 +78,7 @@ export default function RagDocuments() {
         <div className="pelangi-panel overflow-hidden">
           <div className="px-5 py-4 border-b border-[hsl(var(--border))] flex items-center justify-between">
             <div>
-              <div className="font-[Manrope] font-semibold">Dokumen Ter-index</div>
+              <div className="font-[Fraunces] font-semibold">Dokumen Ter-index</div>
               <div className="text-xs text-[hsl(var(--muted-foreground))]">{docs.length} dokumen · {docs.reduce((s, d) => s + (d.chunk_count || 0), 0)} chunks</div>
             </div>
           </div>
@@ -116,7 +116,7 @@ export default function RagDocuments() {
         {/* Search preview */}
         <div className="pelangi-panel overflow-hidden">
           <div className="px-5 py-4 border-b border-[hsl(var(--border))]">
-            <div className="font-[Manrope] font-semibold">Uji Retrieval</div>
+            <div className="font-[Fraunces] font-semibold">Uji Retrieval</div>
             <div className="text-xs text-[hsl(var(--muted-foreground))]">Preview chunks yang akan dipakai AI</div>
           </div>
           <div className="p-4">

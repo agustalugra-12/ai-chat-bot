@@ -94,7 +94,7 @@ function ConnectionTab({ bot, onChange }) {
   return (
     <div className="pelangi-panel p-5 space-y-4 max-w-xl" data-testid={`bot-connection-${bot.id}`}>
       <div className="flex items-center justify-between">
-        <div className="font-[Manrope] font-semibold">Koneksi WhatsApp untuk AI ini</div>
+        <div className="font-[Fraunces] font-semibold">Koneksi WhatsApp untuk AI ini</div>
         {isLinked && (
           <button onClick={load} className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]" title="Refresh status">
             <RefreshCw className="w-4 h-4" />
@@ -339,7 +339,7 @@ function PermissionsTab({ bot, onChange, tools, services, toggleInArray }) {
   return (
     <div className="space-y-6">
       <div className="pelangi-panel p-5">
-        <div className="font-[Manrope] font-semibold mb-1">Tool Permissions</div>
+        <div className="font-[Fraunces] font-semibold mb-1">Tool Permissions</div>
         <div className="text-xs text-[hsl(var(--muted-foreground))] mb-4">Centang tool yang boleh dipakai AI ini. Tool yang tidak dicentang akan ditolak sistem saat runtime.</div>
         <div className="space-y-4">
           {Object.entries(grouped).map(([cat, arr]) => (
@@ -367,7 +367,7 @@ function PermissionsTab({ bot, onChange, tools, services, toggleInArray }) {
       </div>
 
       <div className="pelangi-panel p-5">
-        <div className="font-[Manrope] font-semibold mb-1">Allowed Service Types</div>
+        <div className="font-[Fraunces] font-semibold mb-1">Allowed Service Types</div>
         <div className="text-xs text-[hsl(var(--muted-foreground))] mb-4">Jika bot punya tool service request, tipe berikut yang boleh diproses.</div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
           {services.map((s) => {
@@ -424,7 +424,7 @@ function WorkflowTab({ bot, onChange, workflows }) {
 function KnowledgeTab({ bot, onChange, categories, toggleInArray }) {
   return (
     <div className="pelangi-panel p-5">
-      <div className="font-[Manrope] font-semibold mb-1">Knowledge Categories</div>
+      <div className="font-[Fraunces] font-semibold mb-1">Knowledge Categories</div>
       <div className="text-xs text-[hsl(var(--muted-foreground))] mb-4">Bot hanya akan mengambil konteks dari kategori KB yang dicentang. Kelola konten di menu Knowledge Base.</div>
       <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
         {categories.map((c) => {
@@ -445,7 +445,7 @@ function KnowledgeTab({ bot, onChange, categories, toggleInArray }) {
 function IntentsTab({ bot, onChange, intents, toggleInArray }) {
   return (
     <div className="pelangi-panel p-5">
-      <div className="font-[Manrope] font-semibold mb-1">Allowed Intents</div>
+      <div className="font-[Fraunces] font-semibold mb-1">Allowed Intents</div>
       <div className="text-xs text-[hsl(var(--muted-foreground))] mb-4">Intent yang boleh diproses AI ini. Kelola katalog intent di menu <Link to="/ai/intents" className="text-[hsl(var(--primary))] hover:underline">Intents</Link>.</div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
         {intents.map((i) => {
@@ -481,7 +481,7 @@ function GuardrailTab({ bot, onChange }) {
 
   return (
     <div className="pelangi-panel p-5">
-      <div className="font-[Manrope] font-semibold mb-1">Guardrail Rules</div>
+      <div className="font-[Fraunces] font-semibold mb-1">Guardrail Rules</div>
       <div className="text-xs text-[hsl(var(--muted-foreground))] mb-4">Aturan yang WAJIB dipatuhi AI. Akan disisipkan ke system prompt.</div>
       <div className="space-y-2">
         {rules.map((r, i) => (

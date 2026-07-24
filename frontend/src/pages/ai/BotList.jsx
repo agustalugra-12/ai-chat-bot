@@ -66,7 +66,7 @@ export default function BotList() {
                       <Badge tone={STATUS_TONE[b.status] || "muted"}>{b.status}</Badge>
                       <Badge tone="muted">{b.channel_type || "-"}</Badge>
                     </div>
-                    <div className="font-[Manrope] font-bold text-lg leading-tight">{b.name}</div>
+                    <div className="font-[Fraunces] font-bold text-lg leading-tight">{b.name}</div>
                     <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 line-clamp-2">{b.description || "—"}</div>
                     <div className="mt-3 flex flex-wrap gap-1.5 text-[10px]">
                       <div className="px-2 py-0.5 rounded-full bg-stone-100 text-stone-700">{b.tool_codes?.length || 0} tools</div>

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { PageHeader, Badge, EmptyState } from "@/components/ui-parts";
 import { api, fmtIDR } from "@/lib/api";
 import { toast } from "sonner";
-import { Plus, PencilLine, Trash2 } from "lucide-react";
+import { Plus, PencilLine, Trash2, X } from "lucide-react";
 import { Modal } from "./KnowledgeBase";
 import { ImageUploader } from "@/components/ImageUploader";
 
@@ -66,20 +66,20 @@ export default function Rooms() {
             {rooms.map((r) => (
               <div key={r.id} className="pelangi-panel overflow-hidden fade-in-up" data-testid={`room-card-${r.id}`}>
                 <div className="aspect-[16/10] bg-stone-100 overflow-hidden">
-                  {r.photo_url ? (
-                    <img src={r.photo_url} alt={r.name} className="w-full h-full object-cover" />
+                  {(r.photo_url || r.images?.[0]?.url) ? (
+                    <img src={r.photo_url || r.images[0].url} alt={r.name} className="w-full h-full object-cover" />
                   ) : (<div className="w-full h-full flex items-center justify-center text-stone-400 text-xs">No photo</div>)}
                 </div>
                 <div className="p-4">
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <div className="font-[Manrope] font-bold text-lg leading-tight">{r.name}</div>
+                      <div className="font-[Fraunces] font-bold text-lg leading-tight">{r.name}</div>
                       <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Tipe: {r.room_type} · Kapasitas {r.capacity}</div>
                     </div>
                     <Badge tone={r.is_available ? "success" : "danger"}>{r.is_available ? "Available" : "Off"}</Badge>
                   </div>
                   <div className="mt-3 flex items-baseline gap-1">
-                    <span className="font-[Manrope] font-bold text-xl">{fmtIDR(r.price_per_night)}</span>
+                    <span className="font-[Fraunces] font-bold text-xl">{fmtIDR(r.price_per_night)}</span>
                     <span className="text-xs text-[hsl(var(--muted-foreground))]">/ malam</span>
                   </div>
                   {r.facilities?.length > 0 && (
@@ -123,11 +123,35 @@ export default function Rooms() {
               <input data-testid="room-form-units" type="number" value={form.total_units} onChange={(e) => setForm({ ...form, total_units: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm" />
             </div>
             <div className="col-span-2">
+              <label className="text-xs font-medium">Foto Utama (ditampilkan di kartu kamar)</label>
+              <div className="mt-1.5">
+                {form.photo_url ? (
+                  <div className="relative w-20 h-20 rounded-md overflow-hidden border border-[hsl(var(--border))] group">
+                    <img src={form.photo_url} alt="Foto utama" className="w-full h-full object-cover" />
+                    <button
+                      type="button" data-testid="room-photo-utama-clear"
+                      onClick={() => setForm({ ...form, photo_url: "" })}
+                      title="Hapus foto utama"
+                      className="absolute top-0 right-0 p-0.5 bg-black/60 text-white rounded-bl-md opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-[hsl(var(--muted-foreground))]">Belum ada foto utama - pilih dari galeri di bawah (klik bintang), atau kartu kamar akan pakai foto galeri pertama.</p>
+                )}
+              </div>
+            </div>
+            <div className="col-span-2">
               <label className="text-xs font-medium">Galeri Foto (dikirim AI ke tamu)</label>
               <div className="mt-1">
                 <ImageUploader
                   value={form.images}
-                  onChange={(imgs) => setForm({ ...form, images: imgs })}
+                  onChange={(imgs) => {
+                    const dihapus = (form.images || []).filter((old) => !imgs.some((n) => n.public_id === old.public_id));
+                    const fotoUtamaTerhapus = dihapus.some((d) => d.url === form.photo_url);
+                    setForm({ ...form, images: imgs, photo_url: fotoUtamaTerhapus ? "" : form.photo_url });
+                  }}
                   folder="pelangi/rooms"
                   max={6}
                   tid="room-uploader"

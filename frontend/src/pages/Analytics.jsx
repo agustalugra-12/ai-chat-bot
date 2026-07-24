@@ -29,7 +29,7 @@ export default function Analytics() {
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="pelangi-panel p-5">
-            <div className="font-[Manrope] font-semibold mb-4">Percakapan per Hari</div>
+            <div className="font-[Fraunces] font-semibold mb-4">Percakapan per Hari</div>
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={data?.daily_series || []}>
@@ -44,7 +44,7 @@ export default function Analytics() {
           </div>
 
           <div className="pelangi-panel p-5">
-            <div className="font-[Manrope] font-semibold mb-4">Aksi AI Terpopuler</div>
+            <div className="font-[Fraunces] font-semibold mb-4">Aksi AI Terpopuler</div>
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={data?.top_intents || []}>
@@ -63,15 +63,15 @@ export default function Analytics() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <div className="text-xs uppercase tracking-widest text-[hsl(var(--muted-foreground))]">Human Handover</div>
-              <div className="font-[Manrope] font-bold text-2xl mt-1">{data?.human_handover ?? 0}</div>
+              <div className="font-[Fraunces] font-bold text-2xl mt-1">{data?.human_handover ?? 0}</div>
             </div>
             <div>
               <div className="text-xs uppercase tracking-widest text-[hsl(var(--muted-foreground))]">Conversion Rate</div>
-              <div className="font-[Manrope] font-bold text-2xl mt-1">{data?.conversion_rate ?? 0}%</div>
+              <div className="font-[Fraunces] font-bold text-2xl mt-1">{data?.conversion_rate ?? 0}%</div>
             </div>
             <div>
               <div className="text-xs uppercase tracking-widest text-[hsl(var(--muted-foreground))]">AI Resolved</div>
-              <div className="font-[Manrope] font-bold text-2xl mt-1">
+              <div className="font-[Fraunces] font-bold text-2xl mt-1">
                 {data ? Math.round((data.total_conversations * data.resolution_rate) / 100) : 0}
               </div>
             </div>

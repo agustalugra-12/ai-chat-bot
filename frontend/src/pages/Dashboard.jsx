@@ -59,7 +59,7 @@ export default function Dashboard() {
           <div className="pelangi-panel">
             <div className="flex items-center justify-between px-5 py-4 border-b border-[hsl(var(--border))]">
               <div>
-                <div className="font-[Manrope] font-semibold">Percakapan Terbaru</div>
+                <div className="font-[Fraunces] font-semibold">Percakapan Terbaru</div>
                 <div className="text-xs text-[hsl(var(--muted-foreground))]">6 sesi tamu terakhir</div>
               </div>
               <Link to="/conversations" className="text-xs text-[hsl(var(--primary))] font-medium inline-flex items-center gap-1" data-testid="link-see-all-conversations">
@@ -98,7 +98,7 @@ export default function Dashboard() {
         {/* Top intents */}
         <div className="pelangi-panel">
           <div className="px-5 py-4 border-b border-[hsl(var(--border))]">
-            <div className="font-[Manrope] font-semibold">Aksi AI Terpopuler</div>
+            <div className="font-[Fraunces] font-semibold">Aksi AI Terpopuler</div>
             <div className="text-xs text-[hsl(var(--muted-foreground))]">Berdasarkan tool yang paling sering dipanggil AI</div>
           </div>
           <div className="p-5 flex flex-wrap gap-3">
@@ -108,7 +108,7 @@ export default function Dashboard() {
             {(data?.top_intents || []).map((t) => (
               <div key={t.intent} className="px-3 py-2 rounded-md border border-[hsl(var(--border))] bg-white">
                 <div className="text-xs text-[hsl(var(--muted-foreground))]">{t.intent}</div>
-                <div className="font-[Manrope] font-semibold text-lg">{t.count}</div>
+                <div className="font-[Fraunces] font-semibold text-lg">{t.count}</div>
               </div>
             ))}
           </div>

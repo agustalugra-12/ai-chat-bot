@@ -29,6 +29,8 @@ PMS_DEFAULT_ENDPOINTS = {
     "tiket_path": "/api/integrasi-ai-bot/tiket",
     "rules_path": "/api/integrasi-ai-bot/rules",
     "booking_status_path": "/api/integrasi-ai-bot/booking-status",
+    "status_member_path": "/api/integrasi-ai-bot/status-member",
+    "preview_harga_path": "/api/integrasi-ai-bot/preview-harga",
     "cancel_request_path": "/api/integrasi-ai-bot/cancel-request",
     "alert_owner_path": "/api/integrasi-ai-bot/alert-owner",
 }
@@ -173,6 +175,7 @@ async def _pms_buat_booking_request(args: dict) -> dict:
         "tanggal_checkout": args.get("tanggal_checkout"),
         "jumlah_kamar": args.get("jumlah_kamar"), "jumlah_tamu": args.get("jumlah_tamu"),
         "payment_option": args.get("payment_option"),
+        "diskon_diminta_tamu": bool(args.get("diskon_diminta_tamu")),
     }
     path = cfg["endpoints"]["booking_request_path"]
     started = time.time()
@@ -189,6 +192,41 @@ async def _pms_buat_booking_request(args: dict) -> dict:
         await _pms_log(path, "POST", resp.status_code, latency_ms, True)
         data = resp.json()
         return {"ok": True, "booking_request": data.get("booking_request")}
+    except Exception as e:
+        await _pms_log(path, "POST", None, int((time.time() - started) * 1000), False, str(e))
+        return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}
+
+
+async def _pms_preview_harga(args: dict) -> dict:
+    """Preview rincian harga (termasuk diskon member & diskresi) SEBELUM create_booking
+    benar-benar dipanggil - read-only, TIDAK membuat booking_request apapun (2026-07-21,
+    permintaan user: AI harus ringkas & konfirmasi data+harga ke tamu SEBELUM benar-benar
+    diajukan). Args sama dengan create_booking (whatsapp/tipe/room_tipe/tanggal_checkin/
+    tanggal_checkout/jumlah_kamar/diskon_diminta_tamu)."""
+    cfg = await _pms_config()
+    if not cfg["capabilities"].get("create_booking"):
+        return {"ok": False, "error": "Fitur Buat Booking dinonaktifkan di panel Integrasi PMS"}
+    if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
+        return {"ok": False, "error": "PMS URL/API Key belum dikonfigurasi"}
+    payload = {
+        "no_hp": args.get("whatsapp"), "tipe": args.get("tipe"), "room_tipe": args.get("room_tipe"),
+        "tanggal_checkin": args.get("tanggal_checkin"), "tanggal_checkout": args.get("tanggal_checkout"),
+        "jumlah_kamar": args.get("jumlah_kamar"), "diskon_diminta_tamu": bool(args.get("diskon_diminta_tamu")),
+    }
+    path = cfg["endpoints"].get("preview_harga_path", PMS_DEFAULT_ENDPOINTS["preview_harga_path"])
+    started = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            resp = await http.post(
+                f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, json=payload,
+            )
+        latency_ms = int((time.time() - started) * 1000)
+        if resp.status_code >= 400:
+            await _pms_log(path, "POST", resp.status_code, latency_ms, False, resp.text)
+            return {"ok": False, "error": f"PMS menolak: HTTP {resp.status_code} {resp.text[:200]}"}
+        await _pms_log(path, "POST", resp.status_code, latency_ms, True)
+        return {"ok": True, **resp.json()}
     except Exception as e:
         await _pms_log(path, "POST", None, int((time.time() - started) * 1000), False, str(e))
         return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}
@@ -255,6 +293,36 @@ async def _pms_status_booking(whatsapp: str) -> dict:
         await _pms_log(path, "GET", resp.status_code, latency_ms, True)
         data = resp.json()
         return {"ok": True, "permintaan": data.get("permintaan") or []}
+    except Exception as e:
+        await _pms_log(path, "GET", None, int((time.time() - started) * 1000), False, str(e))
+        return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}
+
+
+async def _pms_status_member(whatsapp: str) -> dict:
+    """Status Program Loyalitas Kedatangan tamu (2026-07-21, permintaan user: AI proaktif
+    sebut diskon member di awal percakapan saat tamu tunjukkan niat booking, bukan cuma
+    setelah booking dibuat). Digate di bawah capability create_booking yang sama - fitur ini
+    cuma relevan sebagai pelengkap alur booking, tidak perlu toggle admin terpisah."""
+    cfg = await _pms_config()
+    if not cfg["capabilities"].get("create_booking"):
+        return {"ok": False, "error": "Fitur Buat Booking dinonaktifkan di panel Integrasi PMS"}
+    if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
+        return {"ok": False, "error": "PMS URL/API Key belum dikonfigurasi"}
+    path = cfg["endpoints"].get("status_member_path", PMS_DEFAULT_ENDPOINTS["status_member_path"])
+    started = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=10) as http:
+            resp = await http.get(
+                f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, params={"no_hp": whatsapp},
+            )
+        latency_ms = int((time.time() - started) * 1000)
+        if resp.status_code >= 400:
+            await _pms_log(path, "GET", resp.status_code, latency_ms, False, resp.text)
+            return {"ok": False, "error": f"PMS menolak: HTTP {resp.status_code} {resp.text[:200]}"}
+        await _pms_log(path, "GET", resp.status_code, latency_ms, True)
+        data = resp.json()
+        return {"ok": True, "kedatangan_ke": data.get("kedatangan_ke"), "diskon_persen": data.get("diskon_persen")}
     except Exception as e:
         await _pms_log(path, "GET", None, int((time.time() - started) * 1000), False, str(e))
         return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}

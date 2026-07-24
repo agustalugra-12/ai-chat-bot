@@ -62,7 +62,7 @@ export default function WorkflowsCatalog() {
                   <div className="flex items-start gap-3">
                     <div className="w-9 h-9 rounded-lg bg-[hsl(var(--secondary))] text-[hsl(var(--secondary-foreground))] flex items-center justify-center"><Waypoints className="w-4 h-4" /></div>
                     <div>
-                      <div className="font-[Manrope] font-semibold">{w.name}</div>
+                      <div className="font-[Fraunces] font-semibold">{w.name}</div>
                       <div className="text-xs text-[hsl(var(--muted-foreground))]">{w.description || "—"}</div>
                     </div>
                   </div>

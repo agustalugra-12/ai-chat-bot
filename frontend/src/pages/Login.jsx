@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate, Navigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
-import { Sparkles, LockKeyhole } from "lucide-react";
+import { LockKeyhole } from "lucide-react";
 
 export default function Login() {
   const { user, login, loading } = useAuth();
@@ -29,14 +29,14 @@ export default function Login() {
       <div className="hidden lg:flex flex-1 relative login-hero grain overflow-hidden text-white">
         <div className="relative z-10 flex flex-col justify-between p-12 w-full">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-white/10 backdrop-blur flex items-center justify-center border border-white/15">
-              <Sparkles className="w-5 h-5" />
+            <div className="w-10 h-10 rounded-lg bg-white/10 backdrop-blur flex items-center justify-center border border-white/15 overflow-hidden">
+              <img src="/pelangi-logo.png" alt="Pelangi Homestay" className="w-7 h-7 object-contain" />
             </div>
-            <span className="font-[Manrope] font-semibold text-lg">Pelangi Homestay</span>
+            <span className="font-[Fraunces] font-semibold text-lg">Pelangi Homestay</span>
           </div>
 
           <div className="max-w-md">
-            <h1 className="font-[Manrope] font-extrabold text-5xl leading-[1.05] tracking-tight">
+            <h1 className="font-[Fraunces] font-extrabold text-5xl leading-[1.05] tracking-tight">
               Resepsionis digital<br/>
               yang tak pernah tidur.
             </h1>
@@ -59,7 +59,7 @@ export default function Login() {
             <LockKeyhole className="w-4 h-4 text-[hsl(var(--primary))]" />
             <span className="text-xs uppercase tracking-[0.2em] text-[hsl(var(--muted-foreground))]">Admin Access</span>
           </div>
-          <h2 className="font-[Manrope] font-bold text-3xl mb-2">Masuk ke Console</h2>
+          <h2 className="font-[Fraunces] font-bold text-3xl mb-2">Masuk ke Console</h2>
           <p className="text-sm text-[hsl(var(--muted-foreground))] mb-8">
             Gunakan akun admin Anda untuk membuka dashboard.
           </p>

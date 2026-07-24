@@ -24,7 +24,7 @@ function KoneksiWhatsApp() {
 
   return (
     <div className="pelangi-panel p-5 space-y-3" data-testid="waha-panel">
-      <div className="flex items-center gap-2 font-[Manrope] font-semibold">
+      <div className="flex items-center gap-2 font-[Fraunces] font-semibold">
         <Smartphone className="w-4 h-4" /> Koneksi WhatsApp
       </div>
       <div className="text-xs text-[hsl(var(--muted-foreground))]">
@@ -75,7 +75,7 @@ function ModelLLM({ s, setS }) {
 
   return (
     <div className="pelangi-panel p-5 space-y-4">
-      <div className="font-[Manrope] font-semibold">Provider LLM</div>
+      <div className="font-[Fraunces] font-semibold">Provider LLM</div>
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="text-xs font-medium">Provider</label>
@@ -144,7 +144,7 @@ function SinkronisasiWebPelangi() {
 
   return (
     <div className="pelangi-panel p-5 space-y-4">
-      <div className="flex items-center gap-2 font-[Manrope] font-semibold">
+      <div className="flex items-center gap-2 font-[Fraunces] font-semibold">
         <Globe className="w-4 h-4" /> Sinkronisasi Konten Web-Pelangi
       </div>
       <div className="text-xs text-[hsl(var(--muted-foreground))]">
@@ -230,7 +230,7 @@ export default function Settings() {
       />
       <div className="p-8 grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="pelangi-panel p-5 space-y-4">
-          <div className="font-[Manrope] font-semibold">Informasi Hotel</div>
+          <div className="font-[Fraunces] font-semibold">Informasi Hotel</div>
           <F label="Nama Hotel">
             <input data-testid="set-hotel-name" value={s.hotel_name || ""} onChange={(e) => setS({ ...s, hotel_name: e.target.value })} className="w-full px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm" />
           </F>
@@ -252,7 +252,7 @@ export default function Settings() {
         </div>
 
         <div className="pelangi-panel p-5 space-y-4">
-          <div className="font-[Manrope] font-semibold">Opsi AI & Channel</div>
+          <div className="font-[Fraunces] font-semibold">Opsi AI & Channel</div>
           <label className="flex items-start gap-3 cursor-pointer" data-testid="set-wa-toggle-label">
             <input type="checkbox" checked={!!s.whatsapp_enabled} onChange={(e) => setS({ ...s, whatsapp_enabled: e.target.checked })} data-testid="set-wa-toggle" className="mt-1" />
             <div>

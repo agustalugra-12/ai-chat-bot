@@ -82,7 +82,7 @@ export default function RestaurantMenu() {
                       {m.description && <div className="text-xs text-[hsl(var(--muted-foreground))] line-clamp-1">{m.description}</div>}
                     </td>
                     <td className="px-5 py-3 capitalize text-xs">{m.category}</td>
-                    <td className="px-5 py-3 font-[Manrope] font-semibold">{fmtIDR(m.price)}</td>
+                    <td className="px-5 py-3 font-[Fraunces] font-semibold">{fmtIDR(m.price)}</td>
                     <td className="px-5 py-3">
                       {m.is_sold_out ? <Badge tone="danger">Habis</Badge> : m.is_available ? <Badge tone="success">Tersedia</Badge> : <Badge tone="muted">Non-aktif</Badge>}
                     </td>

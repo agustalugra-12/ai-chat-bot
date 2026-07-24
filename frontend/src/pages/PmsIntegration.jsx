@@ -173,7 +173,7 @@ export default function PmsIntegration() {
 
         {/* Endpoint & Kredensial */}
         <div className="pelangi-panel p-5 space-y-4">
-          <div className="font-[Manrope] font-semibold">Endpoint &amp; Kredensial PMS</div>
+          <div className="font-[Fraunces] font-semibold">Endpoint &amp; Kredensial PMS</div>
           <F label="PMS URL">
             <input data-testid="pms-url" value={form.pms_base_url || ""} onChange={(e) => setForm({ ...form, pms_base_url: e.target.value })}
               placeholder="https://api.pelangihomestay.com" className="w-full px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm font-mono" />
@@ -213,7 +213,7 @@ export default function PmsIntegration() {
 
         {/* Webhook URL */}
         <div className="pelangi-panel p-5 space-y-3">
-          <div className="font-[Manrope] font-semibold">Webhook URL (masuk dari WAHA)</div>
+          <div className="font-[Fraunces] font-semibold">Webhook URL (masuk dari WAHA)</div>
           <p className="text-xs text-[hsl(var(--muted-foreground))]">
             URL ini yang dikonfigurasikan di sesi WAHA untuk mengirim pesan WhatsApp masuk ke ai-chat-bot.
             Regenerate token akan otomatis menyinkronkan konfigurasi WAHA - tidak perlu langkah manual lagi.
@@ -231,7 +231,7 @@ export default function PmsIntegration() {
 
         {/* Capabilities */}
         <div className="pelangi-panel p-5 space-y-3">
-          <div className="font-[Manrope] font-semibold">Capabilities</div>
+          <div className="font-[Fraunces] font-semibold">Capabilities</div>
           <p className="text-xs text-[hsl(var(--muted-foreground))]">
             Kapabilitas bertanda <Badge tone="muted">belum tersambung</Badge> tersimpan tapi TIDAK melakukan apa pun kalau
             diaktifkan - endpoint PMS-nya belum dibangun. Jangan diaktifkan dulu sampai tersedia.
@@ -259,7 +259,7 @@ export default function PmsIntegration() {
 
         {/* Sync */}
         <div className="pelangi-panel p-5 space-y-3">
-          <div className="font-[Manrope] font-semibold">Sync dari PMS</div>
+          <div className="font-[Fraunces] font-semibold">Sync dari PMS</div>
           <p className="text-xs text-[hsl(var(--muted-foreground))]">
             PMS belum expose endpoint untuk item di bawah ini (baru ada Ketersediaan/Booking Request/Tiket) -
             tombol tetap disediakan, hasilnya akan melaporkan status apa adanya, bukan pura-pura berhasil.
@@ -286,7 +286,7 @@ export default function PmsIntegration() {
         {/* Logs */}
         <div className="pelangi-panel p-5 space-y-3">
           <div className="flex items-center justify-between">
-            <div className="font-[Manrope] font-semibold">Riwayat Request/Response PMS</div>
+            <div className="font-[Fraunces] font-semibold">Riwayat Request/Response PMS</div>
             <button onClick={loadLogs} className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"><RefreshCw className="w-4 h-4" /></button>
           </div>
           <div className="overflow-x-auto">

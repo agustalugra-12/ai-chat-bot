@@ -44,7 +44,7 @@ export default function PromptManagement() {
       <div className="p-8 grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
         <div className="pelangi-panel p-5">
           <div className="flex items-center gap-2 mb-3">
-            <div className="font-[Manrope] font-semibold">System Prompt Aktif</div>
+            <div className="font-[Fraunces] font-semibold">System Prompt Aktif</div>
             {active?.version ? <Badge tone="primary">v{active.version}</Badge> : null}
           </div>
           <textarea
@@ -61,7 +61,7 @@ export default function PromptManagement() {
         <div className="pelangi-panel">
           <div className="flex items-center gap-2 px-5 py-4 border-b border-[hsl(var(--border))]">
             <History className="w-4 h-4" />
-            <div className="font-[Manrope] font-semibold">Riwayat Versi</div>
+            <div className="font-[Fraunces] font-semibold">Riwayat Versi</div>
           </div>
           <div className="divide-y divide-[hsl(var(--border))] max-h-[560px] overflow-y-auto pelangi-scroll">
             {versions.map((v) => (

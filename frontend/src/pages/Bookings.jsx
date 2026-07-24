@@ -97,7 +97,7 @@ export default function Bookings() {
                       <div className="text-[hsl(var(--muted-foreground))]">{b.num_guests} tamu · {b.num_rooms} kamar</div>
                     </td>
                     <td className="px-5 py-3 capitalize">{b.room_type}</td>
-                    <td className="px-5 py-3 font-[Manrope] font-semibold">{fmtIDR(b.total_amount)}</td>
+                    <td className="px-5 py-3 font-[Fraunces] font-semibold">{fmtIDR(b.total_amount)}</td>
                     <td className="px-5 py-3"><Badge tone={b.source === "ai" ? "primary" : "muted"}>{b.source}</Badge></td>
                     <td className="px-5 py-3"><Badge tone={STATUS_TONE[b.status]}>{STATUS_LABEL[b.status]}</Badge></td>
                     <td className="px-5 py-3 text-right">

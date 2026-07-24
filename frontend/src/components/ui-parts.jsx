@@ -2,7 +2,7 @@ export function PageHeader({ title, subtitle, right, tid }) {
   return (
     <div className="flex items-start justify-between gap-4 px-8 pt-8 pb-6 border-b border-[hsl(var(--border))] bg-[hsl(var(--background))]" data-testid={tid}>
       <div>
-        <h1 className="font-[Manrope] font-bold text-3xl tracking-tight">{title}</h1>
+        <h1 className="font-[Fraunces] font-bold text-3xl tracking-tight">{title}</h1>
         {subtitle && <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1.5 max-w-2xl">{subtitle}</p>}
       </div>
       {right && <div className="shrink-0">{right}</div>}
@@ -14,7 +14,7 @@ export function StatCard({ label, value, hint, accent, tid }) {
   return (
     <div className="pelangi-panel p-5 fade-in-up" data-testid={tid}>
       <div className="text-[11px] uppercase tracking-widest text-[hsl(var(--muted-foreground))] font-medium">{label}</div>
-      <div className={`mt-3 font-[Manrope] font-bold text-3xl tracking-tight ${accent || ""}`}>{value}</div>
+      <div className={`mt-3 font-[Fraunces] font-bold text-3xl tracking-tight ${accent || ""}`}>{value}</div>
       {hint && <div className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">{hint}</div>}
     </div>
   );

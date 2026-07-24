@@ -2,7 +2,10 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Pelangi design tokens */
+/* Pelangi design tokens - diselaraskan ke website pelangihomestay.com (2026-07-21,
+   permintaan user): --primary teal #0F4C5C (sebelumnya hijau tua generik #2B4A38-ish yang
+   mirip tapi tidak sama persis brand), --accent mustard #E9A24B (sebelumnya oranye terracotta
+   generik yang juga cuma "mirip", bukan warna brand asli). */
 @layer base {
     :root {
         --background: 40 20% 97%;
@@ -11,21 +14,21 @@
         --card-foreground: 30 12% 15%;
         --popover: 0 0% 100%;
         --popover-foreground: 30 12% 15%;
-        --primary: 143 25% 22%;
+        --primary: 193 72% 21%;
         --primary-foreground: 40 30% 98%;
         --secondary: 43 60% 78%;
         --secondary-foreground: 30 15% 18%;
         --muted: 40 20% 94%;
         --muted-foreground: 30 8% 42%;
-        --accent: 16 55% 52%;
-        --accent-foreground: 40 30% 98%;
+        --accent: 33 78% 60%;
+        --accent-foreground: 30 15% 18%;
         --destructive: 4 62% 48%;
         --destructive-foreground: 40 30% 98%;
         --border: 30 15% 88%;
         --input: 30 15% 88%;
-        --ring: 143 25% 22%;
-        --chart-1: 143 25% 30%;
-        --chart-2: 16 55% 52%;
+        --ring: 193 72% 21%;
+        --chart-1: 193 72% 30%;
+        --chart-2: 33 78% 60%;
         --chart-3: 43 60% 60%;
         --chart-4: 200 40% 40%;
         --chart-5: 30 45% 45%;
@@ -54,7 +57,7 @@ h3,
 h4,
 h5,
 h6 {
-    font-family: "Manrope", system-ui, -apple-system, sans-serif;
+    font-family: "Fraunces", serif;
     letter-spacing: -0.02em;
 }
 
@@ -143,12 +146,13 @@ pre {
     background-color: hsl(var(--muted));
 }
 
-/* Login backdrop */
+/* Login backdrop - warna brand persis (2026-07-21, sebelumnya cuma "mirip" hijau/oranye
+   generik, bukan hex resmi website pelangihomestay.com) */
 .login-hero {
     background:
-        radial-gradient(1200px 500px at -10% -20%, #2a4535 0%, transparent 60%),
-        radial-gradient(900px 400px at 110% 120%, #c86240 0%, transparent 55%),
-        #1f1c17;
+        radial-gradient(1200px 500px at -10% -20%, #083D38 0%, transparent 60%),
+        radial-gradient(900px 400px at 110% 120%, #E9A24B 0%, transparent 55%),
+        #0B2E2A;
 }
 
 .grain::after {
