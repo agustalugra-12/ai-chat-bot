@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { toast } from "sonner";
 import {
   Save, ArrowLeft, Trash2, Bot, ShieldCheck, Wrench, Waypoints, BookOpenText, Target, FileTerminal,
-  Smartphone, Wifi, WifiOff, Loader2, RefreshCw,
+  Smartphone, Wifi, WifiOff, Loader2, RefreshCw, Eye, EyeOff, Building2,
 } from "lucide-react";
 
 const TABS = [
@@ -276,6 +276,7 @@ export default function BotDetail() {
 }
 
 function ProfileTab({ bot, onChange }) {
+  const [showKey, setShowKey] = useState(false);
   const F = ({ label, children }) => (
     <div><label className="text-xs font-medium">{label}</label><div className="mt-1">{children}</div></div>
   );
@@ -313,6 +314,30 @@ function ProfileTab({ bot, onChange }) {
           <option value="maintenance">maintenance</option>
         </select>
       </F>
+
+      <div className="pt-2 border-t border-[hsl(var(--border))]">
+        <div className="flex items-center gap-2 mb-1">
+          <Building2 className="w-4 h-4 text-[hsl(var(--muted-foreground))]" />
+          <span className="text-sm font-medium">API Key Properti PMS (multi-properti)</span>
+        </div>
+        <F label="API Key">
+          <div className="relative">
+            <input data-testid="bot-pms-property-api-key" type={showKey ? "text" : "password"}
+              value={bot.pms_property_api_key || ""}
+              onChange={(e) => onChange({ pms_property_api_key: e.target.value })}
+              placeholder="Kosongkan untuk pakai konfigurasi PMS global (Settings > Integrasi PMS)"
+              className="w-full px-3 py-2 pr-10 rounded-md border border-[hsl(var(--border))] text-sm font-mono" />
+            <button type="button" onClick={() => setShowKey((s) => !s)} className="absolute right-2 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]">
+              {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
+          </div>
+          <div className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1">
+            Isi kalau bot/nomor WA ini melayani properti Pelangi PMS yang BERBEDA dari konfigurasi global -
+            ambil key dari halaman "Integrasi AI Chat Bot Eksternal" di dashboard properti tersebut,
+            setelah pilih properti yang benar lewat switcher. Kosong = pakai konfigurasi global seperti biasa.
+          </div>
+        </F>
+      </div>
     </div>
   );
 }

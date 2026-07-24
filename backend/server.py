@@ -700,6 +700,7 @@ async def _tool_check_availability(args: dict, conv: dict) -> dict:
         rooms = await _pms_ketersediaan(
             tanggal=args.get("tanggal_checkin"), tipe=args.get("tipe"),
             tanggal_checkout=args.get("tanggal_checkout"),
+            api_key_override=conv.get("_pms_api_key_override"),
         )
         return {"ok": True, "tool": "check_availability", "result": rooms}
     except Exception as e:
@@ -718,7 +719,7 @@ async def _tool_preview_booking(args: dict, conv: dict) -> dict:
     for k in required:
         if not args.get(k):
             return {"ok": False, "tool": "preview_booking", "error": f"missing {k}"}
-    hasil = await _pms_preview_harga(args)
+    hasil = await _pms_preview_harga(args, api_key_override=conv.get("_pms_api_key_override"))
     if not hasil.get("ok"):
         return {"ok": False, "tool": "preview_booking", "error": hasil.get("error")}
     result = {"ok": True, "tool": "preview_booking", "kedatangan_ke": hasil.get("kedatangan_ke")}
@@ -749,7 +750,7 @@ async def _tool_create_booking(args: dict, conv: dict) -> dict:
         if args.get("payment_option") not in ("dp50", "full"):
             return {"ok": False, "tool": "create_booking",
                      "error": "payment_option wajib diisi 'dp50' atau 'full' - TANYA dulu ke tamu mau DP 50% atau lunas, JANGAN panggil tool ini sebelum tamu menjawab"}
-        hasil = await _pms_buat_booking_request(args)
+        hasil = await _pms_buat_booking_request(args, api_key_override=conv.get("_pms_api_key_override"))
         if not hasil.get("ok"):
             return {"ok": False, "tool": "create_booking", "error": hasil.get("error")}
         await db.conversations.update_one({"_id": conv["_id"]}, {"$set": {"booking_created": True}})
@@ -815,7 +816,8 @@ async def _tool_create_service_request(args: dict, conv: dict) -> dict:
         whatsapp = args.get("whatsapp") or conv.get("whatsapp") or ""
         guest_name = args.get("guest_name") or conv.get("guest_name") or ""
         room_nomor = (args.get("room_nomor") or "").strip()
-        hasil = await _pms_buat_tiket("service_request", deskripsi, whatsapp, guest_name, room_nomor)
+        hasil = await _pms_buat_tiket("service_request", deskripsi, whatsapp, guest_name, room_nomor,
+                                      api_key_override=conv.get("_pms_api_key_override"))
         if not hasil.get("ok"):
             return {"ok": False, "tool": "create_service_request", "error": hasil.get("error")}
         tiket = hasil.get("tiket") or {}
@@ -836,7 +838,8 @@ async def _tool_create_maintenance_ticket(args: dict, conv: dict) -> dict:
         whatsapp = args.get("whatsapp") or conv.get("whatsapp") or ""
         guest_name = args.get("guest_name") or conv.get("guest_name") or ""
         room_nomor = (args.get("room_nomor") or "").strip()
-        hasil = await _pms_buat_tiket(tipe, deskripsi, whatsapp, guest_name, room_nomor)
+        hasil = await _pms_buat_tiket(tipe, deskripsi, whatsapp, guest_name, room_nomor,
+                                      api_key_override=conv.get("_pms_api_key_override"))
         if not hasil.get("ok"):
             return {"ok": False, "tool": "create_maintenance_ticket", "error": hasil.get("error")}
         tiket = hasil.get("tiket") or {}
@@ -867,7 +870,7 @@ async def _tool_lookup_booking(args: dict, conv: dict) -> dict:
     wa = args.get("whatsapp") or conv.get("whatsapp")
     if not wa:
         return {"ok": False, "tool": "lookup_booking", "error": "missing whatsapp"}
-    hasil = await _pms_status_booking(wa)
+    hasil = await _pms_status_booking(wa, api_key_override=conv.get("_pms_api_key_override"))
     if not hasil.get("ok"):
         return {"ok": False, "tool": "lookup_booking", "error": hasil.get("error")}
     return {"ok": True, "tool": "lookup_booking", "result": _rename_kode_permintaan(hasil.get("permintaan") or [])}
@@ -882,7 +885,7 @@ async def _tool_check_member_status(args: dict, conv: dict) -> dict:
     wa = args.get("whatsapp") or conv.get("whatsapp")
     if not wa:
         return {"ok": False, "tool": "check_member_status", "error": "missing whatsapp"}
-    hasil = await _pms_status_member(wa)
+    hasil = await _pms_status_member(wa, api_key_override=conv.get("_pms_api_key_override"))
     if not hasil.get("ok"):
         return {"ok": False, "tool": "check_member_status", "error": hasil.get("error")}
     return {"ok": True, "tool": "check_member_status", "kedatangan_ke": hasil.get("kedatangan_ke"), "diskon_persen": hasil.get("diskon_persen")}
@@ -899,7 +902,7 @@ async def _tool_cancel_booking(args: dict, conv: dict) -> dict:
     wa = args.get("whatsapp") or conv.get("whatsapp")
     if not wa:
         return {"ok": False, "tool": "cancel_booking", "error": "missing whatsapp"}
-    hasil = await _pms_ajukan_pembatalan(kode, wa, args.get("alasan") or "")
+    hasil = await _pms_ajukan_pembatalan(kode, wa, args.get("alasan") or "", api_key_override=conv.get("_pms_api_key_override"))
     if not hasil.get("ok"):
         result = {"ok": False, "tool": "cancel_booking", "error": hasil.get("error")}
         if hasil.get("kandidat"):
@@ -1062,11 +1065,16 @@ async def _run_chat_turn(
         conv["bot_code"] = bot.get("code")
     allowed_tool_codes = set(bot.get("tool_codes", [])) if bot else set()
     allowed_services = set(bot.get("allowed_service_types", [])) if bot else set()
+    # Multi-properti PMS (Fase 4, 2026-07-25) - kalau bot ini punya API key propertinya
+    # sendiri, dipakai untuk SEMUA panggilan PMS di giliran ini (dari sini sampai tool
+    # calling di bawah baca lewat conv.get("_pms_api_key_override")) - bukan field
+    # permanen di `conv` yang tersimpan ke DB, cuma "in-memory" selama giliran ini.
+    conv["_pms_api_key_override"] = bot.get("pms_property_api_key") if bot else None
 
     # Build prompt inputs - ketersediaan diambil SEKALI, dipakai untuk context (harga/stok)
     # DAN prompt (daftar tipe kamar valid untuk tool), supaya tidak 2x panggil PMS per pesan
     # dan supaya tipe kamar yang disebut AI selalu konsisten dengan yang di-tampilkan.
-    rooms_now = await _pms_ketersediaan()
+    rooms_now = await _pms_ketersediaan(api_key_override=conv["_pms_api_key_override"])
     room_types = sorted({r["tipe"] for r in rooms_now if r.get("tipe")})
     system_prompt = await _system_prompt_for(bot, room_types=room_types)
     context = await _build_context(query=message, bot=bot, whatsapp=conv.get("whatsapp") or whatsapp, rooms=rooms_now)
@@ -1136,7 +1144,7 @@ async def _run_chat_turn(
         final_text, re.IGNORECASE,
     ):
         wa_guard = conv.get("whatsapp") or whatsapp
-        koreksi = await _pms_ajukan_pembatalan("", wa_guard, "") if wa_guard else {"ok": False, "error": "missing whatsapp"}
+        koreksi = await _pms_ajukan_pembatalan("", wa_guard, "", api_key_override=conv.get("_pms_api_key_override")) if wa_guard else {"ok": False, "error": "missing whatsapp"}
         if koreksi.get("ok"):
             final_text = (
                 f"Baik, permintaan pembatalan booking {koreksi.get('kode')} sudah saya ajukan ke staf kami. "

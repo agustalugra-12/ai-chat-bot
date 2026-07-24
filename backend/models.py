@@ -371,6 +371,11 @@ class AIBot(BaseDocument):
     allowed_service_types: List[str] = Field(default_factory=list)
     guardrail_rules: List[str] = Field(default_factory=list)
     allowed_intents: List[str] = Field(default_factory=list)
+    # Multi-properti PMS (2026-07-25) - kalau diisi, bot ini pakai API key propertinya
+    # SENDIRI (bukan pms_integration_config singleton global) - 1 nomor WA/bot = 1
+    # properti Pelangi PMS. Kosong = fallback ke config global (kompatibel dengan setup
+    # single-property yang sudah ada, tidak wajib diisi semua bot sekaligus).
+    pms_property_api_key: Optional[str] = None
     created_at: str = Field(default_factory=utc_now_iso)
     updated_at: str = Field(default_factory=utc_now_iso)
 
@@ -391,6 +396,7 @@ class AIBotIn(BaseModel):
     allowed_service_types: List[str] = Field(default_factory=list)
     guardrail_rules: List[str] = Field(default_factory=list)
     allowed_intents: List[str] = Field(default_factory=list)
+    pms_property_api_key: Optional[str] = None
 
 
 class AIBotUpdate(BaseModel):
@@ -408,3 +414,4 @@ class AIBotUpdate(BaseModel):
     allowed_service_types: Optional[List[str]] = None
     guardrail_rules: Optional[List[str]] = None
     allowed_intents: Optional[List[str]] = None
+    pms_property_api_key: Optional[str] = None

@@ -69,10 +69,16 @@ PMS_INTEGRATION_DEFAULT = {
 }
 
 
-async def _pms_config() -> dict:
+async def _pms_config(api_key_override: Optional[str] = None) -> dict:
     """Config PMS Integration siap pakai - auto-seed dari env lama + auto-generate
     webhook_token/send_message_api_key kalau belum ada (migrasi aman, sama pola dengan
-    `webhook_token` di Pelangi PMS sendiri)."""
+    `webhook_token` di Pelangi PMS sendiri).
+
+    `api_key_override` (2026-07-25, multi-properti Fase 4) - kalau diisi (dari
+    `AIBot.pms_property_api_key` bot yang sedang menangani percakapan ini), MENIMPA
+    `pms_api_key` singleton global - jadi tiap bot/nomor WA bisa bicara ke properti PMS
+    yang berbeda-beda pakai `pms_base_url` yang SAMA (1 instans PMS, banyak API key,
+    1 key = 1 properti) tanpa perlu config PMS integration terpisah per bot."""
     cfg = await db.pms_integration_config.find_one({"_id": "singleton"})
     if not cfg:
         cfg = dict(PMS_INTEGRATION_DEFAULT)
@@ -94,6 +100,8 @@ async def _pms_config() -> dict:
         merged["pms_api_key"] = PMS_API_KEY
     if not merged.get("webhook_token"):
         merged["webhook_token"] = WAHA_WEBHOOK_TOKEN
+    if api_key_override:
+        merged["pms_api_key"] = api_key_override
     return merged
 
 
@@ -117,11 +125,11 @@ async def _pms_log(endpoint: str, method: str, status_code: Optional[int], laten
 
 
 async def _pms_ketersediaan(tanggal: Optional[str] = None, tipe: Optional[str] = None,
-                             tanggal_checkout: Optional[str] = None) -> List[dict]:
+                             tanggal_checkout: Optional[str] = None, api_key_override: Optional[str] = None) -> List[dict]:
     """Ketersediaan & tarif kamar LIVE dari Pelangi PMS - satu-satunya sumber kebenaran,
     bukan koleksi `db.rooms` lokal ai-chat-bot (itu cuma dipakai fitur admin lokal lain,
     bukan untuk menjawab tamu)."""
-    cfg = await _pms_config()
+    cfg = await _pms_config(api_key_override)
     if not cfg["capabilities"].get("check_availability"):
         return []
     if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
@@ -159,11 +167,11 @@ async def _pms_ketersediaan(tanggal: Optional[str] = None, tipe: Optional[str] =
         return []
 
 
-async def _pms_buat_booking_request(args: dict) -> dict:
+async def _pms_buat_booking_request(args: dict, api_key_override: Optional[str] = None) -> dict:
     """Kirim permintaan booking NON-BINDING ke Pelangi PMS (db.booking_requests) -
     resepsionis yang Terima/Tolak manual, sama seperti alur AI WhatsApp internal PMS.
     ai-chat-bot TIDAK PERNAH membuat booking sungguhan sendiri."""
-    cfg = await _pms_config()
+    cfg = await _pms_config(api_key_override)
     if not cfg["capabilities"].get("create_booking"):
         return {"ok": False, "error": "Fitur Buat Booking dinonaktifkan di panel Integrasi PMS"}
     if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
@@ -197,13 +205,13 @@ async def _pms_buat_booking_request(args: dict) -> dict:
         return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}
 
 
-async def _pms_preview_harga(args: dict) -> dict:
+async def _pms_preview_harga(args: dict, api_key_override: Optional[str] = None) -> dict:
     """Preview rincian harga (termasuk diskon member & diskresi) SEBELUM create_booking
     benar-benar dipanggil - read-only, TIDAK membuat booking_request apapun (2026-07-21,
     permintaan user: AI harus ringkas & konfirmasi data+harga ke tamu SEBELUM benar-benar
     diajukan). Args sama dengan create_booking (whatsapp/tipe/room_tipe/tanggal_checkin/
     tanggal_checkout/jumlah_kamar/diskon_diminta_tamu)."""
-    cfg = await _pms_config()
+    cfg = await _pms_config(api_key_override)
     if not cfg["capabilities"].get("create_booking"):
         return {"ok": False, "error": "Fitur Buat Booking dinonaktifkan di panel Integrasi PMS"}
     if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
@@ -232,7 +240,8 @@ async def _pms_preview_harga(args: dict) -> dict:
         return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}
 
 
-async def _pms_buat_tiket(tipe: str, deskripsi: str, whatsapp: str, guest_name: str = "", room_nomor: str = "") -> dict:
+async def _pms_buat_tiket(tipe: str, deskripsi: str, whatsapp: str, guest_name: str = "", room_nomor: str = "",
+                           api_key_override: Optional[str] = None) -> dict:
     """Kirim tiket komplain/maintenance/service_request ke Pelangi PMS (reuse endpoint yang
     SUDAH ADA sejak awal di sisi PMS, `/api/integrasi-ai-bot/tiket` - sebelumnya tidak pernah
     dipanggil dari ai-chat-bot, tiket AI selalu nyasar ke `db.service_requests` lokal
@@ -243,7 +252,7 @@ async def _pms_buat_tiket(tipe: str, deskripsi: str, whatsapp: str, guest_name: 
     ke PMS supaya diprioritaskan di atas pencarian otomatis by no_hp (yang bisa gagal kosong
     kalau nomor WA tamu tidak persis cocok dengan yang tercatat di checkin/booking)."""
     cap_key = "create_service_request" if tipe == "service_request" else "create_maintenance_ticket"
-    cfg = await _pms_config()
+    cfg = await _pms_config(api_key_override)
     if not cfg["capabilities"].get(cap_key):
         return {"ok": False, "error": f"Fitur '{cap_key}' dinonaktifkan di panel Integrasi PMS"}
     if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
@@ -269,11 +278,11 @@ async def _pms_buat_tiket(tipe: str, deskripsi: str, whatsapp: str, guest_name: 
         return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}
 
 
-async def _pms_status_booking(whatsapp: str) -> dict:
+async def _pms_status_booking(whatsapp: str, api_key_override: Optional[str] = None) -> dict:
     """Status booking request tamu, LIVE dari Pelangi PMS (`db.booking_requests`) - bukan
     `db.bookings` lokal ai-chat-bot yang isinya cuma sisa fitur admin generik, tidak pernah
     diisi jalur AI sejak create_booking dialihkan ke PMS."""
-    cfg = await _pms_config()
+    cfg = await _pms_config(api_key_override)
     if not cfg["capabilities"].get("check_booking_status"):
         return {"ok": False, "error": "Fitur Cek Status Booking dinonaktifkan di panel Integrasi PMS"}
     if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
@@ -298,12 +307,12 @@ async def _pms_status_booking(whatsapp: str) -> dict:
         return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}
 
 
-async def _pms_status_member(whatsapp: str) -> dict:
+async def _pms_status_member(whatsapp: str, api_key_override: Optional[str] = None) -> dict:
     """Status Program Loyalitas Kedatangan tamu (2026-07-21, permintaan user: AI proaktif
     sebut diskon member di awal percakapan saat tamu tunjukkan niat booking, bukan cuma
     setelah booking dibuat). Digate di bawah capability create_booking yang sama - fitur ini
     cuma relevan sebagai pelengkap alur booking, tidak perlu toggle admin terpisah."""
-    cfg = await _pms_config()
+    cfg = await _pms_config(api_key_override)
     if not cfg["capabilities"].get("create_booking"):
         return {"ok": False, "error": "Fitur Buat Booking dinonaktifkan di panel Integrasi PMS"}
     if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
@@ -328,12 +337,12 @@ async def _pms_status_member(whatsapp: str) -> dict:
         return {"ok": False, "error": f"Gagal menghubungi PMS: {e}"}
 
 
-async def _pms_ajukan_pembatalan(kode: str, whatsapp: str, alasan: str = "") -> dict:
+async def _pms_ajukan_pembatalan(kode: str, whatsapp: str, alasan: str = "", api_key_override: Optional[str] = None) -> dict:
     """Ajukan permintaan pembatalan booking ke Pelangi PMS - NON-BINDING, sama seperti
     _pms_buat_booking_request (AI TIDAK PERNAH mengeksekusi pembatalan sungguhan langsung,
     cuma menyampaikan info; PMS mencatat & staf approve/reject manual, lihat
     routes/pembatalan.py di repo PMS untuk kebijakan refund H-3/50%)."""
-    cfg = await _pms_config()
+    cfg = await _pms_config(api_key_override)
     if not cfg["capabilities"].get("cancel_booking"):
         return {"ok": False, "error": "Fitur Cancel Booking dinonaktifkan di panel Integrasi PMS"}
     if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
@@ -365,13 +374,13 @@ async def _pms_ajukan_pembatalan(kode: str, whatsapp: str, alasan: str = "") -> 
 SYNC_KINDS = {"rule"}
 
 
-async def _sync_business_rules() -> dict:
+async def _sync_business_rules(api_key_override: Optional[str] = None) -> dict:
     """Rule Engine tahap 1: PMS = pemilik kebenaran (routes/business_rules.py di repo PMS),
     ai-chat-bot cuma menyimpan CACHE read-only hasil sync ini di `business_rules_cache` -
     dipakai `_build_context` supaya AI menjawab kebijakan bisnis akurat, bukan menghafal
     teks bebas. Replace-all (bukan merge) supaya rule yang dihapus/dinonaktifkan di PMS
     ikut hilang dari cache, tidak nyangkut selamanya."""
-    cfg = await _pms_config()
+    cfg = await _pms_config(api_key_override)
     if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
         return {"ok": False, "message": "PMS URL / API Key belum diisi", "at": utc_now_iso()}
     path = cfg["endpoints"].get("rules_path", PMS_DEFAULT_ENDPOINTS["rules_path"])
