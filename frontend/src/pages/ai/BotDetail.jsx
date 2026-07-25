@@ -31,7 +31,72 @@ function slugifyCode(code) {
   return (code || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "bot";
 }
 
+function CloudApiConnectionTab({ bot, onChange }) {
+  const [phoneNumberId, setPhoneNumberId] = useState(bot.channel_type === "whatsapp_cloud" ? (bot.channel_id || "") : "");
+  const isConnected = bot.channel_type === "whatsapp_cloud" && !!bot.channel_id;
+
+  const save = () => {
+    const clean = phoneNumberId.trim();
+    if (!clean) { toast.error("Isi Phone Number ID dari Meta dulu"); return; }
+    onChange({ channel_type: "whatsapp_cloud", channel_id: clean });
+    toast.success('Tersambung ke Cloud API - klik "Simpan" di atas untuk menyimpan permanen');
+  };
+
+  const disconnect = () => {
+    if (!window.confirm("Putuskan koneksi Cloud API AI ini? Nomor tidak akan menerima/membalas pesan sampai disambungkan lagi.")) return;
+    onChange({ channel_id: "" });
+    setPhoneNumberId("");
+    toast.success('Koneksi diputus - klik "Simpan" di atas untuk menyimpan permanen');
+  };
+
+  return (
+    <div className="pelangi-panel p-5 space-y-4 max-w-xl" data-testid={`bot-cloud-connection-${bot.id}`}>
+      <div className="font-[Fraunces] font-semibold">Koneksi WhatsApp Cloud API (Meta) untuk AI ini</div>
+      <div className="text-xs text-[hsl(var(--muted-foreground))]">
+        Untuk nomor WhatsApp Business resmi (WABA) yang sudah disiapkan lewat Meta Business
+        Manager/WhatsApp Manager. Tidak perlu scan QR - cukup masukkan <b>Phone Number ID</b> yang
+        Meta berikan untuk nomor tsb (Meta Business Manager → WhatsApp Manager → API Setup, atau
+        WhatsApp → Configuration di app Meta kamu). Pesan yang masuk ke nomor dengan Phone Number ID
+        ini otomatis dijawab oleh AI "{bot.name}".
+      </div>
+
+      <div className="flex items-center gap-2">
+        {isConnected ? <Wifi className="w-4 h-4 text-emerald-600" /> : <WifiOff className="w-4 h-4 text-[hsl(var(--muted-foreground))]" />}
+        <Badge tone={isConnected ? "success" : "neutral"}>{isConnected ? "Tersambung" : "Belum tersambung"}</Badge>
+        {isConnected && <span className="text-xs font-mono text-[hsl(var(--muted-foreground))]">ID: {bot.channel_id}</span>}
+      </div>
+
+      <div className="space-y-2">
+        <label className="text-xs font-medium">Phone Number ID (dari Meta)</label>
+        <div className="flex gap-2">
+          <input
+            value={phoneNumberId} onChange={(e) => setPhoneNumberId(e.target.value)}
+            placeholder="mis. 1182544914944806" data-testid={`bot-cloud-phone-id-${bot.id}`}
+            className="flex-1 px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm font-mono"
+          />
+          <button
+            onClick={save} data-testid={`bot-cloud-connect-${bot.id}`}
+            className="inline-flex items-center gap-1.5 bg-[hsl(var(--primary))] text-white text-sm font-medium px-4 py-2 rounded-md hover:opacity-90"
+          >
+            Sambungkan
+          </button>
+        </div>
+      </div>
+
+      {isConnected && (
+        <button
+          onClick={disconnect} data-testid={`bot-cloud-disconnect-${bot.id}`}
+          className="inline-flex items-center gap-1.5 text-sm font-medium px-4 py-2 rounded-md border border-[hsl(var(--border))] hover:bg-stone-50"
+        >
+          Putuskan Koneksi
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ConnectionTab({ bot, onChange }) {
+  const [mode, setMode] = useState(bot.channel_type === "whatsapp_cloud" ? "cloud" : "waha");
   const isLinked = bot.channel_type === "whatsapp" && bot.channel_id;
   const session = bot.channel_id || slugifyCode(bot.code);
   const [status, setStatus] = useState(null);
@@ -91,7 +156,35 @@ function ConnectionTab({ bot, onChange }) {
   const st = WAHA_STATUS_LABEL[status?.status] || { label: isLinked ? (status?.status || "Memuat…") : "Belum tersambung", tone: "neutral" };
   const nomor = status?.me?.id ? status.me.id.split("@")[0] : null;
 
+  const ModeSwitcher = (
+    <div className="max-w-xl flex gap-2 mb-4" data-testid={`bot-connection-mode-${bot.id}`}>
+      <button
+        onClick={() => setMode("cloud")}
+        className={`flex-1 text-sm font-medium px-3 py-2 rounded-md border ${mode === "cloud" ? "border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))]" : "border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]"}`}
+      >
+        Meta Cloud API (resmi)
+      </button>
+      <button
+        onClick={() => setMode("waha")}
+        className={`flex-1 text-sm font-medium px-3 py-2 rounded-md border ${mode === "waha" ? "border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))]" : "border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]"}`}
+      >
+        WAHA (QR/Pairing)
+      </button>
+    </div>
+  );
+
+  if (mode === "cloud") {
+    return (
+      <div>
+        {ModeSwitcher}
+        <CloudApiConnectionTab bot={bot} onChange={onChange} />
+      </div>
+    );
+  }
+
   return (
+    <div>
+      {ModeSwitcher}
     <div className="pelangi-panel p-5 space-y-4 max-w-xl" data-testid={`bot-connection-${bot.id}`}>
       <div className="flex items-center justify-between">
         <div className="font-[Fraunces] font-semibold">Koneksi WhatsApp untuk AI ini</div>
@@ -153,6 +246,7 @@ function ConnectionTab({ bot, onChange }) {
           {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : null} Putuskan Koneksi
         </button>
       )}
+    </div>
     </div>
   );
 }
