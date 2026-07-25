@@ -750,6 +750,20 @@ async def _tool_create_booking(args: dict, conv: dict) -> dict:
         if args.get("payment_option") not in ("dp50", "full"):
             return {"ok": False, "tool": "create_booking",
                      "error": "payment_option wajib diisi 'dp50' atau 'full' - TANYA dulu ke tamu mau DP 50% atau lunas, JANGAN panggil tool ini sebelum tamu menjawab"}
+        # Jaring pengaman (2026-07-25) - insiden nyata ditemukan lewat pengujian: tamu
+        # kirim pesan susulan/afirmasi ("iya lanjut", "oke booking ya") SETELAH booking
+        # sebelumnya sudah sukses di giliran sebelumnya - model sempat memanggil
+        # create_booking LAGI dengan parameter identik, bikin 2 Booking Request kembar
+        # untuk 1 permintaan tamu yang sama (staf lihat approval dobel di antrian). Kalau
+        # tipe/room_tipe/tanggal_checkin PERSIS sama dengan booking terakhir yang berhasil
+        # di percakapan ini, jangan create ulang ke PMS - balikin hasil yang sudah ada
+        # (idempotent), sama seperti pola jaring pengaman lain di bawah (service-fee,
+        # checkout_url dobel, extra bed non-Cottage).
+        last = conv.get("last_booking_request")
+        if last and (last.get("tipe"), last.get("room_tipe"), last.get("tanggal_checkin")) == (
+            args.get("tipe"), args.get("room_tipe"), args.get("tanggal_checkin")
+        ):
+            return {**last, "tool": "create_booking", "already_created": True}
         hasil = await _pms_buat_booking_request(args, api_key_override=conv.get("_pms_api_key_override"))
         if not hasil.get("ok"):
             return {"ok": False, "tool": "create_booking", "error": hasil.get("error")}
@@ -786,6 +800,10 @@ async def _tool_create_booking(args: dict, conv: dict) -> dict:
         # valid, AI tetap lanjut tanpa rincian (lihat _hitung_preview_harga di PMS).
         if br.get("preview_harga"):
             result["rincian_harga"] = br["preview_harga"]
+        conv["last_booking_request"] = {
+            "tipe": args.get("tipe"), "room_tipe": args.get("room_tipe"),
+            "tanggal_checkin": args.get("tanggal_checkin"), **result,
+        }
         return result
     except Exception as e:
         return {"ok": False, "tool": "create_booking", "error": str(e)}
@@ -1267,6 +1285,8 @@ async def _run_chat_turn(
     if bot:
         update["bot_id"] = bot.get("_id")
         update["bot_code"] = bot.get("code")
+    if conv.get("last_booking_request"):
+        update["last_booking_request"] = conv["last_booking_request"]
     if tool == "request_handover":
         update["status"] = "waiting_admin"
         update["resolution"] = "handover"
