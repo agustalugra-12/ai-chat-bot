@@ -1753,7 +1753,24 @@ async def whatsapp_cloud_webhook_receive(request: Request):
             await asyncio.sleep(random.uniform(3, 5))
             clean_text, image_urls = parse_img_markers(hasil["reply"])
             if clean_text:
-                await _wa_cloud_send_text(phone, clean_text, phone_number_id=phone_number_id)
+                # Jaring pengaman (2026-07-25) - ditemukan lewat evaluasi: hasil kirim
+                # sebelumnya dibuang begitu saja, jadi kegagalan (mis. tamu di luar jendela
+                # 24 jam customer-service, error 131047) gagal TOTAL secara diam-diam - staf
+                # tidak pernah tahu tamu tidak benar-benar menerima balasan.
+                terkirim = await _wa_cloud_send_text(phone, clean_text, phone_number_id=phone_number_id)
+                if not terkirim:
+                    logging.getLogger("whatsapp_cloud").error(
+                        f"Gagal kirim balasan WA ke {phone} (conv session {session_id}) - "
+                        f"kemungkinan di luar jendela 24 jam customer-service atau error Cloud API lain."
+                    )
+                    try:
+                        await _pms_alert_owner(
+                            f"⚠️ AI GAGAL kirim balasan WhatsApp ke tamu {phone} - "
+                            f"kemungkinan tamu belum kirim pesan dalam 24 jam terakhir. "
+                            f"Cek percakapan & hubungi tamu manual kalau perlu."
+                        )
+                    except Exception:
+                        pass
             for i, url in enumerate(image_urls):
                 if i > 0:
                     await asyncio.sleep(random.uniform(1, 2))
