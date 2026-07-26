@@ -54,6 +54,7 @@ from ai_service import (
     compact_history, build_context_block, build_dynamic_prompt, parse_tool_call, parse_img_markers,
     LLM_PROVIDER_OPTIONS, SERVICE_MAP,
 )
+from emergentintegrations.llm.chat import ChatError
 from cloudinary_service import upload_image, upload_raw, delete_asset
 from rag_service import extract_text, chunk_text, hybrid_search, build_rag_context, get_embeddings_batch
 from seed import seed_all
@@ -1103,48 +1104,74 @@ async def _run_chat_turn(
     llm_model = settings_doc.get("llm_model") or DEFAULT_MODEL
 
     # First AI turn
-    raw = await ai_reply(session_id, system_prompt, context, history_text, message, llm_provider, llm_model)
-    clean_text, tool, args = parse_tool_call(raw)
-
+    # Jaring pengaman (2026-07-26, temuan nyata lewat uji beban 10 percakapan bersamaan -
+    # permintaan user) - burst chat bersamaan bisa memicu RateLimitError/ChatError dari
+    # provider (OpenAI 429 dkk), yang SEBELUM perbaikan ini merambat ke luar _run_chat_turn
+    # dan tertangkap diam-diam oleh except Exception generik di webhook (whatsapp_cloud/
+    # waha) - hasilnya tamu TIDAK PERNAH dapat balasan APAPUN, dan TIDAK ADA alert ke staf
+    # sama sekali (beda dari kegagalan KIRIM yang sudah punya alert, lihat _wa_cloud_send_text
+    # di bawah - ini kegagalan AI GENERATE balasan, lebih awal). Sekarang ditangkap di sini
+    # (satu titik, berlaku utk simulator/WAHA/Cloud API sekaligus) - tamu tetap dapat
+    # balasan fallback yang jujur, staf dapat alert supaya sadar ada beban tinggi.
+    tool = None
     tool_result = None
-    if tool:
-        # Permission gating - baca langsung dari TOOL_REGISTRY (Tool Manager), satu sumber
-        # kebenaran yang sama dipakai _handle_tool untuk dispatch. required_tool_codes
-        # kosong (mis. remember_guest_fact) otomatis lolos gate ini, tanpa special-case.
-        tool_entry = TOOL_REGISTRY.get(tool)
-        if not tool_entry:
-            tool_result = {"ok": False, "tool": tool, "error": f"tool '{tool}' tidak dikenal"}
-        elif allowed_tool_codes and tool_entry["required_tool_codes"] and not (tool_entry["required_tool_codes"] & allowed_tool_codes):
-            tool_result = {"ok": False, "tool": tool, "error": f"tool '{tool}' tidak diizinkan untuk bot ini"}
-        elif tool == "create_service_request" and allowed_services and args.get("service_type") not in allowed_services:
-            tool_result = {"ok": False, "tool": tool, "error": f"service_type '{args.get('service_type')}' tidak diizinkan untuk bot ini"}
+    try:
+        raw = await ai_reply(session_id, system_prompt, context, history_text, message, llm_provider, llm_model)
+        clean_text, tool, args = parse_tool_call(raw)
+
+        if tool:
+            # Permission gating - baca langsung dari TOOL_REGISTRY (Tool Manager), satu sumber
+            # kebenaran yang sama dipakai _handle_tool untuk dispatch. required_tool_codes
+            # kosong (mis. remember_guest_fact) otomatis lolos gate ini, tanpa special-case.
+            tool_entry = TOOL_REGISTRY.get(tool)
+            if not tool_entry:
+                tool_result = {"ok": False, "tool": tool, "error": f"tool '{tool}' tidak dikenal"}
+            elif allowed_tool_codes and tool_entry["required_tool_codes"] and not (tool_entry["required_tool_codes"] & allowed_tool_codes):
+                tool_result = {"ok": False, "tool": tool, "error": f"tool '{tool}' tidak diizinkan untuk bot ini"}
+            elif tool == "create_service_request" and allowed_services and args.get("service_type") not in allowed_services:
+                tool_result = {"ok": False, "tool": tool, "error": f"service_type '{args.get('service_type')}' tidak diizinkan untuk bot ini"}
+            else:
+                tool_result = await _handle_tool(tool, args or {}, conv)
+            # give AI a chance to acknowledge tool result with a second turn
+            # PENGETATAN 2026-07-21 (insiden nyata berulang: AI narasikan "pembatalan sudah
+            # diajukan" padahal tool yang barusan dipanggil cuma lookup_booking, cancel_booking
+            # TIDAK PERNAH benar-benar dipanggil - lihat catatan cancel_booking di TOOL_DOCS).
+            # Instruksi umum "sampaikan konfirmasi natural" ternyata tidak cukup mencegah model
+            # menyimpulkan/mengarang hasil tool LAIN yang belum dipanggil - dipertegas di sini
+            # supaya narasi TERIKAT KETAT ke tool yang BENAR-BENAR baru saja dieksekusi.
+            follow_up_user = (
+                f"[SISTEM] Hasil tool `{tool}`: {tool_result}. "
+                f"Sampaikan konfirmasi natural ke tamu (Bahasa Indonesia, sopan, singkat) - TAPI JANGAN PERNAH mengklaim "
+                f"hasil/status dari tool LAIN yang BELUM dipanggil di giliran ini. Contoh nyata yang HARUS dihindari: kalau "
+                f"tool yang dipanggil cuma `lookup_booking` (mencari data), JANGAN bilang 'pembatalan sudah diajukan'/'sudah "
+                f"diproses' - itu klaim dari tool `cancel_booking` yang BELUM dipanggil. Kalau tamu jelas ingin lanjut ke "
+                f"aksi berikutnya (mis. batalkan) berdasar hasil lookup ini, TANYA konfirmasi & sebutkan kamu akan proses di "
+                f"langkah berikutnya - JANGAN klaim sudah selesai. Jangan panggil tool lagi kecuali tamu memintanya."
+            )
+            history_after = compact_history(
+                conv["messages"] + [{"role": "assistant", "content": clean_text or "(tool call)"}],
+                max_turns=14,
+            )
+            follow_raw = await ai_reply(session_id, system_prompt, context, history_after, follow_up_user, llm_provider, llm_model)
+            follow_clean, _, _ = parse_tool_call(follow_raw)
+            final_text = (clean_text + "\n\n" + follow_clean).strip() if clean_text else follow_clean
         else:
-            tool_result = await _handle_tool(tool, args or {}, conv)
-        # give AI a chance to acknowledge tool result with a second turn
-        # PENGETATAN 2026-07-21 (insiden nyata berulang: AI narasikan "pembatalan sudah
-        # diajukan" padahal tool yang barusan dipanggil cuma lookup_booking, cancel_booking
-        # TIDAK PERNAH benar-benar dipanggil - lihat catatan cancel_booking di TOOL_DOCS).
-        # Instruksi umum "sampaikan konfirmasi natural" ternyata tidak cukup mencegah model
-        # menyimpulkan/mengarang hasil tool LAIN yang belum dipanggil - dipertegas di sini
-        # supaya narasi TERIKAT KETAT ke tool yang BENAR-BENAR baru saja dieksekusi.
-        follow_up_user = (
-            f"[SISTEM] Hasil tool `{tool}`: {tool_result}. "
-            f"Sampaikan konfirmasi natural ke tamu (Bahasa Indonesia, sopan, singkat) - TAPI JANGAN PERNAH mengklaim "
-            f"hasil/status dari tool LAIN yang BELUM dipanggil di giliran ini. Contoh nyata yang HARUS dihindari: kalau "
-            f"tool yang dipanggil cuma `lookup_booking` (mencari data), JANGAN bilang 'pembatalan sudah diajukan'/'sudah "
-            f"diproses' - itu klaim dari tool `cancel_booking` yang BELUM dipanggil. Kalau tamu jelas ingin lanjut ke "
-            f"aksi berikutnya (mis. batalkan) berdasar hasil lookup ini, TANYA konfirmasi & sebutkan kamu akan proses di "
-            f"langkah berikutnya - JANGAN klaim sudah selesai. Jangan panggil tool lagi kecuali tamu memintanya."
+            final_text = clean_text
+    except ChatError as e:
+        final_text = (
+            "Mohon maaf, saat ini sedang banyak permintaan yang kami proses sehingga balasan "
+            "sedikit terlambat. Bisa kirim ulang pesan Kakak dalam beberapa saat lagi? 🙏"
         )
-        history_after = compact_history(
-            conv["messages"] + [{"role": "assistant", "content": clean_text or "(tool call)"}],
-            max_turns=14,
-        )
-        follow_raw = await ai_reply(session_id, system_prompt, context, history_after, follow_up_user, llm_provider, llm_model)
-        follow_clean, _, _ = parse_tool_call(follow_raw)
-        final_text = (clean_text + "\n\n" + follow_clean).strip() if clean_text else follow_clean
-    else:
-        final_text = clean_text
+        logging.getLogger("ai_overload").warning(f"AI gagal generate balasan (conv {conv.get('_id')}, session {session_id}): {e}")
+        try:
+            await _pms_alert_owner(
+                f"⚠️ AI GAGAL memproses chat (kemungkinan overload/rate-limit provider) - "
+                f"tamu {whatsapp or conv.get('whatsapp')}, sesi {session_id}. Tamu sudah dikirimi "
+                f"pesan fallback minta kirim ulang - cek kalau ini sering terjadi (mungkin perlu "
+                f"naikkan tier rate-limit provider AI)."
+            )
+        except Exception:
+            pass
 
     # Jaring pengaman level KODE (2026-07-21) - insiden BERULANG (3x dalam 1 sesi, makin
     # parah): AI (gpt-4o-mini) kadang mengklaim pembatalan "sudah diajukan"/"sedang
