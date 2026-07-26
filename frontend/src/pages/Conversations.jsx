@@ -216,12 +216,19 @@ export default function Conversations() {
                     <div className="text-sm font-medium truncate">{c.guest_name || "Tamu Anonim"}</div>
                     <span className="text-[10px] text-[hsl(var(--muted-foreground))] shrink-0">{waktuSingkat(c.updated_at)}</span>
                   </div>
+                  {/* Nomor WA ditampilkan di daftar (bukan cuma di detail) - supaya 2 tamu
+                      dengan nama sama tapi nomor beda tidak tertukar sekilas pandang (2026-07-27,
+                      ditemukan lewat laporan nyata staf salah buka percakapan). */}
+                  {c.whatsapp && <div className="text-[11px] text-[hsl(var(--muted-foreground))]">📱 {c.whatsapp}</div>}
                   <div className="text-xs text-[hsl(var(--muted-foreground))] truncate">{c.last_message}</div>
-                  <div className="mt-1.5 flex items-center gap-1.5">
+                  <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
                     <Badge tone={c.status === "waiting_admin" ? "danger" : c.resolution === "ai_resolved" ? "success" : "muted"}>
                       {c.status === "waiting_admin" ? "🔴 Butuh Kamu" : c.resolution === "ai_resolved" ? "AI Selesai" : c.status === "closed" ? "Selesai" : "AI Aktif"}
                     </Badge>
                     <span className="text-[10px] text-[hsl(var(--muted-foreground))]">{CHANNEL_LABEL[c.channel] || c.channel}</span>
+                    {c.nomor_aktif === false && (
+                      <Badge tone="warn">Nomor lama (tidak aktif)</Badge>
+                    )}
                   </div>
                 </div>
               </button>
@@ -240,7 +247,10 @@ export default function Conversations() {
             <>
               <div className="bg-white border-b border-[hsl(var(--border))] px-6 py-4 flex items-center justify-between gap-3 flex-wrap">
                 <div>
-                  <div className="font-[Fraunces] font-semibold text-lg">{selected.guest_name || "Tamu Anonim"}</div>
+                  <div className="font-[Fraunces] font-semibold text-lg flex items-center gap-2">
+                    {selected.guest_name || "Tamu Anonim"}
+                    {selected.nomor_aktif === false && <Badge tone="warn">Nomor lama (tidak aktif)</Badge>}
+                  </div>
                   <div className="text-xs text-[hsl(var(--muted-foreground))]">
                     {selected.whatsapp ? `📱 ${selected.whatsapp}` : "Tanpa nomor WhatsApp"} · {CHANNEL_LABEL[selected.channel] || selected.channel}
                   </div>

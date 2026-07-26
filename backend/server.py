@@ -448,11 +448,29 @@ async def convs_list(status_filter: Optional[str] = Query(None, alias="status"),
     if status_filter:
         q["status"] = status_filter
     docs = await db.conversations.find(q).sort("updated_at", -1).to_list(500)
+
+    # Nomor Cloud API yang MASIH aktif sekarang (dipakai salah satu AI bot) - dashboard ini
+    # SATU-SATUNYA tempat staf bisa baca chat tamu (WA Business App tidak lagi kepakai sejak
+    # migrasi Cloud API), jadi 2 percakapan dengan nama tamu sama tapi nomor WA beda (mis.
+    # sisa tes nomor lama yang sudah ditinggalkan) WAJIB gampang dibedakan - ditemukan lewat
+    # laporan nyata 2026-07-27: staf sempat buka percakapan lama/sudah tidak aktif & mengira
+    # chat tamu "cuma sampai setengah" padahal percakapan yang benar ada di entry lain.
+    active_cloud_ids = {
+        b["channel_id"] for b in await db.ai_bots.find(
+            {"channel_type": "whatsapp_cloud", "channel_id": {"$nin": [None, ""]}}
+        ).to_list(50)
+    }
+
     out = []
     for d in docs:
         d["id"] = d.pop("_id")
         d["last_message"] = (d["messages"][-1]["content"] if d.get("messages") else "")
         d["message_count"] = len(d.get("messages", []))
+        if d.get("channel") == "whatsapp_cloud" or (d.get("session_id") or "").startswith("wac-"):
+            _, phone_number_id = _channel_info_from_conv(d)
+            d["nomor_aktif"] = phone_number_id in active_cloud_ids
+        else:
+            d["nomor_aktif"] = True
         out.append(d)
     return out
 
