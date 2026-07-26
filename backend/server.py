@@ -1168,7 +1168,11 @@ async def _run_chat_turn(
     # Load bot + build dynamic prompt
     bot = await _load_bot(bot_id, bot_code)
     if bot:
-        conv["bot_id"] = bot.get("_id")
+        # str() wajib (2026-07-27, ditemukan lewat bug nyata) - kalau bot_id ternyata
+        # ObjectId mentah (sisa data lama sebelum ai_bots pindah ke id string uuid),
+        # GET /conversations gagal serialize SATU dokumen ini & bikin SELURUH daftar
+        # percakapan gagal tampil (satu error di jsonable_encoder mengorbankan semua).
+        conv["bot_id"] = str(bot.get("_id")) if bot.get("_id") is not None else None
         conv["bot_code"] = bot.get("code")
     allowed_tool_codes = set(bot.get("tool_codes", [])) if bot else set()
     allowed_services = set(bot.get("allowed_service_types", [])) if bot else set()
@@ -1398,7 +1402,7 @@ async def _run_chat_turn(
         "response_time_ms": elapsed_ms,
     }
     if bot:
-        update["bot_id"] = bot.get("_id")
+        update["bot_id"] = str(bot.get("_id")) if bot.get("_id") is not None else None
         update["bot_code"] = bot.get("code")
     if conv.get("last_booking_request"):
         update["last_booking_request"] = conv["last_booking_request"]
