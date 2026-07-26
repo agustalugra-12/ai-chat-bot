@@ -9,6 +9,8 @@ Handles:
 import os
 import json
 import re
+import asyncio
+import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 
@@ -453,6 +455,32 @@ async def run_ai_turn(
     return ""
 
 
+# Pembatas konsentrasi + retry rate-limit (2026-07-26, permintaan user setelah uji beban
+# 10 percakapan bersamaan menemukan RateLimitError nyata dari provider) - dua lapis
+# pertahanan supaya chat 50-100 bersamaan tetap BERHASIL semua (cuma sebagian nunggu
+# giliran sebentar), bukan sebagian gagal total seperti sebelumnya:
+# 1. _LLM_CONCURRENCY_LIMIT (semaphore) - batasi berapa banyak panggilan API yang BENAR-
+#    BENAR sedang "in-flight" ke provider di saat yang sama (bukan berapa banyak
+#    percakapan yang sedang jalan - percakapan lain cukup ANTRE sebentar sebelum giliran
+#    kirim ke provider, tidak langsung gagal). Angka 6 dipilih konservatif (aman utk tier
+#    rate-limit standar kebanyakan akun OpenAI) - naikkan kalau tier akun terbukti lebih
+#    tinggi dari ini (retry log akan berhenti muncul sama sekali kalau memang cukup).
+# 2. Retry manual dengan backoff KHUSUS untuk error yang terlihat seperti rate-limit
+#    (retry bawaan litellm/openai SDK cuma beberapa kali dengan delay pendek - terbukti
+#    tidak cukup untuk burst 50-100, lihat insiden 2026-07-26) - di sini retry lebih
+#    banyak (5x) dengan jeda lebih panjang (mulai 3 detik, x1.6 tiap percobaan) SEBELUM
+#    menyerah ke pemanggil (_run_chat_turn's fallback message tetap jaring pengaman
+#    terakhir kalau retry di sini juga habis).
+_LLM_CONCURRENCY_LIMIT = asyncio.Semaphore(6)
+_RATE_LIMIT_MAX_RETRIES = 5
+_RATE_LIMIT_BASE_DELAY = 3.0
+
+
+def _looks_like_rate_limit(e: Exception) -> bool:
+    msg = str(e).lower()
+    return "rate limit" in msg or "ratelimiterror" in msg or "429" in msg or "too many requests" in msg
+
+
 async def ai_reply(
     session_id: str,
     system_prompt: str,
@@ -486,8 +514,22 @@ async def ai_reply(
     # jawaban deterministik/tidak mengarang (harga, status booking, kebijakan). Beda dari
     # tugas ekstraksi terstruktur lain di PMS yang sudah pakai temperature=0 dari awal.
 
-    response = await chat.send_message(UserMessage(text=user_text))
-    return response if isinstance(response, str) else str(response)
+    async with _LLM_CONCURRENCY_LIMIT:
+        attempt = 0
+        while True:
+            try:
+                response = await chat.send_message(UserMessage(text=user_text))
+                return response if isinstance(response, str) else str(response)
+            except Exception as e:
+                attempt += 1
+                if attempt > _RATE_LIMIT_MAX_RETRIES or not _looks_like_rate_limit(e):
+                    raise
+                delay = _RATE_LIMIT_BASE_DELAY * (1.6 ** (attempt - 1))
+                logging.getLogger("ai_overload").info(
+                    f"Rate-limit dari provider (percobaan {attempt}/{_RATE_LIMIT_MAX_RETRIES}), "
+                    f"tunggu {delay:.1f}s sebelum coba lagi (session {session_id})."
+                )
+                await asyncio.sleep(delay)
 
 
 def compact_history(messages: List[dict], max_turns: int = 12) -> str:
