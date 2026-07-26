@@ -2,8 +2,57 @@ import { useEffect, useRef, useState } from "react";
 import { PageHeader, Badge, EmptyState } from "@/components/ui-parts";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
-import { AlertTriangle, CheckCircle2, MessagesSquare, Send, Bot, Loader2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, MessagesSquare, Send, Bot, Loader2, UserRound } from "lucide-react";
 import { ChatMessageContent } from "@/components/ChatMessageContent";
+
+// Nama teknis di database -> label yang dimengerti orang awam. Channel "whatsapp" (WAHA)
+// dan "whatsapp_cloud" (Meta Cloud API) sama-sama tampil sebagai "WhatsApp" - beda transport
+// itu detail teknis di belakang layar, bukan sesuatu yang perlu dipikirkan pemilik/staf.
+const CHANNEL_LABEL = {
+  whatsapp: "WhatsApp",
+  whatsapp_cloud: "WhatsApp",
+  simulator: "Simulator (uji coba)",
+};
+
+// Kode tool internal -> label singkat yang gampang dibaca sekilas di tiap bubble chat.
+// Tool yang tidak ada di daftar ini sengaja TIDAK ditampilkan (drop ke null) daripada
+// menampilkan nama kode mentah yang tidak berarti apa-apa buat orang awam.
+const INTENT_LABEL = {
+  check_availability: "cek kamar",
+  create_booking: "booking",
+  lookup_booking: "cek booking",
+  cancel_booking: "pembatalan",
+  request_handover: "minta bantuan admin",
+  restaurant_order: "pesan makanan",
+  laundry_request: "laundry",
+  housekeeping_request: "housekeeping",
+  maintenance_request: "keluhan/kerusakan",
+  complaint_ticket: "komplain",
+  room_service: "room service",
+  airport_pickup: "antar-jemput",
+  motor_rental: "sewa motor",
+  create_service_request: "permintaan layanan",
+  create_maintenance_ticket: "laporan kerusakan",
+};
+
+const FILTERS = [
+  { key: "all", label: "Semua" },
+  { key: "waiting_admin", label: "🔴 Butuh Kamu" },
+  { key: "active", label: "AI Aktif" },
+  { key: "closed", label: "Selesai" },
+];
+
+function waktuSingkat(iso) {
+  const d = new Date(iso);
+  const now = new Date();
+  const jam = d.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return `Hari ini, ${jam}`;
+  const kemarin = new Date(now);
+  kemarin.setDate(now.getDate() - 1);
+  if (d.toDateString() === kemarin.toDateString()) return `Kemarin, ${jam}`;
+  return `${d.toLocaleDateString("id-ID", { day: "numeric", month: "short" })}, ${jam}`;
+}
 
 export default function Conversations() {
   const [list, setList] = useState([]);
@@ -26,24 +75,22 @@ export default function Conversations() {
   };
   useEffect(() => {
     load();
-    // Auto-refresh tiap 20 detik (2026-07-26, permintaan Agus: mau bisa pantau chat masuk
-    // tanpa perlu refresh manual) - list saja, bukan polling per-pesan/websocket supaya
-    // tetap ringan; percakapan yang sedang dibuka ikut disegarkan lewat ref (bukan closure
-    // langsung, supaya tidak selalu baca `selected` dari render pertama/null) supaya balasan
-    // tamu terbaru tetap muncul walau operator tidak pindah-pindah percakapan.
+    // Auto-refresh tiap 20 detik supaya percakapan baru/balasan tamu terbaru langsung
+    // terlihat tanpa perlu refresh manual - dibaca lewat ref (bukan closure langsung)
+    // supaya tidak selalu merujuk ke `selected` dari render pertama/null.
     const timer = setInterval(() => load(selectedRef.current?.id), 20000);
     return () => clearInterval(timer);
   }, []); // eslint-disable-line
 
   const doHandover = async (id) => {
     await api.patch(`/conversations/${id}/handover`);
-    toast.success("Dialihkan ke admin — AI berhenti membalas otomatis");
+    toast.success("Kamu ambil alih — AI berhenti membalas otomatis di percakapan ini");
     load(id);
   };
 
   const doResume = async (id) => {
     await api.patch(`/conversations/${id}/resume`);
-    toast.success("AI aktif lagi — akan membalas otomatis pesan berikutnya");
+    toast.success("AI aktif lagi — akan membalas otomatis pesan tamu berikutnya");
     load(id);
   };
 
@@ -60,42 +107,59 @@ export default function Conversations() {
     try {
       const { data } = await api.post(`/conversations/${selected.id}/reply`, { message: text });
       setReplyText("");
-      toast.success(data.sent_to_whatsapp ? "Balasan terkirim ke WhatsApp tamu" : "Balasan tersimpan di percakapan");
+      toast.success(data.sent_to_whatsapp ? "Terkirim ke WhatsApp tamu" : "Tersimpan di percakapan");
       load(selected.id);
     } catch (e) {
-      toast.error(e?.response?.data?.detail || "Gagal mengirim balasan");
+      toast.error(e?.response?.data?.detail || "Gagal mengirim pesan, coba lagi");
     } finally {
       setSending(false);
     }
   };
 
   const visible = list.filter((c) => filter === "all" ? true : c.status === filter);
+  const jumlahButuhKamu = list.filter((c) => c.status === "waiting_admin").length;
 
   return (
     <div>
       <PageHeader
         tid="conversations-header"
         title="Percakapan"
-        subtitle="Semua sesi chat AI dengan tamu — dari WhatsApp maupun Chat Simulator."
+        subtitle={
+          jumlahButuhKamu > 0
+            ? `${jumlahButuhKamu} percakapan sedang menunggu balasanmu.`
+            : "Semua obrolan AI dengan tamu lewat WhatsApp."
+        }
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-[380px_1fr] h-[calc(100vh-146px)]">
         {/* List */}
         <div className="border-r border-[hsl(var(--border))] bg-white flex flex-col">
           <div className="p-3 border-b border-[hsl(var(--border))] flex gap-2 flex-wrap">
-            {["all", "active", "waiting_admin", "closed"].map((f) => (
-              <button
-                key={f}
-                data-testid={`conv-filter-${f}`}
-                onClick={() => setFilter(f)}
-                className={`text-xs px-3 py-1.5 rounded-full border ${filter === f ? "border-[hsl(var(--primary))] bg-[hsl(var(--primary))] text-white" : "border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]"}`}
-              >
-                {f === "all" ? "Semua" : f.replace("_", " ")}
-              </button>
-            ))}
+            {FILTERS.map((f) => {
+              const count = f.key === "waiting_admin" ? jumlahButuhKamu : null;
+              return (
+                <button
+                  key={f.key}
+                  data-testid={`conv-filter-${f.key}`}
+                  onClick={() => setFilter(f.key)}
+                  className={`text-xs px-3 py-1.5 rounded-full border font-medium ${filter === f.key ? "border-[hsl(var(--primary))] bg-[hsl(var(--primary))] text-white" : "border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]"}`}
+                >
+                  {f.label}
+                  {!!count && filter !== f.key && (
+                    <span className="ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-red-600 text-white text-[10px]">{count}</span>
+                  )}
+                </button>
+              );
+            })}
           </div>
           <div className="flex-1 overflow-y-auto pelangi-scroll divide-y divide-[hsl(var(--border))]">
-            {visible.length === 0 && <EmptyState tid="conv-empty" title="Belum ada percakapan" hint="Kirim pesan dari Chat Simulator untuk mulai" />}
+            {visible.length === 0 && (
+              <EmptyState
+                tid="conv-empty"
+                title="Belum ada percakapan di sini"
+                hint="Percakapan tamu lewat WhatsApp akan otomatis muncul begitu ada yang chat."
+              />
+            )}
             {visible.map((c) => (
               <button
                 key={c.id}
@@ -103,20 +167,20 @@ export default function Conversations() {
                 data-testid={`conv-item-${c.id}`}
                 className={`w-full text-left p-4 flex gap-3 pelangi-row ${selected?.id === c.id ? "bg-[hsl(var(--muted))]" : ""}`}
               >
-                <div className="w-10 h-10 rounded-full bg-[hsl(var(--secondary))] flex items-center justify-center text-sm font-semibold text-[hsl(var(--secondary-foreground))]">
+                <div className="w-10 h-10 rounded-full bg-[hsl(var(--secondary))] flex items-center justify-center text-sm font-semibold text-[hsl(var(--secondary-foreground))] shrink-0">
                   {(c.guest_name || "T").slice(0, 2).toUpperCase()}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-2">
                     <div className="text-sm font-medium truncate">{c.guest_name || "Tamu Anonim"}</div>
-                    <span className="text-[10px] text-[hsl(var(--muted-foreground))]">{new Date(c.updated_at).toLocaleDateString("id-ID")}</span>
+                    <span className="text-[10px] text-[hsl(var(--muted-foreground))] shrink-0">{waktuSingkat(c.updated_at)}</span>
                   </div>
                   <div className="text-xs text-[hsl(var(--muted-foreground))] truncate">{c.last_message}</div>
-                  <div className="mt-1 flex gap-1.5">
+                  <div className="mt-1.5 flex items-center gap-1.5">
                     <Badge tone={c.status === "waiting_admin" ? "danger" : c.resolution === "ai_resolved" ? "success" : "muted"}>
-                      {c.status === "waiting_admin" ? "Perlu Admin" : c.resolution === "ai_resolved" ? "AI Selesai" : c.status}
+                      {c.status === "waiting_admin" ? "🔴 Butuh Kamu" : c.resolution === "ai_resolved" ? "AI Selesai" : c.status === "closed" ? "Selesai" : "AI Aktif"}
                     </Badge>
-                    <span className="text-[10px] text-[hsl(var(--muted-foreground))]">{c.message_count} pesan</span>
+                    <span className="text-[10px] text-[hsl(var(--muted-foreground))]">{CHANNEL_LABEL[c.channel] || c.channel}</span>
                   </div>
                 </div>
               </button>
@@ -127,50 +191,59 @@ export default function Conversations() {
         {/* Detail */}
         <div className="bg-[hsl(var(--background))] flex flex-col">
           {!selected ? (
-            <div className="flex-1 flex items-center justify-center text-sm text-[hsl(var(--muted-foreground))]">Pilih percakapan</div>
+            <div className="flex-1 flex flex-col items-center justify-center gap-2 text-sm text-[hsl(var(--muted-foreground))]">
+              <MessagesSquare className="w-8 h-8 opacity-40" />
+              Pilih percakapan di sebelah kiri untuk membaca isinya
+            </div>
           ) : (
             <>
-              <div className="bg-white border-b border-[hsl(var(--border))] px-6 py-4 flex items-center justify-between">
+              <div className="bg-white border-b border-[hsl(var(--border))] px-6 py-4 flex items-center justify-between gap-3 flex-wrap">
                 <div>
                   <div className="font-[Fraunces] font-semibold text-lg">{selected.guest_name || "Tamu Anonim"}</div>
-                  <div className="text-xs text-[hsl(var(--muted-foreground))]">{selected.whatsapp} · {selected.channel} · session {selected.session_id.slice(0, 8)}…</div>
+                  <div className="text-xs text-[hsl(var(--muted-foreground))]">
+                    {selected.whatsapp ? `📱 ${selected.whatsapp}` : "Tanpa nomor WhatsApp"} · {CHANNEL_LABEL[selected.channel] || selected.channel}
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
                   {selected.status === "waiting_admin" ? (
                     <button data-testid="btn-resume-ai" onClick={() => doResume(selected.id)}
-                      className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-emerald-600 text-emerald-700 hover:bg-emerald-600 hover:text-white">
-                      <Bot className="w-3 h-3" /> Aktifkan AI Lagi
+                      className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-emerald-600 text-emerald-700 hover:bg-emerald-600 hover:text-white font-medium">
+                      <Bot className="w-3.5 h-3.5" /> Aktifkan AI Lagi
                     </button>
                   ) : (
                     <button data-testid="btn-handover" onClick={() => doHandover(selected.id)}
-                      className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-[hsl(var(--accent))] text-[hsl(var(--accent))] hover:bg-[hsl(var(--accent))] hover:text-white">
-                      <AlertTriangle className="w-3 h-3" /> Handover ke Admin
+                      className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-[hsl(var(--accent))] text-[hsl(var(--accent))] hover:bg-[hsl(var(--accent))] hover:text-white font-medium">
+                      <UserRound className="w-3.5 h-3.5" /> Ambil Alih dari AI
                     </button>
                   )}
                   {selected.status !== "closed" && (
                     <button data-testid="btn-close-conv" onClick={() => doClose(selected.id)}
-                      className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]">
-                      <CheckCircle2 className="w-3 h-3" /> Tutup
+                      className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] font-medium">
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Tutup Percakapan
                     </button>
                   )}
                 </div>
               </div>
               {selected.status === "waiting_admin" && (
-                <div className="bg-amber-50 border-b border-amber-200 px-6 py-2 text-xs text-amber-800 flex items-center gap-1.5">
-                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> AI berhenti membalas otomatis di percakapan ini — balas manual di bawah, atau tekan "Aktifkan AI Lagi".
+                <div className="bg-amber-50 border-b border-amber-200 px-6 py-2.5 text-xs text-amber-800 flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  AI sudah berhenti membalas otomatis di sini. Ketik balasanmu di bawah, atau tekan <b>&nbsp;"Aktifkan AI Lagi"&nbsp;</b> kalau ingin AI lanjut menjawab.
                 </div>
               )}
               <div className="flex-1 overflow-y-auto pelangi-scroll p-6 chat-bg flex flex-col gap-2">
-                {selected.messages.map((m, i) => (
-                  <div key={i} className={m.role === "user" ? "chat-bubble-guest" : "chat-bubble-ai"}>
-                    {m.from_admin && <div className="text-[10px] font-semibold text-emerald-700 mb-0.5">Staf</div>}
-                    <ChatMessageContent content={m.content} />
-                    <div className="text-[10px] mt-1 text-stone-500 text-right">
-                      {new Date(m.timestamp).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
-                      {m.intent && <> · <span className="text-emerald-700">{m.intent}</span></>}
+                {selected.messages.map((m, i) => {
+                  const intentLabel = INTENT_LABEL[m.intent];
+                  return (
+                    <div key={i} className={m.role === "user" ? "chat-bubble-guest" : "chat-bubble-ai"}>
+                      {m.from_admin && <div className="text-[10px] font-semibold text-emerald-700 mb-0.5">Kamu (balasan manual)</div>}
+                      <ChatMessageContent content={m.content} />
+                      <div className="text-[10px] mt-1 text-stone-500 text-right">
+                        {new Date(m.timestamp).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
+                        {intentLabel && <> · <span className="text-emerald-700">{intentLabel}</span></>}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
               {selected.status !== "closed" && (
                 <div className="bg-white border-t border-[hsl(var(--border))] p-3 flex items-end gap-2">
@@ -179,7 +252,7 @@ export default function Conversations() {
                     value={replyText}
                     onChange={(e) => setReplyText(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
-                    placeholder="Ketik balasan manual ke tamu…"
+                    placeholder="Ketik pesanmu untuk tamu di sini…"
                     rows={2}
                     className="flex-1 px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm resize-none"
                   />
