@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PageHeader, Badge, EmptyState } from "@/components/ui-parts";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
@@ -11,6 +11,8 @@ export default function Conversations() {
   const [filter, setFilter] = useState("all");
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
+  const selectedRef = useRef(null);
+  selectedRef.current = selected;
 
   const load = async (keepSelectedId) => {
     const { data } = await api.get("/conversations");
@@ -18,11 +20,20 @@ export default function Conversations() {
     if (keepSelectedId) {
       const fresh = data.find((c) => c.id === keepSelectedId);
       if (fresh) setSelected(fresh);
-    } else if (data.length && !selected) {
+    } else if (data.length && !selectedRef.current) {
       setSelected(data[0]);
     }
   };
-  useEffect(() => { load(); }, []); // eslint-disable-line
+  useEffect(() => {
+    load();
+    // Auto-refresh tiap 20 detik (2026-07-26, permintaan Agus: mau bisa pantau chat masuk
+    // tanpa perlu refresh manual) - list saja, bukan polling per-pesan/websocket supaya
+    // tetap ringan; percakapan yang sedang dibuka ikut disegarkan lewat ref (bukan closure
+    // langsung, supaya tidak selalu baca `selected` dari render pertama/null) supaya balasan
+    // tamu terbaru tetap muncul walau operator tidak pindah-pindah percakapan.
+    const timer = setInterval(() => load(selectedRef.current?.id), 20000);
+    return () => clearInterval(timer);
+  }, []); // eslint-disable-line
 
   const doHandover = async (id) => {
     await api.patch(`/conversations/${id}/handover`);

@@ -516,8 +516,13 @@ async def convs_reply(conv_id: str, body: ConvReplyIn, user=Depends(get_current_
     """Staf mengetik & mengirim balasan manual ke tamu - mengisi gap "Human Response" yang
     sebelumnya tidak ada (handover cuma menandai status, tidak pernah benar-benar
     mengirim apa pun ke tamu). Kalau channel WhatsApp, balasan sungguhan dikirim lewat WAHA
-    persis seperti balasan AI. Status TIDAK otomatis berubah - staf tetap pegang kendali
-    sampai eksplisit menekan "Aktifkan AI Lagi" (`/resume`)."""
+    persis seperti balasan AI.
+
+    Status otomatis ikut pindah ke "waiting_admin" begitu staf kirim balasan manual
+    (2026-07-26, permintaan Agus: sebelumnya harus klik "Handover ke Admin" terpisah dulu -
+    kalau lupa, AI bisa saja ikut membalas pesan tamu berikutnya berbarengan dengan balasan
+    manual staf, membingungkan tamu). Staf tetap pegang kendali sampai eksplisit menekan
+    "Aktifkan AI Lagi" (`/resume`)."""
     conv = await db.conversations.find_one({"_id": conv_id})
     if not conv:
         raise HTTPException(404, "Not found")
@@ -530,9 +535,11 @@ async def convs_reply(conv_id: str, body: ConvReplyIn, user=Depends(get_current_
         "intent": None, "from_admin": True, "admin_name": user.get("email") or user.get("id"),
     }
     messages = conv.get("messages", []) + [admin_msg]
-    await db.conversations.update_one(
-        {"_id": conv_id}, {"$set": {"messages": messages, "updated_at": utc_now_iso()}},
-    )
+    update = {"messages": messages, "updated_at": utc_now_iso()}
+    if conv.get("status") not in ("waiting_admin", "closed"):
+        update["status"] = "waiting_admin"
+        update["resolution"] = "handover"
+    await db.conversations.update_one({"_id": conv_id}, {"$set": update})
 
     sent_to_whatsapp = False
     if conv.get("channel") in ("whatsapp", "whatsapp_cloud") and conv.get("whatsapp"):
@@ -950,6 +957,17 @@ async def _tool_request_handover(args: dict, conv: dict) -> dict:
         {"_id": conv["_id"]},
         {"$set": {"status": "waiting_admin", "resolution": "handover", "updated_at": utc_now_iso()}},
     )
+    # Beda dari 4 _pms_alert_owner lain (semua soal AI SALAH/gagal) - ini AI sendiri yang
+    # sadar butuh manusia (2026-07-26, permintaan Agus: sebelumnya harus buka halaman
+    # Percakapan sendiri buat tahu ada yang butuh dia; sekarang begitu AI handover, dia
+    # dapat ping Telegram tanpa perlu mantau terus).
+    try:
+        await _pms_alert_owner(
+            f"🙋 AI perlu bantuan admin - percakapan dgn {conv.get('guest_name') or conv.get('whatsapp') or 'tamu'} "
+            f"dialihkan ke Admin. Alasan dari AI: {args.get('reason') or '(tidak disebutkan)'}"
+        )
+    except Exception:
+        logging.getLogger("handover_alert").warning(f"Gagal kirim alert Telegram utk handover conv {conv.get('_id')}")
     return {"ok": True, "tool": "request_handover"}
 
 

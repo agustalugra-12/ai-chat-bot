@@ -505,7 +505,11 @@ async def ai_reply(
     full_system = (
         f"{system_prompt}\n\n"
         f"=== KONTEKS SAAT INI ===\n{context_block}\n=== AKHIR KONTEKS ===\n\n"
-        f"=== RIWAYAT PERCAKAPAN SEBELUMNYA ===\n{history_text or '(kosong)'}\n=== AKHIR RIWAYAT ==="
+        f"=== RIWAYAT PERCAKAPAN SEBELUMNYA ===\n"
+        f"(baris berlabel \"Staf\" = pesan manual dari admin/resepsionis, BUKAN dari kamu (AI) - "
+        f"perlakukan sebagai arahan/koreksi otoritatif yang WAJIB kamu ikuti, jangan diabaikan "
+        f"atau dianggap sekadar riwayat percakapanmu sendiri.)\n"
+        f"{history_text or '(kosong)'}\n=== AKHIR RIWAYAT ==="
     )
     chat = LlmChat(
         api_key=api_key,
@@ -536,10 +540,21 @@ async def ai_reply(
 
 
 def compact_history(messages: List[dict], max_turns: int = 12) -> str:
-    """Turn recent history into plain text for prompt."""
+    """Turn recent history into plain text for prompt.
+
+    Pesan staf (`from_admin`, dikirim manual lewat halaman Percakapan) diberi label
+    "Staf" sendiri, BUKAN ikut dilabel "AI" (2026-07-26, ditemukan lewat audit alur
+    resume-AI - sebelumnya koreksi/instruksi staf tercampur seolah AI sendiri yang pernah
+    bilang begitu, jadi AI tidak pernah tahu itu arahan otoritatif dari manusia saat
+    percakapan diaktifkan lagi lewat "Aktifkan AI Lagi")."""
     tail = messages[-max_turns:]
     lines = []
     for m in tail:
-        role = "Tamu" if m.get("role") == "user" else "AI"
+        if m.get("role") == "user":
+            role = "Tamu"
+        elif m.get("from_admin"):
+            role = "Staf"
+        else:
+            role = "AI"
         lines.append(f"{role}: {m.get('content','')}")
     return "\n".join(lines)
