@@ -639,6 +639,16 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
     room_photos = await db.rooms.find({}, {"name": 1, "photo_url": 1, "images": 1, "facilities": 1, "description": 1}).to_list(50)
     base = build_context_block(rooms, menu, kb, settings, room_photos)
 
+    # Nomor WA tamu SUNGGUHAN (2026-07-26, bug ditemukan saat regression test trimming
+    # prompt) - sebelum ini, angka WA tamu TIDAK PERNAH benar-benar dikirim sebagai teks
+    # ke LLM (cuma dipakai lookup profil di bawah), padahal TOOL_DOCS create_booking
+    # instruksikan AI "pakai nomor WA dari konteks apa adanya" dan kasih CONTOH angka
+    # "6281234567890" - tanpa angka asli di context, AI malah menyalin angka CONTOH itu ke
+    # ringkasan booking (tamu dikonfirmasi dgn nomor WA orang lain). Sekarang disuntik
+    # eksplisit supaya ada angka asli untuk dibaca AI.
+    if whatsapp:
+        base = f"# NOMOR WA TAMU SESI INI (angka asli, WAJIB dipakai apa adanya kalau perlu ditampilkan/dipakai tool)\n{whatsapp}\n\n" + base
+
     # Business Rules (Rule Engine tahap 1) - SENGAJA terpisah dari Knowledge Base (KB isinya
     # info umum hotel/wisata/FAQ, ini kebijakan operasional dari PMS: DP/cancellation/
     # checkin/checkout/promo/dll). Cache hasil sync, bukan realtime call per pesan.
