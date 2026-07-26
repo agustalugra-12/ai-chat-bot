@@ -74,6 +74,44 @@ async def _wa_cloud_send_image(to: str, image_url: str, caption: str = "", phone
         return False
 
 
+async def _wa_cloud_send_template(to: str, template_name: str, params: list, language: str = "id", phone_number_id: str = "") -> bool:
+    """Kirim pesan pakai WhatsApp Message Template (HSM) - SATU-SATUNYA cara Cloud API
+    mengizinkan bisnis mengirim pesan ke tamu DI LUAR jendela 24 jam sejak pesan terakhir
+    tamu (2026-07-26, ditemukan lewat audit: 8 titik notifikasi proaktif - approve staf,
+    pembatalan, dll - sebelumnya selalu kirim teks bebas yang DITOLAK Meta kalau di luar
+    jendela, dan hasil gagalnya tidak pernah dicek pemanggilnya). `params` = list string
+    berurutan untuk {{1}}, {{2}}, dst di body template - lihat nama & urutan variabel per
+    template di draft yang sudah disubmit ke WhatsApp Manager."""
+    pnid = phone_number_id or WHATSAPP_CLOUD_PHONE_NUMBER_ID
+    if not WHATSAPP_CLOUD_ACCESS_TOKEN or not pnid:
+        logger.warning("WHATSAPP_CLOUD_ACCESS_TOKEN/PHONE_NUMBER_ID belum diisi — template tidak terkirim")
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            resp = await http.post(
+                f"{GRAPH_API_BASE}/{pnid}/messages",
+                headers={"Authorization": f"Bearer {WHATSAPP_CLOUD_ACCESS_TOKEN}"},
+                json={
+                    "messaging_product": "whatsapp", "to": to, "type": "template",
+                    "template": {
+                        "name": template_name,
+                        "language": {"code": language},
+                        "components": [{
+                            "type": "body",
+                            "parameters": [{"type": "text", "text": str(p)} for p in params],
+                        }] if params else [],
+                    },
+                },
+            )
+            if resp.status_code >= 400:
+                logger.warning(f"Cloud API sendTemplate ({template_name}) gagal HTTP {resp.status_code}: {resp.text[:300]}")
+                return False
+            return True
+    except Exception as e:
+        logger.warning(f"Gagal memanggil Cloud API sendTemplate ({template_name}): {e}")
+        return False
+
+
 async def _wa_cloud_send_document(to: str, filename: str, data_base64: str, caption: str = "", phone_number_id: str = "") -> bool:
     """Dokumen (PDF dst) lewat Cloud API perlu diupload dulu ke Media endpoint (Cloud API
     tidak terima base64 langsung di body pesan seperti WAHA) - dua langkah: upload -> dapat

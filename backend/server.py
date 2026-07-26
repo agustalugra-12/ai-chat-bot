@@ -13,7 +13,7 @@ import re
 import secrets
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -84,6 +84,7 @@ from connectors.webpelangi_connector import (
 from waha_health_monitor import waha_health_monitor_loop
 from connectors.whatsapp_cloud_connector import (
     WHATSAPP_CLOUD_PHONE_NUMBER_ID, _wa_cloud_send_text, _wa_cloud_send_image, _wa_cloud_send_document,
+    _wa_cloud_send_template,
 )
 
 
@@ -1020,6 +1021,65 @@ async def _send_wa_smart(conv: dict, text: str) -> bool:
     return await _waha_send_text(f"{conv['whatsapp']}@c.us", text, session=identifier or WAHA_SESSION)
 
 
+def _last_inbound_at(conv: Optional[dict]) -> Optional[datetime]:
+    """Waktu pesan TERAKHIR dari tamu (role=user) di suatu percakapan - dipakai
+    `_send_wa_transactional` menentukan apakah masih dalam jendela layanan 24 jam Meta."""
+    if not conv:
+        return None
+    last = None
+    for m in conv.get("messages", []):
+        if m.get("role") == "user" and m.get("timestamp"):
+            try:
+                ts = datetime.fromisoformat(m["timestamp"])
+            except ValueError:
+                continue
+            if last is None or ts > last:
+                last = ts
+    return last
+
+
+async def _send_wa_transactional(conv: Optional[dict], text: str, whatsapp_fallback: Optional[str] = None,
+                                  template_name: Optional[str] = None, template_params: Optional[List[str]] = None) -> bool:
+    """Kirim notifikasi TRANSAKSIONAL yang PMS picu sendiri (approve booking, pembatalan,
+    kamar siap, dst) - BEDA dari `_send_wa_smart` (balasan chat langsung/staf): fungsi ini
+    sadar jendela layanan 24 jam Meta (2026-07-26, ditemukan lewat audit - 8 titik notifikasi
+    proaktif sebelumnya selalu kirim teks bebas & hasil gagalnya tidak pernah dicek; teks
+    bebas Cloud API ditolak Meta kalau di luar jendela 24 jam sejak pesan terakhir tamu).
+    Kalau di luar jendela (atau tidak ada percakapan WA sama sekali, mis. tamu batalkan
+    lewat web publik bukan WA), WAJIB pakai Message Template yang sudah disetujui Meta -
+    `template_name`/`template_params` optional supaya pemanggil lama tanpa template masih
+    jalan (nyoba teks bebas dulu, WAHA tidak kena aturan ini sama sekali)."""
+    whatsapp = (conv or {}).get("whatsapp") or whatsapp_fallback
+    if not whatsapp:
+        return False
+
+    if conv:
+        channel, identifier = _channel_info_from_conv(conv)
+    else:
+        channel, identifier = "whatsapp_cloud", WHATSAPP_CLOUD_PHONE_NUMBER_ID
+
+    if channel != "whatsapp_cloud":
+        # WAHA - bukan API resmi Meta, tidak ada pembatasan jendela 24 jam.
+        return await _waha_send_text(f"{whatsapp}@c.us", text, session=identifier or WAHA_SESSION)
+
+    last_inbound = _last_inbound_at(conv)
+    within_window = bool(last_inbound) and (datetime.now(timezone.utc) - last_inbound) < timedelta(hours=24)
+
+    if within_window:
+        if await _wa_cloud_send_text(whatsapp, text, phone_number_id=identifier or ""):
+            return True
+
+    if template_name:
+        if await _wa_cloud_send_template(whatsapp, template_name, template_params or [], phone_number_id=identifier or ""):
+            return True
+
+    if not within_window:
+        # upaya terakhir kalau tidak ada template (atau template gagal) - lebih baik coba
+        # daripada pasti tidak terkirim sama sekali.
+        return await _wa_cloud_send_text(whatsapp, text, phone_number_id=identifier or "")
+    return False
+
+
 async def _send_wa_document_smart(conv: dict, filename: str, mimetype: str, data_base64: str, caption: str = "") -> bool:
     """Sibling dokumen dari `_send_wa_smart` - sama polanya, dipakai relay /send-document."""
     if not conv.get("whatsapp"):
@@ -1637,6 +1697,8 @@ async def web_content_integration_sync(jenis: str, user=Depends(get_current_user
 class SendMessageIn(BaseModel):
     to: str
     message: str
+    template_name: Optional[str] = None
+    template_params: Optional[List[str]] = None
 
 
 @api.post("/send-message")
@@ -1649,7 +1711,10 @@ async def send_message_relay(body: SendMessageIn, request: Request, _rl: None = 
     ADA tanpa perlu perubahan kode PMS - cukup arahkan Konfigurasi Webhook (provider
     "Lainnya/Custom API") ke endpoint ini. Auth pakai `send_message_api_key` sendiri
     (BUKAN pms_api_key - itu arah sebaliknya, ai-chat-bot->PMS), supaya kedua arah panggilan
-    punya kredensial masing-masing yang bisa di-revoke terpisah."""
+    punya kredensial masing-masing yang bisa di-revoke terpisah.
+    `template_name`/`template_params` (2026-07-26, opsional) - dipakai `_send_wa_transactional`
+    kalau nomor ini Cloud API DAN sudah di luar jendela layanan 24 jam Meta, WAJIB pakai
+    Message Template yang sudah disetujui (teks bebas biasa akan ditolak Meta)."""
     cfg = await _pms_config()
     auth = request.headers.get("Authorization", "")
     key = auth[7:] if auth.startswith("Bearer ") else ""
@@ -1670,7 +1735,8 @@ async def send_message_relay(body: SendMessageIn, request: Request, _rl: None = 
     # Cloud API-nya sehat. Fallback ke WAHA kalau belum pernah ada percakapan (mis. nomor
     # dari input manual staf) - itu perilaku lama, tetap aman dipertahankan.
     conv = await db.conversations.find_one({"whatsapp": digits}, sort=[("updated_at", -1)])
-    ok = await _send_wa_smart(conv, body.message) if conv else await _waha_send_text(f"{digits}@c.us", body.message)
+    ok = await _send_wa_transactional(conv, body.message, whatsapp_fallback=digits,
+                                       template_name=body.template_name, template_params=body.template_params)
     await _pms_log("/send-message", "POST", 200 if ok else 502, 0, ok, f"to {digits}")
     if not ok:
         raise HTTPException(502, "Gagal mengirim pesan lewat WhatsApp")
