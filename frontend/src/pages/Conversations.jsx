@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { PageHeader, Badge, EmptyState } from "@/components/ui-parts";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
-import { AlertTriangle, CheckCircle2, MessagesSquare, Send, Bot, Loader2, UserRound } from "lucide-react";
+import { AlertTriangle, CheckCircle2, MessagesSquare, Send, Bot, Loader2, UserRound, ChevronUp, ChevronDown } from "lucide-react";
 import { ChatMessageContent } from "@/components/ChatMessageContent";
 
 // Nama teknis di database -> label yang dimengerti orang awam. Channel "whatsapp" (WAHA)
@@ -35,6 +35,10 @@ const INTENT_LABEL = {
   create_maintenance_ticket: "laporan kerusakan",
 };
 
+const PESAN_AWAL = 10; // percakapan lama bisa ratusan pesan - fokus 10 terakhir dulu,
+// sisanya dimuat lewat tombol "Muat pesan lebih lama" di atas, bukan discroll manual jauh.
+const PESAN_TAMBAHAN = 20;
+
 const FILTERS = [
   { key: "all", label: "Semua" },
   { key: "waiting_admin", label: "🔴 Butuh Kamu" },
@@ -60,8 +64,44 @@ export default function Conversations() {
   const [filter, setFilter] = useState("all");
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(PESAN_AWAL);
+  const [atBottom, setAtBottom] = useState(true);
   const selectedRef = useRef(null);
+  const scrollRef = useRef(null);
+  const isAtBottomRef = useRef(true);
   selectedRef.current = selected;
+
+  const scrollToBottom = (behavior = "auto") => {
+    const el = scrollRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior });
+  };
+  const scrollToTop = () => {
+    const el = scrollRef.current;
+    if (el) el.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const bottomNow = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    isAtBottomRef.current = bottomNow;
+    setAtBottom(bottomNow);
+  };
+
+  // Ganti percakapan yang dibuka -> reset ke 10 pesan terakhir & langsung fokus ke bawah
+  // (pesan terbaru), bukan mulai dari atas riwayat yang bisa ratusan pesan panjangnya.
+  useEffect(() => {
+    setVisibleCount(PESAN_AWAL);
+    isAtBottomRef.current = true;
+    setAtBottom(true);
+    requestAnimationFrame(() => scrollToBottom("auto"));
+  }, [selected?.id]); // eslint-disable-line
+
+  // Auto-refresh (polling) menambah pesan baru - ikut ke bawah HANYA kalau operator
+  // memang sedang di posisi paling bawah (supaya tidak menyentak orang yang sedang
+  // baca riwayat lama ke atas).
+  useEffect(() => {
+    if (isAtBottomRef.current) requestAnimationFrame(() => scrollToBottom("auto"));
+  }, [selected?.messages?.length]); // eslint-disable-line
 
   const load = async (keepSelectedId) => {
     const { data } = await api.get("/conversations");
@@ -108,6 +148,7 @@ export default function Conversations() {
       const { data } = await api.post(`/conversations/${selected.id}/reply`, { message: text });
       setReplyText("");
       toast.success(data.sent_to_whatsapp ? "Terkirim ke WhatsApp tamu" : "Tersimpan di percakapan");
+      isAtBottomRef.current = true;
       load(selected.id);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Gagal mengirim pesan, coba lagi");
@@ -230,20 +271,39 @@ export default function Conversations() {
                   AI sudah berhenti membalas otomatis di sini. Ketik balasanmu di bawah, atau tekan <b>&nbsp;"Aktifkan AI Lagi"&nbsp;</b> kalau ingin AI lanjut menjawab.
                 </div>
               )}
-              <div className="flex-1 overflow-y-auto pelangi-scroll p-6 chat-bg flex flex-col gap-2">
-                {selected.messages.map((m, i) => {
-                  const intentLabel = INTENT_LABEL[m.intent];
-                  return (
-                    <div key={i} className={m.role === "user" ? "chat-bubble-guest" : "chat-bubble-ai"}>
-                      {m.from_admin && <div className="text-[10px] font-semibold text-emerald-700 mb-0.5">Kamu (balasan manual)</div>}
-                      <ChatMessageContent content={m.content} />
-                      <div className="text-[10px] mt-1 text-stone-500 text-right">
-                        {new Date(m.timestamp).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
-                        {intentLabel && <> · <span className="text-emerald-700">{intentLabel}</span></>}
+              <div className="relative flex-1 min-h-0">
+                <div ref={scrollRef} onScroll={handleScroll} className="absolute inset-0 overflow-y-auto pelangi-scroll p-6 chat-bg flex flex-col gap-2">
+                  {selected.messages.length > visibleCount && (
+                    <button
+                      onClick={() => setVisibleCount((v) => v + PESAN_TAMBAHAN)}
+                      className="self-center mb-2 inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-white border border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted))] font-medium shadow-sm"
+                    >
+                      <ChevronUp className="w-3.5 h-3.5" /> Muat pesan lebih lama ({selected.messages.length - visibleCount} lagi)
+                    </button>
+                  )}
+                  {selected.messages.slice(-visibleCount).map((m, i) => {
+                    const intentLabel = INTENT_LABEL[m.intent];
+                    return (
+                      <div key={i} className={m.role === "user" ? "chat-bubble-guest" : "chat-bubble-ai"}>
+                        {m.from_admin && <div className="text-[10px] font-semibold text-emerald-700 mb-0.5">Kamu (balasan manual)</div>}
+                        <ChatMessageContent content={m.content} />
+                        <div className="text-[10px] mt-1 text-stone-500 text-right">
+                          {new Date(m.timestamp).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
+                          {intentLabel && <> · <span className="text-emerald-700">{intentLabel}</span></>}
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
+                {!atBottom && (
+                  <button
+                    onClick={() => scrollToBottom("smooth")}
+                    data-testid="btn-scroll-bottom"
+                    className="absolute bottom-4 right-6 inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded-full bg-[hsl(var(--primary))] text-white font-medium shadow-lg hover:opacity-90"
+                  >
+                    <ChevronDown className="w-3.5 h-3.5" /> Pesan terbaru
+                  </button>
+                )}
               </div>
               {selected.status !== "closed" && (
                 <div className="bg-white border-t border-[hsl(var(--border))] p-3 flex items-end gap-2">
