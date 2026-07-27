@@ -1734,6 +1734,36 @@ async def web_content_integration_sync(jenis: str, user=Depends(get_current_user
     return result
 
 
+async def _catat_pesan_sistem(conv: Optional[dict], whatsapp: str, content: str) -> None:
+    """Catat pesan yang dikirim SISTEM (link pembayaran Tripay, voucher/invoice PDF,
+    konfirmasi approve/tolak dari PMS lewat /send-message & /send-document) ke riwayat
+    percakapan - BEDA dari balasan AI maupun balasan manual staf (`from_admin`). Ditemukan
+    2026-07-27 lewat laporan user: pesan-pesan ini SUNGGUHAN terkirim ke tamu tapi tidak
+    pernah tercatat sama sekali di dashboard Percakapan - staf tidak pernah lihat jejaknya,
+    padahal dashboard ini satu-satunya tempat baca chat tamu sejak migrasi Cloud API. Kalau
+    belum ada percakapan sama sekali utk nomor ini (mis. kirim ke tamu yang belum pernah
+    chat AI, atau ke nomor staf utk slip gaji), buat percakapan baru supaya tetap ada
+    jejaknya, bukan didiamkan begitu saja."""
+    entry = {
+        "role": "assistant", "content": content, "timestamp": utc_now_iso(),
+        "intent": None, "from_system": True,
+    }
+    if conv:
+        messages = conv.get("messages", []) + [entry]
+        await db.conversations.update_one(
+            {"_id": conv["_id"]}, {"$set": {"messages": messages, "updated_at": utc_now_iso()}},
+        )
+    else:
+        await db.conversations.insert_one({
+            "_id": new_id(), "session_id": f"sys-{whatsapp}-{new_id()[:8]}",
+            "guest_name": None, "whatsapp": whatsapp, "channel": "whatsapp_cloud",
+            "waha_session": None, "cloud_phone_number_id": WHATSAPP_CLOUD_PHONE_NUMBER_ID,
+            "messages": [entry], "status": "active", "resolution": "unresolved",
+            "booking_created": False, "last_intent": None, "response_time_ms": 0,
+            "created_at": utc_now_iso(), "updated_at": utc_now_iso(),
+        })
+
+
 class SendMessageIn(BaseModel):
     to: str
     message: str
@@ -1778,6 +1808,8 @@ async def send_message_relay(body: SendMessageIn, request: Request, _rl: None = 
     ok = await _send_wa_transactional(conv, body.message, whatsapp_fallback=digits,
                                        template_name=body.template_name, template_params=body.template_params)
     await _pms_log("/send-message", "POST", 200 if ok else 502, 0, ok, f"to {digits}")
+    if ok:
+        await _catat_pesan_sistem(conv, digits, body.message)
     if not ok:
         raise HTTPException(502, "Gagal mengirim pesan lewat WhatsApp")
     return {"ok": True}
@@ -1812,6 +1844,9 @@ async def send_document_relay(body: SendDocumentIn, request: Request, _rl: None 
         await _waha_send_file(f"{digits}@c.us", body.filename, body.mimetype, body.data_base64, body.caption)
     )
     await _pms_log("/send-document", "POST", 200 if ok else 502, 0, ok, f"to {digits}")
+    if ok:
+        catatan = f"📎 Dokumen dikirim: {body.filename}" + (f" — {body.caption}" if body.caption else "")
+        await _catat_pesan_sistem(conv, digits, catatan)
     if not ok:
         raise HTTPException(502, "Gagal mengirim dokumen lewat WhatsApp")
     return {"ok": True}

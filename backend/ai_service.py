@@ -554,6 +554,10 @@ def compact_history(messages: List[dict], max_turns: int = 12) -> str:
             role = "Tamu"
         elif m.get("from_admin"):
             role = "Staf"
+        elif m.get("from_system"):
+            # Notifikasi otomatis PMS (link pembayaran, voucher) - BUKAN ucapan AI sendiri,
+            # supaya AI tidak menganggap dirinya sendiri yang pernah bilang begitu (2026-07-27).
+            role = "Sistem"
         else:
             role = "AI"
         lines.append(f"{role}: {m.get('content','')}")

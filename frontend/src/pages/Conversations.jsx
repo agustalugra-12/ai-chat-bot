@@ -296,6 +296,7 @@ export default function Conversations() {
                     return (
                       <div key={i} className={m.role === "user" ? "chat-bubble-guest" : "chat-bubble-ai"}>
                         {m.from_admin && <div className="text-[10px] font-semibold text-emerald-700 mb-0.5">Kamu (balasan manual)</div>}
+                        {m.from_system && <div className="text-[10px] font-semibold text-sky-700 mb-0.5">📋 Notifikasi Sistem (PMS)</div>}
                         <ChatMessageContent content={m.content} />
                         <div className="text-[10px] mt-1 text-stone-500 text-right">
                           {new Date(m.timestamp).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
