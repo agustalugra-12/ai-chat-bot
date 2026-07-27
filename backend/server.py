@@ -1344,6 +1344,37 @@ async def _run_chat_turn(
         )
         final_text = final_text_koreksi
 
+    # Jaring pengaman level KODE (2026-07-27) - insiden nyata (laporan user, terlihat di
+    # riwayat chat): AI menulis ringkasan harga (mirip kasus service-fee di atas) TANPA
+    # memanggil preview_booking, sehingga baris "Kedatangan ke-N, dapat diskon member X%"
+    # ikut hilang dari ringkasan - tamu confirm bayar tanpa tahu dia dapat diskon, padahal
+    # kebijakan WAJIB sampaikan proaktif SEBELUM ditanya. Beda dari preview_booking (butuh
+    # tipe kamar/tanggal terstruktur yang belum tentu lengkap saat ini), check_member_status
+    # CUMA butuh nomor WA - aman dipanggil ulang di sini sebagai jaring pengaman tanpa
+    # risiko data tidak lengkap. Deteksi: teks terlihat seperti ringkasan harga ("Total:
+    # Rp...") tapi sama sekali tidak menyebut "kedatangan"/"diskon".
+    if (
+        tool != "preview_booking"
+        and re.search(r"total\s*:?\s*rp", final_text, re.IGNORECASE)
+        and not re.search(r"kedatangan|diskon", final_text, re.IGNORECASE)
+    ):
+        wa_guard = conv.get("whatsapp") or whatsapp
+        if wa_guard:
+            status_member = await _pms_status_member(wa_guard, api_key_override=conv.get("_pms_api_key_override"))
+            diskon_persen = status_member.get("diskon_persen") or 0
+            kedatangan_ke = status_member.get("kedatangan_ke")
+            if diskon_persen > 0 and kedatangan_ke:
+                final_text = (
+                    final_text.rstrip()
+                    + f"\n\n📌 Catatan: Ini kedatangan Kakak yang ke-{kedatangan_ke}, dapat diskon "
+                    f"member {diskon_persen}% - total final (setelah diskon) akan lebih rendah dari "
+                    f"angka di atas, dihitung otomatis saat booking diproses."
+                )
+                logging.getLogger("hallucination_guard").warning(
+                    f"ringkasan harga tanpa info diskon member terdeteksi & ditambahkan - "
+                    f"conv {conv.get('_id')}, kedatangan_ke={kedatangan_ke}, diskon={diskon_persen}%"
+                )
+
     # Jaring pengaman level KODE (2026-07-24) - insiden nyata BERULANG: instruksi prompt
     # "JANGAN ulangi link checkout_url di balasan sendiri" (ditambahkan 2026-07-21 setelah
     # laporan user pertama) TERBUKTI tidak selalu dipatuhi model - tamu tetap dapat link
