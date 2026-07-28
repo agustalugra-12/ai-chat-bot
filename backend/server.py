@@ -1393,6 +1393,39 @@ async def _run_chat_turn(
         )
         final_text = final_text_koreksi
 
+    # Jaring pengaman level KODE (2026-07-28) - ditemukan lewat pengujian nyata (bukan
+    # laporan user - diuji proaktif krn user tanya "apakah diskon member benar-benar
+    # akurat"): model kadang menulis baris "Total"/"Harga kamar" TANPA angka Rupiah asli
+    # (placeholder spt "(akan dihitung otomatis)") krn ternyata TIDAK benar-benar memanggil
+    # preview_booking giliran ini (tool None), walau kedatangan_ke/diskon_persen di
+    # KALIMAT NARATIF sebelumnya sudah benar (itu dari check_member_status yang memang
+    # dipanggil, tool TERPISAH dari preview_booking - beda tool, jangan disamakan).
+    # SAMA seperti catatan tim sebelumnya soal kasus mirip (lihat komentar service-fee di
+    # atas): TIDAK ADA cara aman auto-panggil preview_booking di sini (perlu tipe kamar/
+    # tanggal terstruktur yang belum tentu lengkap/valid) - beda dari kasus itu, di sini
+    # model TIDAK mengarang angka salah (lebih aman drpd itu), cuma ringkasan jadi tidak
+    # lengkap/tidak profesional. TIDAK ditimpa (tidak ada angka benar utk gantinya) -
+    # cukup alert staf supaya sadar ada tamu yang mungkin bingung & perlu ditindaklanjuti
+    # manual, konsisten dgn prinsip "hanya auto-koreksi yang aman, sisanya alert" yang
+    # sudah dipakai di jaring pengaman lain.
+    if tool != "preview_booking" and re.search(
+        r"(total|harga\s+kamar)\s*:?\s*\(?\s*(akan\s+dihitung|menyusul|otomatis|tbd|-{2,})",
+        final_text, re.IGNORECASE,
+    ):
+        logging.getLogger("hallucination_guard").warning(
+            f"ringkasan harga placeholder (bukan angka asli) terdeteksi, preview_booking "
+            f"TIDAK dipanggil giliran ini - conv {conv.get('_id')}, wa {conv.get('whatsapp') or whatsapp}, "
+            f"teks: {final_text!r}"
+        )
+        try:
+            await _pms_alert_owner(
+                f"⚠️ AI menulis ringkasan harga TANPA angka asli (placeholder spt 'akan dihitung "
+                f"otomatis') - tamu {conv.get('whatsapp') or whatsapp} mungkin bingung, tolong cek "
+                f"percakapan & tindak lanjuti manual kalau perlu."
+            )
+        except Exception:
+            pass
+
     # Jaring pengaman level KODE (2026-07-27) - insiden nyata (laporan user, terlihat di
     # riwayat chat): AI menulis ringkasan harga (mirip kasus service-fee di atas) TANPA
     # memanggil preview_booking, sehingga baris "Kedatangan ke-N, dapat diskon member X%"
