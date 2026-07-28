@@ -420,15 +420,12 @@ async def guest_availability(check_in: str, check_out: str, room_type: Optional[
 
 
 # ---------------------------------------------------------------------------
-# GUEST BOOKING VERIFICATION
+# GUEST BOOKING VERIFICATION: dihapus 2026-07-27 (audit keamanan) — endpoint lama TANPA
+# AUTH SAMA SEKALI, siapa saja bisa tebak nomor WA & dapat riwayat booking tamu lain
+# (nama/tanggal/harga). Sudah dead code sejak lama: tool AI `lookup_booking` yang benar-benar
+# jalan (register_tool("lookup_booking", ...) di bawah) pakai _pms_status_booking (PMS asli),
+# bukan endpoint ini - db.bookings lokal ai-chat-bot bukan lagi sumber kebenaran booking.
 # ---------------------------------------------------------------------------
-@api.get("/guest/bookings")
-async def guest_bookings(whatsapp: str, booking_id: Optional[str] = None):
-    q = {"whatsapp": whatsapp}
-    if booking_id:
-        q["_id"] = booking_id
-    docs = await db.bookings.find(q).sort("created_at", -1).to_list(50)
-    return [{**d, "id": d.pop("_id")} for d in docs]
 
 
 # SERVICE REQUESTS: dihapus 2026-07-19 — sebelumnya endpoint lokal (db.service_requests)
