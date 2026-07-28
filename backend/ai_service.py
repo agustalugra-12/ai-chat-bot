@@ -181,6 +181,9 @@ TOOL_DOCS = {
     'LARANGAN KERAS: JANGAN PERNAH menulis kalimat seolah pembatalan sudah diajukan/tuntas KECUALI kamu BENAR-BENAR memanggil cancel_booking DI GILIRAN INI dan hasilnya ok=true. "batalkan yang satu lagi juga"/"keduanya"/"lanjutkan" dari tamu TIDAK PERNAH cukup tanpa benar-benar memanggil tool itu LAGI di giliran ini.',
     "create_service_request": '- create_service_request (tiket masuk PMS, dipantau staf) : args {"guest_name":"...","whatsapp":"...","service_type":"extra_bed|extra_towel|mineral_water|cleaning|laundry|motor_rental|airport_pickup|extra_breakfast","quantity":1,"notes":"...","room_nomor":"..." (isi kalau tamu sebutkan sendiri, mis. "kamar 15" - JANGAN cuma di "notes")}',
     "create_maintenance_ticket": '- create_maintenance_ticket (tiket masuk PMS, dipantau staf) : args {"tipe":"complaint"|"maintenance","deskripsi":"...","guest_name":"...","whatsapp":"...","room_nomor":"..." (isi kalau tamu sebutkan sendiri, JANGAN cuma di "deskripsi")}. "maintenance" = kerusakan fasilitas (AC/TV/air/listrik dst), "complaint" = keluhan pelayanan/kebersihan yang bukan kerusakan alat.',
+    "catat_kedatangan_tamu": '- catat_kedatangan_tamu (tiket masuk PMS, dipantau staf - BUKAN check-in resmi, staf tetap yang proses check-in sungguhan begitu tamu tiba) : args {"whatsapp":"...","guest_name":"...","room_nomor":"..." (isi HANYA kalau tamu sebutkan sendiri),"catatan":"..." (opsional, mis. "naik taksi, 15 menit lagi")}. '
+    'WAJIB panggil PROAKTIF begitu tamu bilang sudah tiba/dalam perjalanan/di depan properti (mis. "aku udah sampai", "otw", "5 menit lagi nyampe", "udah di depan pagar") - JANGAN nunggu diminta, JANGAN cuma balas basa-basi tanpa memanggil tool ini. '
+    'Setelah tool ini berhasil (ok=true), beri tahu tamu bahwa staf sudah diberi tahu & akan segera menyambut - JANGAN PERNAH bilang "sudah check-in"/"kamar sudah siap" (check-in sungguhan - verifikasi identitas, pembayaran, serah kunci - tetap dilakukan staf langsung saat tamu tiba di lokasi, bukan lewat chat).',
     "request_handover": '- request_handover : args {"reason":"..."}',
     "remember_guest_fact": '- remember_guest_fact : args {"whatsapp":"...","fact":"..."}. WAJIB dipanggil tiap tamu minta sesuatu "dicatat"/"diingat", atau sebutkan preferensi/alergi/nama panggilan/kebiasaan relevan. JANGAN bilang "sudah dicatat" TANPA benar-benar memanggil tool ini di baris yang sama - mengaku mencatat tanpa memanggil = data tidak tersimpan. Bukan untuk data booking/transaksi (sudah otomatis di PMS) - hanya fakta personal tamu.',
 }
@@ -219,6 +222,8 @@ def build_dynamic_prompt(bot: dict, room_types: Optional[List[str]] = None) -> s
         exposed.add("cancel_booking")
     if "request_handover" in tool_codes:
         exposed.add("request_handover")
+    if "guest_arrival" in tool_codes:
+        exposed.add("catat_kedatangan_tamu")
     # any service-request-like tool → expose create_service_request (tiket masuk PMS,
     # bukan db.service_requests lokal - lihat _tool_create_service_request di server.py)
     service_like = {"restaurant_order", "laundry_request", "housekeeping_request",

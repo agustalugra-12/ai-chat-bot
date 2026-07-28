@@ -902,6 +902,56 @@ async def _tool_create_maintenance_ticket(args: dict, conv: dict) -> dict:
         return {"ok": False, "tool": "create_maintenance_ticket", "error": str(e)}
 
 
+@register_tool("catat_kedatangan_tamu", {"guest_arrival"})
+async def _tool_catat_kedatangan_tamu(args: dict, conv: dict) -> dict:
+    """Tamu mengabarkan sudah tiba/dalam perjalanan ke properti (2026-07-28, permintaan
+    user: "apakah AI sudah bisa membaca dan mencatat kedatangan tamu?" - jawabannya
+    sebelum ini TIDAK ADA sama sekali, tidak ada tool/endpoint apa pun yang mendeteksi
+    atau mencatat kedatangan tamu, cuma ada penghitung "kedatangan ke-N" utk loyalitas
+    yang dihitung dari riwayat booking, bukan dari kedatangan real-time).
+
+    BUKAN check-in resmi - staf tetap yang melakukan check-in sungguhan (verifikasi ID/
+    pembayaran/serah kunci), sama seperti create_booking/cancel_booking yang juga tidak
+    pernah jadi aksi final otomatis (lihat prinsip yang sama di TOOL_DOCS keduanya). Tool
+    ini CUMA membuat tiket "Permintaan Layanan" ke PMS (reuse _pms_buat_tiket yang sama
+    dipakai create_service_request - sudah teruji, staf sudah pantau halamannya & dapat
+    alert push/Telegram otomatis) supaya staf tahu & siap menyambut begitu tamu sampai -
+    BUKAN bikin kolom/status/halaman baru dari nol, biar "benar-benar tercatat" reuse
+    jalur yang sudah terbukti reliable, bukan sistem paralel yang belum teruji."""
+    whatsapp = args.get("whatsapp") or conv.get("whatsapp") or ""
+    guest_name = args.get("guest_name") or conv.get("guest_name") or ""
+    room_nomor = (args.get("room_nomor") or "").strip()
+    catatan = (args.get("catatan") or "").strip()
+
+    # Perkaya deskripsi tiket dgn konteks booking asli (kode/tipe kamar/tanggal) kalau
+    # ketemu, supaya staf langsung tau siapa & booking yang mana tanpa buka PMS dulu -
+    # gagal lookup TIDAK menghalangi tiket tetap dibuat (tamu bisa saja belum booking
+    # lewat sistem, atau lookup gagal krn nomor beda) - staf tetap diberi tahu apa adanya.
+    konteks_booking = ""
+    try:
+        status = await _pms_status_booking(whatsapp, api_key_override=conv.get("_pms_api_key_override"))
+        if status.get("ok") and status.get("permintaan"):
+            item = status["permintaan"][0]
+            ringkasan = (item.get("booking_ringkasan") or [{}])[0]
+            konteks_booking = (
+                f" Booking: {ringkasan.get('kode', item.get('kode', '-'))}, "
+                f"{item.get('room_tipe', '-')}, check-in {item.get('tanggal_checkin', '-')}."
+            )
+    except Exception:
+        pass
+
+    deskripsi = f"🛎️ Tamu mengabarkan sudah tiba/dalam perjalanan ke properti.{konteks_booking}"
+    if catatan:
+        deskripsi += f" Catatan tamu: {catatan}"
+
+    hasil = await _pms_buat_tiket("service_request", deskripsi, whatsapp, guest_name, room_nomor,
+                                  api_key_override=conv.get("_pms_api_key_override"))
+    if not hasil.get("ok"):
+        return {"ok": False, "tool": "catat_kedatangan_tamu", "error": hasil.get("error")}
+    tiket = hasil.get("tiket") or {}
+    return {"ok": True, "tool": "catat_kedatangan_tamu", "tiket_id": tiket.get("id")}
+
+
 def _rename_kode_permintaan(items: list) -> list:
     """PMS ngembaliin tiap item dengan 2 field "kode" yang beda arti - top-level "kode"
     itu kode PERMINTAAN booking (REQ-...), sedangkan booking_ringkasan[].kode itu kode
