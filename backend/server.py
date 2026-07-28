@@ -7,6 +7,8 @@ Connector, lihat connectors/pms_connector.py untuk integrasi Pelangi PMS) - buka
 """
 import os
 import asyncio
+import hashlib
+import hmac
 import logging
 import random
 import re
@@ -1881,6 +1883,25 @@ async def send_document_relay(body: SendDocumentIn, request: Request, _rl: None 
 
 
 WHATSAPP_CLOUD_VERIFY_TOKEN = os.environ.get("WHATSAPP_CLOUD_VERIFY_TOKEN", "")
+WHATSAPP_CLOUD_APP_SECRET = os.environ.get("WHATSAPP_CLOUD_APP_SECRET", "")
+
+
+def _verifikasi_signature_meta(raw_body: bytes, signature_header: Optional[str]) -> bool:
+    """Verifikasi X-Hub-Signature-256 yang Meta kirim di tiap webhook POST asli (HMAC-SHA256
+    dari raw body pakai App Secret) - TANPA ini, siapa saja yang tahu URL webhook bisa kirim
+    payload palsu yang diproses seolah pesan tamu sungguhan, termasuk memicu AI memanggil
+    create_booking/cancel_booking dengan data karangan (2026-07-27, temuan audit keamanan).
+    Kalau WHATSAPP_CLOUD_APP_SECRET belum diisi, loloskan dulu (tidak block migrasi awal yang
+    sedang berjalan) tapi catat warning supaya ketahuan kalau lupa diisi."""
+    if not WHATSAPP_CLOUD_APP_SECRET:
+        logging.getLogger("whatsapp_cloud").warning(
+            "WHATSAPP_CLOUD_APP_SECRET belum diisi - webhook TIDAK diverifikasi tanda tangannya!"
+        )
+        return True
+    if not signature_header or not signature_header.startswith("sha256="):
+        return False
+    expected = hmac.new(WHATSAPP_CLOUD_APP_SECRET.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature_header[len("sha256="):], expected)
 
 
 @api.get("/webhook/whatsapp-cloud")
@@ -1912,6 +1933,10 @@ async def whatsapp_cloud_webhook_receive(request: Request):
     nomor Admin asli - aman untuk tes end-to-end dulu. `phone_number_id` dipakai sebagai
     padanan `channel_id` WAHA untuk multi-nomor (channel_type="whatsapp_cloud" di ai_bots),
     fallback ke bot default (booking_marketing) kalau belum ada yang ditautkan."""
+    raw_body = await request.body()
+    if not _verifikasi_signature_meta(raw_body, request.headers.get("X-Hub-Signature-256")):
+        logging.getLogger("whatsapp_cloud").warning("Webhook ditolak - tanda tangan X-Hub-Signature-256 tidak cocok/tidak ada")
+        raise HTTPException(403, "Invalid signature")
     payload = await request.json()
     try:
         entry = (payload.get("entry") or [{}])[0]
