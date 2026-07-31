@@ -706,15 +706,16 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
     if not is_pelangi_content:
         base += (
             "\n\n# KETERBATASAN DATA PROPERTI INI (WAJIB DIPATUHI)\n"
-            "Foto kamar dan knowledge base/FAQ umum (mis. aturan check-in detail, kebijakan "
-            "khusus) untuk properti ini BELUM tersedia di sistem (fasilitas & deskripsi kamar "
-            "di atas, kalau ada, SUDAH data asli dan boleh disebutkan; alamat & link Google Maps "
-            "di '# INFO HOTEL' di atas JUGA SUDAH data asli dan BOLEH disebutkan/dikirim). "
-            "JANGAN PERNAH mengirim foto kamar dari properti lain (mis. Pelangi Homestay) seolah "
-            "itu milik properti ini - itu informasi yang SALAH bagi tamu. Kalau tamu menanyakan "
-            "hal yang belum tersedia (foto kamar, FAQ detail), jawab jujur bahwa detailnya akan "
-            "diinfokan staf, dan gunakan tool eskalasi/tiket kalau tersedia. Ketersediaan kamar & "
-            "harga (di atas, dari PMS live) TETAP boleh dan HARUS dijawab seperti biasa."
+            "Knowledge base/FAQ umum (mis. aturan check-in detail, kebijakan khusus di luar "
+            "yang sudah tertulis di atas) untuk properti ini BELUM tersedia di sistem. Yang "
+            "SUDAH data asli dan BOLEH disebutkan/dikirim ke tamu: alamat & link Google Maps "
+            "di '# INFO HOTEL', foto kamar & fasilitas/deskripsi di '# FASILITAS & DESKRIPSI "
+            "KAMAR' (kalau ada). JANGAN PERNAH menyebutkan/mengirim data dari properti lain "
+            "(mis. Pelangi Homestay) seolah itu milik properti ini - itu informasi yang SALAH "
+            "bagi tamu. Kalau tamu menanyakan hal yang belum tersedia (FAQ/kebijakan detail di "
+            "luar yang tertulis), jawab jujur bahwa detailnya akan diinfokan staf, dan gunakan "
+            "tool eskalasi/tiket kalau tersedia. Ketersediaan kamar & harga (di atas, dari PMS "
+            "live) TETAP boleh dan HARUS dijawab seperti biasa."
         )
 
     # Nomor WA tamu SUNGGUHAN (2026-07-26, bug ditemukan saat regression test trimming
