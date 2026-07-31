@@ -22,7 +22,8 @@ from typing import Any, Dict, List, Optional
 import httpx
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, APIRouter, File, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import PlainTextResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pymongo.errors import DuplicateKeyError
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
@@ -149,6 +150,17 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("pelangi")
+
+
+@app.exception_handler(RequestValidationError)
+async def _log_validation_error(request: Request, exc: RequestValidationError):
+    # Dipakai 2026-07-31 utk lacak 422 berulang di /send-message (akar masalah: PMS
+    # push_sync_event() salah kirim event non-guest ke endpoint ini, sudah diperbaiki di
+    # sisi PMS) - access log bawaan cuma tampilkan "422 Unprocessable Entity" tanpa body,
+    # jadi ditambah permanen supaya 422 di endpoint manapun ke depan langsung kelihatan
+    # field mana yang gagal validasi, tidak perlu re-investigasi dari nol tiap kali.
+    logging.getLogger("validation").warning(f"422 di {request.url.path}: {exc.errors()}")
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
 # ---------------------------------------------------------------------------
@@ -703,6 +715,14 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
             "hotel_name": "Harmoni Hills",
             "address": "Jl. Denpasar - Singaraja, Kembangkerta, Candikuning, Baturiti, Tabanan, Bali 82191",
             "maps_url": "https://www.google.com/maps/search/?api=1&query=-8.2598629,115.1631686&query_place_id=0x2dd189006b1f4b49:0xd64ae8ec12451c53",
+            # Arah jalan kaki dari titik map (2026-08-01, permintaan Agus) - titik Maps
+            # cuma antar sampai area umum, bukan pintu masuk persis, jadi tamu butuh
+            # panduan lanjutan dari situ. Disuntik SETELAH link maps di build_context_block.
+            "map_directions": (
+                "Setelah sampai di titik lokasi, jalan ke arah timur sekitar 100m, "
+                "lewati bangunan restoran Tepi Beratan di sebelah kanan. Di ujung jalan "
+                "setelah melewati restoran itu, akan terlihat bangunan Harmoni Hills Village."
+            ),
         } if property_slug == "harmoni"
         else {}
     )

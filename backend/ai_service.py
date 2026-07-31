@@ -172,6 +172,7 @@ TOOL_DOCS = {
     'Kalau ada "diskon_diskresi_persen" (dari KEBIJAKAN DISKON, cuma muncul kalau diskon_diminta_tamu:true DAN memenuhi syarat), WAJIB sampaikan pakai kalimat kebijakan diskon (bukan "diskon member"), mis. "Sesuai kebijakan kami, kami berikan diskon {diskon_diskresi_persen}%." Kalau diskon_diminta_tamu:true tapi field ini tidak muncul, artinya belum memenuhi syarat - sampaikan apa adanya, jangan mengarang alasan lain. '
     'Kalau ada "rincian_harga" (tarif_kamar, diskon_rp, subtotal_setelah_diskon, service_fee, service_fee_persen, total), WAJIB jelaskan di pesan konfirmasi yang SAMA, jangan cuma total. Format: "Harga kamar: Rp{tarif_kamar}", KALAU diskon_rp>0 tambah "Diskon: -Rp{diskon_rp}", lalu "Service {service_fee_persen}%: Rp{service_fee}", lalu "Total: Rp{total}". Angka PERSIS dari field itu, jangan hitung ulang. Kalau field ini tidak ada, jangan mengarang rincian sendiri.',
     "lookup_booking": '- lookup_booking : args {"whatsapp":"..."}. Nomor WA SUDAH ADA di konteks - WAJIB pakai langsung. JANGAN minta tamu ketik kode booking manual (jarang tahu/ingat sendiri). Panggil PROAKTIF setiap tamu tanya status/pembayaran/mau membatalkan, jangan nunggu diminta. '
+    'KECUALI kalau kamu SENDIRI baru saja (giliran-giliran terakhir di riwayat chat ini) memberi tahu tamu bahwa booking sudah dibuat/link pembayaran akan/sudah dikirim, DAN tamu mengulang permintaan yang SAMA PERSIS tanpa info baru (mis. kirim ulang "dp aja kak" berkali-kali dalam waktu singkat) - dalam kasus ini JANGAN panggil lookup_booking ulang & JANGAN tulis ulang rincian booking/harga lengkap tiap kali (tamu bisa merasa di-spam info yang sama). Cukup balas singkat menenangkan, mis. "Sudah saya proses ya Kak, link pembayarannya akan masuk sebentar lagi ke chat ini - mohon ditunggu 🙏", TANPA memanggil tool lagi. '
     'Tiap item hasil punya "kode_permintaan" (internal, BUKAN kode booking, JANGAN ditampilkan/dipakai) dan "booking_ringkasan" (list, tiap elemen punya "kode" sendiri, mis. "BKO-..." - INI kode booking asli yang valid, satu-satunya boleh ditampilkan). Tiap elemen juga punya "sudah_diajukan_pembatalan" (true/false) - kalau true, sudah ada permintaan menunggu staf, JANGAN tawarkan batal lagi (akan ditolak server) - bilang sudah dalam antrian.',
     "cancel_booking": '- cancel_booking (BUKAN pembatalan final - CUMA MENGAJUKAN permintaan yang ditinjau staf) : args {"whatsapp":"...","kode":"..." (OPSIONAL),"alasan":"..." (opsional)}. '
     '"kode" BOLEH DIKOSONGKAN - PMS cari sendiri booking aktif tamu dari nomor WA (aman kalau cuma 1 booking aktif). Isi HANYA kalau kamu sudah tahu persis kode BKO- yang benar dari booking_ringkasan[].kode (mis. tamu punya beberapa booking & sudah sebut yang mana, atau cancel_booking sebelumnya balas error dengan field "kandidat"). JANGAN pakai "kode_permintaan" (bukan kode booking) atau kode yang tamu ketik sendiri tanpa validasi. '
@@ -306,6 +307,16 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
     """Build a compact context string for the AI."""
     parts = []
     maps_line = f"Google Maps: {settings['maps_url']}\n" if settings.get("maps_url") else ""
+    if settings.get("map_directions"):
+        # (2026-08-01, permintaan Agus) - titik Maps cuma antar sampai area umum, bukan
+        # pintu masuk persis, jadi arah lanjutan ini WAJIB langsung disertakan setiap kali
+        # link Maps dikirim ke tamu - JANGAN tanya izin dulu / tunggu tamu minta, karena
+        # tamu yang benar-benar di lokasi butuh info ini SEKARANG juga, bukan nanti.
+        maps_line += (
+            f"Arah setelah sampai di titik map (WAJIB langsung disertakan setiap kali "
+            f"link Maps di atas dikirim ke tamu, jangan tunggu ditanya): "
+            f"{settings['map_directions']}\n"
+        )
     parts.append(f"# INFO HOTEL\nNama: {settings.get('hotel_name','Pelangi Homestay')}\n"
                  f"Alamat: {settings.get('address','-')}\n"
                  f"Check-in: {settings.get('checkin_time','14:00')} | Check-out: {settings.get('checkout_time','12:00')}\n"
