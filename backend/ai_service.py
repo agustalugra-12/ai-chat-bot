@@ -332,6 +332,11 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
             )
             if r.get("tarif_menginap_dengan_sarapan"):
                 baris += f" | Rp {int(r['tarif_menginap_dengan_sarapan']):,}/malam (dengan sarapan)"
+            else:
+                # Properti ini TIDAK menyediakan sarapan sama sekali (mis. Harmoni, beda
+                # dari Pelangi) - tegaskan eksplisit drpd AI menjawab ragu-ragu/menebak
+                # "biasanya ada biaya tambahan" seolah AI belum tahu (ditemukan lewat tes).
+                baris += " | TIDAK ada opsi sarapan untuk properti ini"
             if r["kamar_tersedia"] == 0 and r.get("estimasi_kosong_lagi"):
                 baris += (f" | PENUH tapi Kamar {r['estimasi_kamar_nomor']} diperkirakan siap lagi "
                           f"mulai {r['estimasi_kosong_lagi']} (Day Use akan checkout, PERKIRAAN bukan jaminan)")
