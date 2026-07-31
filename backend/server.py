@@ -88,6 +88,7 @@ from connectors.whatsapp_cloud_connector import (
     WHATSAPP_CLOUD_PHONE_NUMBER_ID, _wa_cloud_send_text, _wa_cloud_send_image, _wa_cloud_send_document,
     _wa_cloud_send_template,
 )
+from connectors.fonnte_connector import _fonnte_send_text, _fonnte_send_link_message
 
 
 # ---- Rate Limiting ----
@@ -1079,30 +1080,42 @@ async def _handle_tool(tool: str, args: dict, conv: dict) -> Optional[dict]:
 def _channel_info_from_conv(conv: dict) -> tuple[str, Optional[str]]:
     """Balik (channel, identifier) dari sebuah percakapan - pakai `session_id` sbg sumber
     kebenaran (self-describing: prefix "wac-{phone_number_id}-..." utk Cloud API,
-    "wa-{waha_session}-..." utk WAHA) BUKAN cuma field `channel`/`cloud_phone_number_id`,
-    karena field itu baru mulai diisi 2026-07-21 - percakapan yg dibuat sebelum tanggal itu
-    (channel cuma "whatsapp" generik, cloud_phone_number_id None) tetap harus ke-detect
-    benar lewat session_id-nya, bukan diam-diam jatuh ke WAHA."""
+    "fon-{bot_id}-..." utk Fonnte, sisanya "wa-{waha_session}-..." utk WAHA) BUKAN cuma
+    field `channel`/`cloud_phone_number_id`, karena field itu baru mulai diisi
+    2026-07-21 - percakapan yg dibuat sebelum tanggal itu (channel cuma "whatsapp"
+    generik, cloud_phone_number_id None) tetap harus ke-detect benar lewat
+    session_id-nya, bukan diam-diam jatuh ke WAHA.
+
+    Fonnte (2026-07-31) - `identifier` utk channel ini adalah TOKEN device Fonnte
+    (bukan cuma ID publik spt phone_number_id Cloud API), krn tiap device Fonnte punya
+    token sendiri-sendiri - disimpan di `conv["fonnte_token"]` saat percakapan dibuat
+    (lihat _run_chat_turn), BUKAN dibaca ulang dari ai_bots di sini supaya fungsi ini
+    tetap sync/tidak perlu query DB."""
     sid = conv.get("session_id") or ""
     if sid.startswith("wac-"):
         parts = sid.split("-")
         phone_number_id = conv.get("cloud_phone_number_id") or (parts[1] if len(parts) > 1 else None)
         return "whatsapp_cloud", phone_number_id
+    if sid.startswith("fon-"):
+        return "fonnte", conv.get("fonnte_token")
     return "whatsapp", conv.get("waha_session")
 
 
 async def _send_wa_smart(conv: dict, text: str) -> bool:
     """Kirim pesan ke tamu WhatsApp lewat channel yang SAMA dengan yang dipakai tamu itu
-    ngobrol (WAHA atau Cloud API), lihat `_channel_info_from_conv`. Dipakai baik untuk
-    balasan manual staf (human handover) maupun relay notifikasi dari PMS (/send-message,
-    /send-document) - sebelum ada fungsi ini, KEDUANYA selalu hardcode ke WAHA meski
-    tamunya chat lewat Cloud API (ditemukan 2026-07-21 lewat laporan user: voucher booking
-    gagal terkirim krn WAHA session down, padahal tamu itu chat via Cloud API yang sehat)."""
+    ngobrol (WAHA, Cloud API, atau Fonnte), lihat `_channel_info_from_conv`. Dipakai baik
+    untuk balasan manual staf (human handover) maupun relay notifikasi dari PMS
+    (/send-message, /send-document) - sebelum ada fungsi ini, KEDUANYA selalu hardcode ke
+    WAHA meski tamunya chat lewat Cloud API (ditemukan 2026-07-21 lewat laporan user:
+    voucher booking gagal terkirim krn WAHA session down, padahal tamu itu chat via Cloud
+    API yang sehat)."""
     if not conv.get("whatsapp"):
         return False
     channel, identifier = _channel_info_from_conv(conv)
     if channel == "whatsapp_cloud":
         return await _wa_cloud_send_text(conv["whatsapp"], text, phone_number_id=identifier or "")
+    if channel == "fonnte":
+        return await _fonnte_send_text(identifier or "", conv["whatsapp"], text)
     return await _waha_send_text(f"{conv['whatsapp']}@c.us", text, session=identifier or WAHA_SESSION)
 
 
@@ -1143,6 +1156,10 @@ async def _send_wa_transactional(conv: Optional[dict], text: str, whatsapp_fallb
     else:
         channel, identifier = "whatsapp_cloud", WHATSAPP_CLOUD_PHONE_NUMBER_ID
 
+    if channel == "fonnte":
+        # Fonnte - bukan API resmi Meta, tidak ada pembatasan jendela 24 jam (sama spt WAHA).
+        return await _fonnte_send_text(identifier or "", whatsapp, text)
+
     if channel != "whatsapp_cloud":
         # WAHA - bukan API resmi Meta, tidak ada pembatasan jendela 24 jam.
         return await _waha_send_text(f"{whatsapp}@c.us", text, session=identifier or WAHA_SESSION)
@@ -1165,13 +1182,26 @@ async def _send_wa_transactional(conv: Optional[dict], text: str, whatsapp_fallb
     return False
 
 
-async def _send_wa_document_smart(conv: dict, filename: str, mimetype: str, data_base64: str, caption: str = "") -> bool:
-    """Sibling dokumen dari `_send_wa_smart` - sama polanya, dipakai relay /send-document."""
+async def _send_wa_document_smart(conv: dict, filename: str, mimetype: str, data_base64: str, caption: str = "",
+                                   url: str = "") -> bool:
+    """Sibling dokumen dari `_send_wa_smart` - sama polanya, dipakai relay /send-document.
+
+    `url` (2026-07-31, Fonnte) - paket Fonnte yang dipakai Agus TIDAK support attachment
+    sama sekali (lihat connectors/fonnte_connector.py), jadi utk channel ini dokumen
+    dikirim sbg LINK di teks biasa, bukan attachment - caller (routes/pesan_whatsapp.py
+    di PMS) WAJIB kirim `url` publik ke dokumennya kalau ingin dokumen itu sampai lewat
+    Fonnte (base64 saja tidak cukup, beda dari whatsapp_cloud/WAHA yang upload
+    langsung dari base64)."""
     if not conv.get("whatsapp"):
         return False
     channel, identifier = _channel_info_from_conv(conv)
     if channel == "whatsapp_cloud":
         return await _wa_cloud_send_document(conv["whatsapp"], filename, data_base64, caption, phone_number_id=identifier or "")
+    if channel == "fonnte":
+        if not url:
+            logging.getLogger("fonnte").warning(f"Dokumen '{filename}' tidak ada url publik - tidak bisa dikirim lewat Fonnte (paket tanpa attachment)")
+            return False
+        return await _fonnte_send_link_message(identifier or "", conv["whatsapp"], caption, url, label="Unduh dokumen")
     return await _waha_send_file(f"{conv['whatsapp']}@c.us", filename, mimetype, data_base64, caption, session=identifier or WAHA_SESSION)
 
 
@@ -1179,6 +1209,7 @@ async def _run_chat_turn(
     session_id: str, message: str, guest_name: Optional[str], whatsapp: Optional[str],
     bot_id: Optional[str], bot_code: Optional[str], channel: str = "simulator",
     waha_session: Optional[str] = None, cloud_phone_number_id: Optional[str] = None,
+    fonnte_token: Optional[str] = None,
 ) -> dict:
     """Inti alur 1 giliran chat (load bot, build context, panggil AI, tool-calling,
     simpan percakapan) — dipakai `/chat/message` (simulator, staf login) DAN webhook WAHA
@@ -1188,7 +1219,13 @@ async def _run_chat_turn(
     `waha_session` = nomor WA (session WAHA) mana yang menerima pesan ini - disimpan di
     percakapan supaya balasan staf manual (human handover, bisa terjadi jauh setelah
     webhook request ini selesai) tetap keluar lewat nomor yang SAMA dengan yang tamu
-    hubungi, bukan selalu nomor default (2026-07-19, multi-nomor WA per AI bot)."""
+    hubungi, bukan selalu nomor default (2026-07-19, multi-nomor WA per AI bot).
+
+    `fonnte_token` (2026-07-31) - token device Fonnte mana yang menerima pesan ini,
+    sama alasannya dgn waha_session/cloud_phone_number_id di atas - disimpan supaya
+    balasan (langsung maupun lewat human handover nanti) keluar lewat device Fonnte
+    yang SAMA, bukan device/bot lain (tiap device Fonnte = token terpisah, beda dgn
+    Cloud API yang 1 access token dipakai bareng banyak nomor)."""
     started = time.time()
 
     conv = await db.conversations.find_one({"session_id": session_id})
@@ -1202,6 +1239,7 @@ async def _run_chat_turn(
             "channel": channel,
             "waha_session": waha_session,
             "cloud_phone_number_id": cloud_phone_number_id,
+            "fonnte_token": fonnte_token,
             "messages": [],
             "status": "active",
             "resolution": "unresolved",
@@ -1934,6 +1972,10 @@ class SendDocumentIn(BaseModel):
     mimetype: str = "application/pdf"
     data_base64: str
     caption: str = ""
+    # (2026-07-31, Fonnte) URL publik ke dokumen yang sama - WAJIB diisi caller (lihat
+    # email_service.py di repo PMS) supaya dokumen bisa dikirim lewat Fonnte (paket
+    # Agus tidak support attachment sama sekali) sbg link, bukan attachment base64.
+    url: str = ""
 
 
 @api.post("/send-document")
@@ -1951,11 +1993,15 @@ async def send_document_relay(body: SendDocumentIn, request: Request, _rl: None 
     if not digits or not body.data_base64:
         raise HTTPException(400, "to/data_base64 tidak valid")
     conv = await db.conversations.find_one({"whatsapp": digits}, sort=[("updated_at", -1)])
-    ok = (
-        await _send_wa_document_smart(conv, body.filename, body.mimetype, body.data_base64, body.caption)
-        if conv else
-        await _waha_send_file(f"{digits}@c.us", body.filename, body.mimetype, body.data_base64, body.caption)
-    )
+    if conv:
+        ok = await _send_wa_document_smart(conv, body.filename, body.mimetype, body.data_base64, body.caption, url=body.url)
+    else:
+        # Tidak ada percakapan tercatat (mis. staf yang belum pernah chat AI, lihat
+        # routes/payroll.py) - default ke Cloud API (2026-07-31, WAHA dihapus dari
+        # sistem, sebelumnya fallback ini hardcode WAHA & akan diam-diam gagal total
+        # begitu WAHA tidak ada lagi).
+        ok = await _wa_cloud_send_document(digits, body.filename, body.data_base64, body.caption,
+                                            phone_number_id=WHATSAPP_CLOUD_PHONE_NUMBER_ID)
     await _pms_log("/send-document", "POST", 200 if ok else 502, 0, ok, f"to {digits}")
     if ok:
         catatan = f"📎 Dokumen dikirim: {body.filename}" + (f" — {body.caption}" if body.caption else "")
@@ -2094,6 +2140,74 @@ async def whatsapp_cloud_webhook_receive(request: Request):
         return {"ok": True}
     except Exception as e:
         logging.getLogger("whatsapp_cloud").warning(f"Gagal proses webhook Cloud API: {e}")
+        return {"ok": True}
+
+
+@api.post("/webhook/fonnte/{bot_id}")
+async def fonnte_webhook_receive(bot_id: str, request: Request):
+    """Terima pesan masuk dari Fonnte & balas lewat AI - pola SAMA dgn webhook Cloud API/
+    WAHA (reuse _run_chat_turn), bedanya cuma bentuk payload (JSON flat: device/sender/
+    message/name, lihat docs.fonnte.com) & cara kirim balasan (_fonnte_send_text/
+    _fonnte_send_link_message, bukan _wa_cloud_send_*/_waha_send_*).
+
+    Auth (2026-07-31): Fonnte TIDAK punya skema tanda tangan webhook resmi (beda dari
+    Meta yang punya X-Hub-Signature-256) - `bot_id` di path ITU SENDIRI dipakai sbg
+    "secret" (UUID acak, tidak pernah dipublikasikan di luar Settings staf), sama
+    prinsipnya dgn token WAHA lama. Dikonfigurasi manual sekali oleh Agus di dashboard
+    Fonnte per device (Settings -> device -> Webhook URL), bukan lewat API (Fonnte tidak
+    expose endpoint utk set webhook URL secara terprogram)."""
+    bot = await db.ai_bots.find_one({"_id": bot_id, "channel_type": "fonnte"})
+    if not bot:
+        raise HTTPException(404, "Bot Fonnte tidak ditemukan")
+    token = bot.get("channel_id") or ""
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = dict(await request.form())
+
+    try:
+        sender = _normalize_phone(str(payload.get("sender") or ""))
+        message_text = (payload.get("message") or "").strip()
+        guest_name = payload.get("name") or sender
+        if not sender or not message_text:
+            return {"ok": True, "diabaikan": "tanpa nomor pengirim/isi pesan"}
+
+        session_id = f"fon-{bot_id}-{sender}"
+        hasil = await _run_chat_turn(
+            session_id, message_text, guest_name, sender, bot_id, bot.get("code"),
+            channel="fonnte", fonnte_token=token,
+        )
+        if hasil.get("reply"):
+            await asyncio.sleep(random.uniform(3, 5))
+            clean_text, image_urls = parse_img_markers(hasil["reply"])
+            if clean_text:
+                terkirim = await _fonnte_send_text(token, sender, clean_text)
+                if not terkirim:
+                    logging.getLogger("fonnte").error(
+                        f"Gagal kirim balasan WA ke {sender} (conv session {session_id}) via Fonnte - "
+                        f"cek status device di dashboard Fonnte (bisa jadi disconnected)."
+                    )
+                    try:
+                        await _pms_alert_owner(
+                            f"⚠️ AI GAGAL kirim balasan WhatsApp (Fonnte) ke tamu {sender} - "
+                            f"cek status device Fonnte, kemungkinan disconnected. "
+                            f"Hubungi tamu manual kalau perlu."
+                        )
+                    except Exception:
+                        pass
+            # Fonnte (paket Agus) tidak support attachment sama sekali - foto kamar
+            # ([[IMG: url]] marker) dikirim sbg LINK teks, bukan gambar native (beda dgn
+            # Cloud API/WAHA di atas yang kirim gambar asli).
+            for i, url in enumerate(image_urls):
+                if i > 0:
+                    await asyncio.sleep(random.uniform(1, 2))
+                room = await db.rooms.find_one({"$or": [{"photo_url": url}, {"images.url": url}]})
+                caption = room["name"] if room else ""
+                await _fonnte_send_link_message(token, sender, caption, url, label="Lihat foto")
+        return {"ok": True}
+    except Exception as e:
+        logging.getLogger("fonnte").warning(f"Gagal proses webhook Fonnte: {e}")
         return {"ok": True}
 
 
