@@ -124,7 +124,7 @@ keduanya kalau tamu memenuhi dua-duanya, JANGAN dijumlah (contoh: 4 kamar 3 mala
 dapat memberikan potongan harga sebesar 5%." / "Karena Bapak/Ibu memesan 4 kamar, kami
 dapat memberikan diskon sebesar 8%.". Diskon maksimum yang boleh diberikan 10% - kalau
 tamu minta lebih dari itu, jawab persis: "Maaf Bapak/Ibu, saat ini diskon terbaik yang
-dapat kami berikan sesuai kebijakan Pelangi Homestay adalah 10%. Jika Bapak/Ibu
+dapat kami berikan sesuai kebijakan kami adalah 10%. Jika Bapak/Ibu
 menginginkan penawaran khusus di luar ketentuan tersebut, saya akan membantu meneruskan
 permintaan kepada admin." (lalu panggil request_handover kalau tool itu tersedia). AI
 TIDAK BOLEH mengubah aturan ini, membuat diskon baru, atau menjanjikan sesuatu di luar
@@ -188,6 +188,11 @@ TOOL_DOCS = {
     "catat_kedatangan_tamu": '- catat_kedatangan_tamu (tiket masuk PMS, dipantau staf - BUKAN check-in resmi, staf tetap yang proses check-in sungguhan begitu tamu tiba) : args {"whatsapp":"...","guest_name":"...","room_nomor":"..." (isi HANYA kalau tamu sebutkan sendiri),"catatan":"..." (opsional, mis. "naik taksi, 15 menit lagi")}. '
     'WAJIB panggil PROAKTIF begitu tamu bilang sudah tiba/dalam perjalanan/di depan properti (mis. "aku udah sampai", "otw", "5 menit lagi nyampe", "udah di depan pagar") - JANGAN nunggu diminta, JANGAN cuma balas basa-basi tanpa memanggil tool ini. '
     'Setelah tool ini berhasil (ok=true), beri tahu tamu bahwa staf sudah diberi tahu & akan segera menyambut - JANGAN PERNAH bilang "sudah check-in"/"kamar sudah siap" (check-in sungguhan - verifikasi identitas, pembayaran, serah kunci - tetap dilakukan staf langsung saat tamu tiba di lokasi, bukan lewat chat).',
+    "catat_klaim_stamp_member": '- catat_klaim_stamp_member (tiket masuk PMS utk staf verifikasi - BUKAN update diskon final) : args {"whatsapp":"...","guest_name":"...","jumlah_stamp": angka 0-9}. '
+    'Program migrasi kartu member fisik ke pencatatan digital (2026-08-01, permintaan Agus). Kalau tamu terlihat/mengaku sebagai member Pelangi (pernah dapat diskon member sebelumnya, sebut "kartu member"/"stamp", atau kamu sudah tahu dari check_member_status dia member berulang) DAN belum pernah ditanya di percakapan ini, tanyakan SEKALI dengan sopan: "Kak, kartu member Pelangi-nya sudah di-stamp sampai berapa ya? Biar sekalian aku update datanya 😊" - JANGAN tanya berkali-kali kalau sudah dijawab atau tamu tidak merespons. '
+    'Begitu tamu jawab angka stamp-nya (mis. "stamp ke-6"), panggil tool ini dengan jumlah_stamp = angka itu PERSIS (bukan +1, tool yang menghitung kedatangan ke berapa). '
+    'PENTING: JANGAN PERNAH bilang ke tamu bahwa diskon/kedatangan ke-N mereka "sudah diperbarui"/"sudah tercatat resmi" - klaim ini BARU tercatat sebagai draft utk staf verifikasi (cocokkan kartu fisik saat check-in dulu), belum final. Kalimat yang benar setelah tool berhasil: "Baik Kak, sudah saya catat ya - nanti staf akan konfirmasi ulang sekalian pas check-in 😊". '
+    'JANGAN minta tamu kirim FOTO kartunya - paket WhatsApp yang dipakai TIDAK BISA menerima lampiran/gambar dari tamu sama sekali, cukup tanya angkanya lewat teks.',
     "request_handover": '- request_handover : args {"reason":"..."}. JANGAN PERNAH bilang ke tamu bahwa "staf akan segera membantu"/"sudah saya eskalasi ke admin"/kalimat sejenis KECUALI kamu BENAR-BENAR memanggil tool ini DI GILIRAN INI dan berhasil (ok=true) - sebelum tool ini benar-benar dipanggil & sukses, jangan klaim eskalasi sudah terjadi, cukup bantu semampunya dulu.',
     "remember_guest_fact": '- remember_guest_fact : args {"whatsapp":"...","fact":"..."}. WAJIB dipanggil tiap tamu minta sesuatu "dicatat"/"diingat", atau sebutkan preferensi/alergi/nama panggilan/kebiasaan relevan. JANGAN bilang "sudah dicatat" TANPA benar-benar memanggil tool ini di baris yang sama - mengaku mencatat tanpa memanggil = data tidak tersimpan. Bukan untuk data booking/transaksi (sudah otomatis di PMS) - hanya fakta personal tamu.',
 }
@@ -228,6 +233,8 @@ def build_dynamic_prompt(bot: dict, room_types: Optional[List[str]] = None) -> s
         exposed.add("request_handover")
     if "guest_arrival" in tool_codes:
         exposed.add("catat_kedatangan_tamu")
+    if "member_stamp_claim" in tool_codes:
+        exposed.add("catat_klaim_stamp_member")
     # any service-request-like tool → expose create_service_request (tiket masuk PMS,
     # bukan db.service_requests lokal - lihat _tool_create_service_request di server.py)
     service_like = {"restaurant_order", "laundry_request", "housekeeping_request",

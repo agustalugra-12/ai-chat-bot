@@ -739,10 +739,14 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
     # Guard is_pelangi_content dipertahankan sama seperti sebelumnya - Harmoni memang
     # belum punya layanan resto/kasir sama sekali (0 produk, dikonfirmasi live).
     menu = menu if is_pelangi_content else []
-    kb_q = {"is_active": True}
+    # `property_slug` (2026-08-01) - knowledge_base sekarang per-properti, sama pola dgn
+    # db.rooms lokal di bawah (bukan lagi on/off total Pelangi-only) - 17 entri lama
+    # di-backfill property_slug="pelangi", 8 entri asli baru ditambah utk Harmoni (dari
+    # konten real yang sudah dipublish di web-pelangi site_content, BUKAN karangan).
+    kb_q = {"is_active": True, "property_slug": property_slug}
     if bot and bot.get("knowledge_categories"):
         kb_q["category"] = {"$in": bot["knowledge_categories"]}
-    kb = await db.knowledge_base.find(kb_q).to_list(500) if is_pelangi_content else []
+    kb = await db.knowledge_base.find(kb_q).to_list(500)
     # (2026-07-31) - JANGAN kirim {} kosong ke build_context_block utk bot non-Pelangi:
     # fallback default fungsi itu ("Nama: Pelangi Homestay") jadi ikut kepakai kalau
     # `settings` kosong - bug nyata ditemukan lewat tes: bot Harmoni bilang "Cottage di
@@ -789,14 +793,13 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
     if not is_pelangi_content:
         base += (
             "\n\n# KETERBATASAN DATA PROPERTI INI (WAJIB DIPATUHI)\n"
-            "Knowledge base/FAQ umum (mis. aturan check-in detail, kebijakan khusus di luar "
-            "yang sudah tertulis di atas) untuk properti ini BELUM tersedia di sistem. Yang "
-            "SUDAH data asli dan BOLEH disebutkan/dikirim ke tamu: alamat & link Google Maps "
-            "di '# INFO HOTEL', foto kamar & fasilitas/deskripsi di '# FASILITAS & DESKRIPSI "
-            "KAMAR' (kalau ada). JANGAN PERNAH menyebutkan/mengirim data dari properti lain "
-            "(mis. Pelangi Homestay) seolah itu milik properti ini - itu informasi yang SALAH "
-            "bagi tamu. Kalau tamu menanyakan hal yang belum tersedia (FAQ/kebijakan detail di "
-            "luar yang tertulis), jawab jujur bahwa detailnya akan diinfokan staf, dan gunakan "
+            "Data FAQ/kebijakan/fasilitas properti ini BELUM SELENGKAP Pelangi Homestay - "
+            "yang tertulis di '# KNOWLEDGE BASE'/'# FASILITAS & DESKRIPSI KAMAR'/'# INFO "
+            "HOTEL' di atas SUDAH data asli dan boleh disebutkan/dikirim ke tamu apa adanya. "
+            "JANGAN PERNAH menyebutkan/mengirim data dari properti lain (mis. Pelangi "
+            "Homestay) seolah itu milik properti ini - itu informasi yang SALAH bagi tamu. "
+            "Kalau tamu menanyakan hal yang TIDAK tercantum di data di atas, JANGAN mengarang "
+            "jawabannya sendiri - jawab jujur bahwa detailnya akan diinfokan staf, dan gunakan "
             "tool eskalasi/tiket kalau tersedia. Ketersediaan kamar & harga (di atas, dari PMS "
             "live) TETAP boleh dan HARUS dijawab seperti biasa."
         )
