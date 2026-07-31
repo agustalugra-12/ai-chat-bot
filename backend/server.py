@@ -672,11 +672,19 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
     # fallback default fungsi itu ("Nama: Pelangi Homestay") jadi ikut kepakai kalau
     # `settings` kosong - bug nyata ditemukan lewat tes: bot Harmoni bilang "Cottage di
     # Pelangi Homestay". Isi `hotel_name` dgn nama publik yg sudah dipakai luas di blog
-    # web-pelangi (harmoniby.pelangihomestay.com) - address/maps/dll TETAP kosong (jujur
-    # "-" drpd salah), itu memang belum tersedia.
+    # web-pelangi (harmoniby.pelangihomestay.com).
+    # `address`/`maps_url` Harmoni (2026-07-31) - Agus kirim embed Google Maps asli
+    # (koordinat -8.2598629,115.1631686 + Place ID dari embed-nya sendiri) - dicocokkan
+    # ke alamat nyata via reverse-geocode OSM Nominatim (bukan ditebak). Foto kamar & KB/
+    # FAQ Harmoni MASIH belum ada data asli - itu sebabnya KETERBATASAN di bawah cuma
+    # menyebut foto+KB sekarang, bukan alamat/maps lagi.
     settings = (
         (await db.settings.find_one({"_id": "singleton"}) or {}) if is_pelangi_content
-        else {"hotel_name": "Harmoni Hills"} if property_slug == "harmoni"
+        else {
+            "hotel_name": "Harmoni Hills",
+            "address": "Jl. Denpasar - Singaraja, Kembangkerta, Candikuning, Baturiti, Tabanan, Bali 82191",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=-8.2598629,115.1631686&query_place_id=0x2dd189006b1f4b49:0xd64ae8ec12451c53",
+        } if property_slug == "harmoni"
         else {}
     )
     # Foto + fasilitas/deskripsi kamar - koleksi db.rooms LOKAL ai-chat-bot (bukan
@@ -698,14 +706,15 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
     if not is_pelangi_content:
         base += (
             "\n\n# KETERBATASAN DATA PROPERTI INI (WAJIB DIPATUHI)\n"
-            "Alamat lengkap, link maps, foto kamar, dan knowledge base/FAQ umum untuk properti "
-            "ini BELUM tersedia di sistem (fasilitas & deskripsi kamar di atas, kalau ada, "
-            "SUDAH data asli dan boleh disebutkan). JANGAN PERNAH menyebutkan alamat, link "
-            "maps, atau mengirim foto kamar dari properti lain (mis. Pelangi Homestay) seolah "
+            "Foto kamar dan knowledge base/FAQ umum (mis. aturan check-in detail, kebijakan "
+            "khusus) untuk properti ini BELUM tersedia di sistem (fasilitas & deskripsi kamar "
+            "di atas, kalau ada, SUDAH data asli dan boleh disebutkan; alamat & link Google Maps "
+            "di '# INFO HOTEL' di atas JUGA SUDAH data asli dan BOLEH disebutkan/dikirim). "
+            "JANGAN PERNAH mengirim foto kamar dari properti lain (mis. Pelangi Homestay) seolah "
             "itu milik properti ini - itu informasi yang SALAH bagi tamu. Kalau tamu menanyakan "
-            "hal-hal itu, jawab jujur bahwa detail lengkapnya akan diinfokan staf, dan gunakan "
-            "tool eskalasi/tiket kalau tersedia. Ketersediaan kamar & harga (di atas, dari PMS "
-            "live) TETAP boleh dan HARUS dijawab seperti biasa."
+            "hal yang belum tersedia (foto kamar, FAQ detail), jawab jujur bahwa detailnya akan "
+            "diinfokan staf, dan gunakan tool eskalasi/tiket kalau tersedia. Ketersediaan kamar & "
+            "harga (di atas, dari PMS live) TETAP boleh dan HARUS dijawab seperti biasa."
         )
 
     # Nomor WA tamu SUNGGUHAN (2026-07-26, bug ditemukan saat regression test trimming
