@@ -629,27 +629,40 @@ def _normalize_phone(no_hp: str) -> str:
     return digits
 
 
-async def _touch_guest_profile(whatsapp: Optional[str], guest_name: Optional[str], is_new_conversation: bool) -> None:
+def _guest_profile_key(whatsapp: Optional[str], property_slug: str) -> str:
+    """Kunci profil tamu di-scope PER PROPERTI (2026-07-31, bug nyata ditemukan - lihat
+    memory proyek `project_guest_profile_property_leak`): sebelumnya `_id` cuma nomor HP
+    polos, jadi kalau 1 nomor sama chat ke bot Pelangi DAN bot Harmoni, keduanya berbagi
+    SATU profil global - nama/preferensi/jumlah kunjungan yang dipelajari dari properti A
+    ikut disuntik ke prompt AI properti B (lewat `_get_guest_profile` di `_build_context`),
+    padahal konten fasilitas/kamar/KB sudah benar disilo per properti sejak guard yang
+    sama. Kunci sekarang "{nomor}:{property_slug}" supaya tiap properti punya memory
+    tamu sendiri-sendiri, konsisten dengan `db.guests` PMS yang sudah disilo `property_id`
+    (`core.py` `scoped()`)."""
+    return f"{_normalize_phone(whatsapp or '')}:{property_slug}"
+
+
+async def _touch_guest_profile(whatsapp: Optional[str], guest_name: Optional[str], is_new_conversation: bool,
+                                property_slug: str = "pelangi") -> None:
     """Memory (tahap 1 - short/long/preference): dipanggil tiap giliran chat supaya profil
     tamu selalu punya nama & waktu terakhir dilihat terkini, DAN supaya percakapan baru
     dari nomor yang sama tercatat sebagai kunjungan berulang (total_conversations)."""
-    key = _normalize_phone(whatsapp or "")
-    if not key:
+    phone = _normalize_phone(whatsapp or "")
+    if not phone:
         return
-    updates: Dict[str, Any] = {"last_seen_at": utc_now_iso()}
+    updates: Dict[str, Any] = {"last_seen_at": utc_now_iso(), "whatsapp": phone, "property_slug": property_slug}
     if guest_name:
         updates["nama"] = guest_name
     op: Dict[str, Any] = {"$set": updates, "$setOnInsert": {"created_at": utc_now_iso()}}
     if is_new_conversation:
         op["$inc"] = {"total_conversations": 1}
-    await db.guest_profiles.update_one({"_id": key}, op, upsert=True)
+    await db.guest_profiles.update_one({"_id": _guest_profile_key(whatsapp, property_slug)}, op, upsert=True)
 
 
-async def _get_guest_profile(whatsapp: Optional[str]) -> Optional[dict]:
-    key = _normalize_phone(whatsapp or "")
-    if not key:
+async def _get_guest_profile(whatsapp: Optional[str], property_slug: str = "pelangi") -> Optional[dict]:
+    if not _normalize_phone(whatsapp or ""):
         return None
-    return await db.guest_profiles.find_one({"_id": key})
+    return await db.guest_profiles.find_one({"_id": _guest_profile_key(whatsapp, property_slug)})
 
 
 async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None, whatsapp: Optional[str] = None,
@@ -747,8 +760,10 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
     # Memory (Long Memory + Preference) - profil tamu lintas-percakapan, BUKAN riwayat
     # pesan mentah (itu Short Memory, sudah otomatis lewat conv["messages"] per sesi).
     # Cuma ditampilkan kalau tamu ini pernah muncul sebelumnya - tamu baru tidak dapat
-    # section ini sama sekali (tidak ada yang perlu diingat).
-    profile = await _get_guest_profile(whatsapp)
+    # section ini sama sekali (tidak ada yang perlu diingat). Di-scope `property_slug`
+    # yang sama dgn konten di atas (lihat `_guest_profile_key`) - tamu yang pernah chat
+    # ke properti lain TIDAK dianggap "pernah muncul" di sini.
+    profile = await _get_guest_profile(whatsapp, property_slug)
     if profile and (profile.get("total_conversations", 0) > 0):
         parts = [f"\n# PROFIL TAMU (dari percakapan sebelumnya, kunjungan ke-{profile.get('total_conversations', 1) + 1})"]
         if profile.get("nama"):
@@ -1104,14 +1119,18 @@ async def _tool_remember_guest_fact(args: dict, conv: dict) -> dict:
     fact = (args.get("fact") or "").strip()
     if not wa or not fact:
         return {"ok": False, "tool": "remember_guest_fact", "error": "missing whatsapp/fact"}
-    key = _normalize_phone(wa)
+    property_slug = conv.get("_property_slug") or "pelangi"
+    key = _guest_profile_key(wa, property_slug)
     existing = await db.guest_profiles.find_one({"_id": key})
     facts = (existing or {}).get("preferensi") or []
     if fact not in facts:  # cegah duplikat kalau AI menyimpan hal yang sama berkali-kali
         facts.append(fact)
         facts = facts[-20:]  # cap wajar per tamu, fakta terlama otomatis terbuang
     await db.guest_profiles.update_one(
-        {"_id": key}, {"$set": {"preferensi": facts}, "$setOnInsert": {"created_at": utc_now_iso()}}, upsert=True,
+        {"_id": key},
+        {"$set": {"preferensi": facts, "whatsapp": _normalize_phone(wa), "property_slug": property_slug},
+         "$setOnInsert": {"created_at": utc_now_iso()}},
+        upsert=True,
     )
     return {"ok": True, "tool": "remember_guest_fact"}
 
@@ -1382,7 +1401,14 @@ async def _run_chat_turn(
         }
         await db.conversations.insert_one(conv)
 
-    await _touch_guest_profile(conv.get("whatsapp") or whatsapp, conv.get("guest_name") or guest_name, is_new_conversation)
+    # Bot & property_slug dimuat DULUAN (sebelum touch_guest_profile) - profil tamu
+    # (nama/preferensi/jumlah kunjungan) di-scope per properti sejak 2026-07-31, lihat
+    # `_guest_profile_key` - butuh property_slug bot ini sebelum menyentuh profil.
+    bot = await _load_bot(bot_id, bot_code)
+    property_slug = (bot or {}).get("property_slug") or "pelangi"
+    conv["_property_slug"] = property_slug
+
+    await _touch_guest_profile(conv.get("whatsapp") or whatsapp, conv.get("guest_name") or guest_name, is_new_conversation, property_slug)
 
     # Append user message
     user_msg = {"role": "user", "content": message, "timestamp": utc_now_iso()}
@@ -1401,8 +1427,7 @@ async def _run_chat_turn(
             "tool_used": None, "tool_result": None, "response_time_ms": int((time.time() - started) * 1000),
         }
 
-    # Load bot + build dynamic prompt
-    bot = await _load_bot(bot_id, bot_code)
+    # Build dynamic prompt (bot sudah dimuat di atas, sebelum touch_guest_profile)
     if bot:
         # str() wajib (2026-07-27, ditemukan lewat bug nyata) - kalau bot_id ternyata
         # ObjectId mentah (sisa data lama sebelum ai_bots pindah ke id string uuid),
@@ -1948,20 +1973,26 @@ async def audit_log_actions(user=Depends(get_current_user)):
 
 
 @api.get("/guest-profiles")
-async def guest_profiles_list(search: Optional[str] = None, limit: int = Query(100, le=500), user=Depends(get_current_user)):
+async def guest_profiles_list(search: Optional[str] = None, property_slug: Optional[str] = None,
+                               limit: int = Query(100, le=500), user=Depends(get_current_user)):
     """Memory tahap 1 - profil tamu lintas-percakapan (nama, preferensi/fakta yang diingat
     AI, jumlah kunjungan). Read-only dari dashboard - AI yang mengisi lewat tool
-    remember_guest_fact + pembaruan otomatis tiap giliran chat, staf cukup melihat."""
+    remember_guest_fact + pembaruan otomatis tiap giliran chat, staf cukup melihat.
+    `_id` sekarang "{nomor}:{property_slug}" (lihat `_guest_profile_key`) - `whatsapp`/
+    `property_slug` disimpan sebagai field asli, JANGAN derive dari `_id` lagi seperti
+    kode lama (bakal ikut nempel suffix property_slug ke nomor HP yang ditampilkan)."""
     q: Dict[str, Any] = {}
     if search:
         q["$or"] = [
-            {"_id": {"$regex": re.escape(search)}},
+            {"whatsapp": {"$regex": re.escape(search)}},
             {"nama": {"$regex": re.escape(search), "$options": "i"}},
         ]
+    if property_slug:
+        q["property_slug"] = property_slug
     docs = await db.guest_profiles.find(q).sort("last_seen_at", -1).to_list(limit)
     out = []
     for d in docs:
-        d["whatsapp"] = d.pop("_id")
+        d["id"] = d.pop("_id")
         out.append(d)
     return out
 

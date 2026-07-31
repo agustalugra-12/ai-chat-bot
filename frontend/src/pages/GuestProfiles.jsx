@@ -43,6 +43,9 @@ export default function GuestProfiles() {
                   <div className="text-sm font-semibold">{p.nama || "Tamu"}</div>
                   <div className="text-xs text-[hsl(var(--muted-foreground))]">{p.whatsapp}</div>
                 </div>
+                <span className="ml-auto text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-[hsl(var(--secondary))] text-[hsl(var(--secondary-foreground))]">
+                  {p.property_slug === "harmoni" ? "Harmoni" : "Pelangi"}
+                </span>
               </div>
               <div className="text-xs text-[hsl(var(--muted-foreground))]">
                 {p.total_conversations || 0} percakapan · terakhir {p.last_seen_at ? new Date(p.last_seen_at).toLocaleDateString("id-ID") : "-"}
