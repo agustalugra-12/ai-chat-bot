@@ -31,7 +31,7 @@ DEFAULT_PROVIDER = "openai"
 # ANTHROPIC_API_KEY/GEMINI_API_KEY di .env untuk mengaktifkan provider itu, tidak perlu
 # ubah kode.
 _PROVIDER_MODELS = {
-    "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1", "gpt-5.4-mini"],
+    "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1", "gpt-5-mini", "gpt-5.4-mini"],
     "anthropic": ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"],
     "gemini": ["gemini-2.0-flash", "gemini-1.5-pro"],
 }
