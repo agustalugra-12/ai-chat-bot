@@ -439,15 +439,29 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
                 parts.append(f"## {r.get('name', '(tanpa nama)')}\n" + "\n".join(urls))
 
     if menu:
-        parts.append("\n# MENU RESTORAN")
+        # Field LIVE dari kasir PMS (2026-08-01, permintaan Agus): nama/kategori/harga/stok
+        # - BEDA nama field dari skema lama db.menu lokal (name/category/price/
+        # is_available/is_sold_out), diganti total karena sumber datanya juga diganti
+        # total (lihat _pms_menu di server.py). "stok" disertakan APA ADANYA (angka asli,
+        # bukan cuma ya/tidak) supaya AI bisa jawab jujur soal jumlah tersisa kalau
+        # ditanya, atau bilang "stok terbatas" kalau menipis - lihat instruksi terkait
+        # di TOOL_DOCS/prompt, bukan diputuskan di sini.
+        # "stok" cuma bermakna sbg jumlah fisik utk kategori konsumsi (makanan/minuman) -
+        # kategori LAYANAN (mis. laundry, dihitung per-kg bukan per-unit) ikut nyimpan di
+        # koleksi produk yang sama tapi field stok-nya bukan indikator ketersediaan nyata
+        # (seringnya 0 krn memang tidak pernah diisi utk item jasa) - JANGAN ikut ditandai
+        # "HABIS" kalau begitu, cukup tampilkan harga saja utk kategori non-konsumsi.
+        KATEGORI_STOK_FISIK = {"makanan", "minuman"}
+        parts.append("\n# MENU RESTORAN & LAYANAN (harga & stok LIVE dari kasir PMS)")
         for m in menu:
-            if m.get("is_sold_out"):
-                status = "HABIS"
-            elif not m.get("is_available", True):
-                status = "TIDAK TERSEDIA"
+            kategori = m.get("kategori", "-")
+            harga = f"Rp {int(m.get('harga', 0)):,}"
+            if kategori in KATEGORI_STOK_FISIK:
+                stok = m.get("stok", 0)
+                status = "HABIS" if stok <= 0 else f"stok {stok}"
+                parts.append(f"- [{kategori}] {m.get('nama','?')} — {harga} ({status})")
             else:
-                status = "tersedia"
-            parts.append(f"- [{m['category']}] {m['name']} — Rp {int(m['price']):,} ({status})")
+                parts.append(f"- [{kategori}] {m.get('nama','?')} — {harga}")
 
     if kb:
         parts.append("\n# KNOWLEDGE BASE")

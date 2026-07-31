@@ -76,7 +76,7 @@ from connectors.pms_connector import (
     SYNC_KINDS,
     _pms_config, _pms_log, _pms_ketersediaan, _pms_buat_booking_request,
     _pms_buat_tiket, _pms_status_booking, _pms_status_member, _pms_ajukan_pembatalan, _sync_business_rules,
-    _pms_alert_owner, _pms_preview_harga,
+    _pms_alert_owner, _pms_preview_harga, _pms_menu,
 )
 from connectors.webpelangi_connector import (
     _web_content_config, _sync_hotel_profile, _sync_faq,
@@ -715,9 +715,11 @@ async def _get_guest_profile(whatsapp: Optional[str], property_slug: str = "pela
 
 
 async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None, whatsapp: Optional[str] = None,
-                          rooms: Optional[List[dict]] = None) -> str:
+                          rooms: Optional[List[dict]] = None, menu: Optional[List[dict]] = None) -> str:
     if rooms is None:
         rooms = await _pms_ketersediaan()
+    if menu is None:
+        menu = await _pms_menu()
 
     # Guard multi-properti (2026-07-31) - db.settings/db.rooms(lokal)/db.knowledge_base/
     # db.menu SEMUA masih 1 data global berisi konten PELANGI SAJA (alamat, foto kamar,
@@ -731,7 +733,12 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
     property_slug = (bot or {}).get("property_slug") or "pelangi"
     is_pelangi_content = property_slug == "pelangi"
 
-    menu = await db.menu.find({}).to_list(500) if is_pelangi_content else []
+    # Menu kasir (2026-08-01) - LIVE dari PMS (lihat _pms_menu), bukan lagi db.menu lokal
+    # ai-chat-bot yang isinya data seed/demo tidak pernah sinkron dengan kasir asli
+    # (permintaan Agus: "pengetahuan menu sebelumnya salah, ambil dari PMS bagian kasir").
+    # Guard is_pelangi_content dipertahankan sama seperti sebelumnya - Harmoni memang
+    # belum punya layanan resto/kasir sama sekali (0 produk, dikonfirmasi live).
+    menu = menu if is_pelangi_content else []
     kb_q = {"is_active": True}
     if bot and bot.get("knowledge_categories"):
         kb_q["category"] = {"$in": bot["knowledge_categories"]}
@@ -1546,9 +1553,10 @@ async def _run_chat_turn_locked(
     # DAN prompt (daftar tipe kamar valid untuk tool), supaya tidak 2x panggil PMS per pesan
     # dan supaya tipe kamar yang disebut AI selalu konsisten dengan yang di-tampilkan.
     rooms_now = await _pms_ketersediaan(api_key_override=conv["_pms_api_key_override"])
+    menu_now = await _pms_menu(api_key_override=conv["_pms_api_key_override"])
     room_types = sorted({r["tipe"] for r in rooms_now if r.get("tipe")})
     system_prompt = await _system_prompt_for(bot, room_types=room_types)
-    context = await _build_context(query=message, bot=bot, whatsapp=conv.get("whatsapp") or whatsapp, rooms=rooms_now)
+    context = await _build_context(query=message, bot=bot, whatsapp=conv.get("whatsapp") or whatsapp, rooms=rooms_now, menu=menu_now)
     # Slot memory (2026-08-01) - suntik apa yang SUDAH diketahui dari booking_draft (lihat
     # dispatch tool di bawah) supaya AI tidak menanyakan ulang field yang tamu sudah jawab
     # di giliran sebelumnya - beda dari mengandalkan model menyimpulkan sendiri dari

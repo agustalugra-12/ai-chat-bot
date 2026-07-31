@@ -42,8 +42,8 @@ export default function RestaurantMenu() {
     <div>
       <PageHeader
         tid="menu-header"
-        title="Menu Restoran"
-        subtitle="AI akan otomatis merujuk ke daftar menu ini saat tamu bertanya."
+        title="Menu Restoran (arsip lama, tidak dipakai AI lagi)"
+        subtitle="Sejak 2026-08-01, AI membaca menu & stok LANGSUNG dari kasir Pelangi PMS (live) - halaman ini TIDAK LAGI jadi sumber jawaban AI. Kelola menu/harga/stok yang sebenarnya di halaman Kasir PMS."
         right={
           <button data-testid="menu-add-btn" onClick={openNew}
             className="inline-flex items-center gap-2 bg-[hsl(var(--primary))] text-white text-sm font-medium px-4 py-2.5 rounded-md hover:opacity-90">

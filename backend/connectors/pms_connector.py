@@ -32,6 +32,7 @@ PMS_DEFAULT_ENDPOINTS = {
     "preview_harga_path": "/api/integrasi-ai-bot/preview-harga",
     "cancel_request_path": "/api/integrasi-ai-bot/cancel-request",
     "alert_owner_path": "/api/integrasi-ai-bot/alert-owner",
+    "menu_path": "/api/integrasi-ai-bot/menu",
 }
 
 # Kapabilitas yang BENAR-BENAR tersambung ke kode (toggle di luar daftar ini boleh
@@ -50,6 +51,7 @@ PMS_DEFAULT_CAPABILITIES = {
     "ota_sync": False,                # belum diimplementasikan
     "payment": False,                 # belum diimplementasikan
     "checkin": False,                 # belum diimplementasikan
+    "menu": True,
 }
 
 PMS_INTEGRATION_DEFAULT = {
@@ -163,6 +165,38 @@ async def _pms_ketersediaan(tanggal: Optional[str] = None, tipe: Optional[str] =
     except Exception as e:
         await _pms_log(path, "GET", None, int((time.time() - started) * 1000), False, str(e))
         logging.getLogger("pms").warning(f"Gagal menghubungi PMS ketersediaan: {e}")
+        return []
+
+
+async def _pms_menu(api_key_override: Optional[str] = None) -> List[dict]:
+    """Menu makanan/minuman LIVE dari kasir Pelangi PMS (db.products) - SATU sumber
+    kebenaran yang sama dipakai halaman Kasir staf (2026-08-01, permintaan Agus). Sebelum
+    ini AI pakai koleksi `db.menu` lokal ai-chat-bot yang berisi data seed/demo, tidak
+    pernah sinkron dengan menu kasir asli - dihapus, diganti panggilan live ini (sama
+    pola dengan _pms_ketersediaan untuk kamar)."""
+    cfg = await _pms_config(api_key_override)
+    if not cfg["capabilities"].get("menu"):
+        return []
+    if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
+        return []
+    path = cfg["endpoints"].get("menu_path", PMS_DEFAULT_ENDPOINTS["menu_path"])
+    started = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=10) as http:
+            resp = await http.get(
+                f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"},
+            )
+        latency_ms = int((time.time() - started) * 1000)
+        if resp.status_code >= 400:
+            await _pms_log(path, "GET", resp.status_code, latency_ms, False, resp.text)
+            logging.getLogger("pms").warning(f"PMS menu gagal HTTP {resp.status_code}: {resp.text[:300]}")
+            return []
+        await _pms_log(path, "GET", resp.status_code, latency_ms, True)
+        return resp.json().get("menu") or []
+    except Exception as e:
+        await _pms_log(path, "GET", None, int((time.time() - started) * 1000), False, str(e))
+        logging.getLogger("pms").warning(f"Gagal menghubungi PMS menu: {e}")
         return []
 
 
