@@ -376,6 +376,16 @@ class AIBot(BaseDocument):
     # properti Pelangi PMS. Kosong = fallback ke config global (kompatibel dengan setup
     # single-property yang sudah ada, tidak wajib diisi semua bot sekaligus).
     pms_property_api_key: Optional[str] = None
+    # Guard sementara (2026-07-31) - BUKAN skema multi-properti penuh (itu butuh
+    # db.settings/rooms/knowledge_base/dll masing-masing dipecah per-properti + data
+    # ASLI Harmoni yg belum tersedia - lihat memory proyek). Field ini CUMA dipakai
+    # _build_context sbg penanda "properti ini punya konten Pelangi-only (alamat/foto
+    # kamar/knowledge base) yg TIDAK BOLEH ditampilkan seolah milik bot ini" -
+    # kosong/"pelangi" = perilaku lama (dapat konten penuh), nilai lain ("harmoni") =
+    # context jujur bilang "info detail belum tersedia" drpd diam-diam menyamarkan
+    # data Pelangi sbg milik properti lain (bug nyata, ditemukan lewat tes Chat
+    # Simulator: bot Harmoni menjawab pakai alamat & foto kamar Pelangi).
+    property_slug: Optional[str] = None
     created_at: str = Field(default_factory=utc_now_iso)
     updated_at: str = Field(default_factory=utc_now_iso)
 
@@ -397,6 +407,8 @@ class AIBotIn(BaseModel):
     guardrail_rules: List[str] = Field(default_factory=list)
     allowed_intents: List[str] = Field(default_factory=list)
     pms_property_api_key: Optional[str] = None
+    # Guard sementara (2026-07-31, lihat AIBot di atas utk penjelasan lengkap).
+    property_slug: Optional[str] = None
 
 
 class AIBotUpdate(BaseModel):
@@ -415,3 +427,13 @@ class AIBotUpdate(BaseModel):
     guardrail_rules: Optional[List[str]] = None
     allowed_intents: Optional[List[str]] = None
     pms_property_api_key: Optional[str] = None
+    # Guard sementara (2026-07-31) - BUKAN skema multi-properti penuh (itu butuh
+    # db.settings/rooms/knowledge_base/dll masing-masing dipecah per-properti +
+    # data ASLI Harmoni yg belum tersedia - lihat memory proyek). Field ini CUMA
+    # dipakai _build_context sbg penanda "properti ini punya konten Pelangi-only
+    # (alamat/foto kamar/knowledge base) yg TIDAK BOLEH ditampilkan seolah milik
+    # bot ini" - kosong/"pelangi" = perilaku lama (dapat konten penuh), nilai lain
+    # ("harmoni") = context jujur bilang "info detail belum tersedia" drpd diam-diam
+    # menyamarkan data Pelangi sbg milik properti lain (bug nyata, ditemukan lewat
+    # tes Chat Simulator: bot Harmoni menjawab pakai alamat & foto kamar Pelangi).
+    property_slug: Optional[str] = None

@@ -650,20 +650,63 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
                           rooms: Optional[List[dict]] = None) -> str:
     if rooms is None:
         rooms = await _pms_ketersediaan()
-    menu = await db.menu.find({}).to_list(500)
+
+    # Guard multi-properti (2026-07-31) - db.settings/db.rooms(lokal)/db.knowledge_base/
+    # db.menu SEMUA masih 1 data global berisi konten PELANGI SAJA (alamat, foto kamar,
+    # fasilitas, FAQ lokasi) - belum ada skema per-properti (butuh migrasi + data ASLI
+    # Harmoni yg belum tersedia, lihat memory proyek). Bug NYATA ditemukan lewat tes Chat
+    # Simulator sebelum guard ini ada: bot Harmoni menjawab pakai alamat & foto kamar
+    # Pelangi seolah-olah miliknya sendiri. `property_slug` bot (lihat models.py) kosong
+    # ATAU "pelangi" = perilaku lama (dapat konten penuh, TIDAK ADA YANG BERUBAH utk bot
+    # Pelangi/Resepsionis) - nilai lain ("harmoni") = konten Pelangi-only ini DILEWATI,
+    # AI diberi tahu jujur "info detail belum tersedia" drpd menyamarkan data Pelangi.
+    property_slug = (bot or {}).get("property_slug") or "pelangi"
+    is_pelangi_content = property_slug == "pelangi"
+
+    menu = await db.menu.find({}).to_list(500) if is_pelangi_content else []
     kb_q = {"is_active": True}
     if bot and bot.get("knowledge_categories"):
         kb_q["category"] = {"$in": bot["knowledge_categories"]}
-    kb = await db.knowledge_base.find(kb_q).to_list(500)
-    settings = await db.settings.find_one({"_id": "singleton"}) or {}
+    kb = await db.knowledge_base.find(kb_q).to_list(500) if is_pelangi_content else []
+    # (2026-07-31) - JANGAN kirim {} kosong ke build_context_block utk bot non-Pelangi:
+    # fallback default fungsi itu ("Nama: Pelangi Homestay") jadi ikut kepakai kalau
+    # `settings` kosong - bug nyata ditemukan lewat tes: bot Harmoni bilang "Cottage di
+    # Pelangi Homestay". Isi `hotel_name` dgn nama publik yg sudah dipakai luas di blog
+    # web-pelangi (harmoniby.pelangihomestay.com) - address/maps/dll TETAP kosong (jujur
+    # "-" drpd salah), itu memang belum tersedia.
+    settings = (
+        (await db.settings.find_one({"_id": "singleton"}) or {}) if is_pelangi_content
+        else {"hotel_name": "Harmoni Hills"} if property_slug == "harmoni"
+        else {}
+    )
     # Foto + fasilitas/deskripsi kamar - koleksi db.rooms LOKAL ai-chat-bot (bukan
     # _pms_ketersediaan di atas, yang cuma tipe/tarif/stok live dari PMS, TIDAK ADA field
     # foto/fasilitas sama sekali). Ditemukan 2026-07-19 (foto) & 2026-07-21 (fasilitas) dari
     # laporan user: tanpa ini AI mengarang fasilitas kamar generik dari pengetahuan umum
     # (mis. "AC, lemari pakaian") - staf sudah isi fasilitas asli di halaman Room Management
     # tapi datanya tidak pernah sampai ke context AI sama sekali, cuma foto yang disertakan.
-    room_photos = await db.rooms.find({}, {"name": 1, "photo_url": 1, "images": 1, "facilities": 1, "description": 1}).to_list(50)
+    # `property_slug` (2026-07-31) - tiap dokumen rooms sekarang ditandai per-properti
+    # (lihat memory proyek), jadi query di-filter per-bot, BUKAN on/off total spt
+    # settings/kb/menu di atas (yg masih 1 data global Pelangi-only) - begitu Harmoni
+    # dapat entry rooms sendiri (spt Cottage yg sudah diisi 2026-07-31), otomatis muncul
+    # ke bot Harmoni tanpa perlu ubah kode lagi.
+    room_photos = await db.rooms.find(
+        {"property_slug": property_slug}, {"name": 1, "photo_url": 1, "images": 1, "facilities": 1, "description": 1}
+    ).to_list(50)
     base = build_context_block(rooms, menu, kb, settings, room_photos)
+
+    if not is_pelangi_content:
+        base += (
+            "\n\n# KETERBATASAN DATA PROPERTI INI (WAJIB DIPATUHI)\n"
+            "Alamat lengkap, link maps, foto kamar, dan knowledge base/FAQ umum untuk properti "
+            "ini BELUM tersedia di sistem (fasilitas & deskripsi kamar di atas, kalau ada, "
+            "SUDAH data asli dan boleh disebutkan). JANGAN PERNAH menyebutkan alamat, link "
+            "maps, atau mengirim foto kamar dari properti lain (mis. Pelangi Homestay) seolah "
+            "itu milik properti ini - itu informasi yang SALAH bagi tamu. Kalau tamu menanyakan "
+            "hal-hal itu, jawab jujur bahwa detail lengkapnya akan diinfokan staf, dan gunakan "
+            "tool eskalasi/tiket kalau tersedia. Ketersediaan kamar & harga (di atas, dari PMS "
+            "live) TETAP boleh dan HARUS dijawab seperti biasa."
+        )
 
     # Nomor WA tamu SUNGGUHAN (2026-07-26, bug ditemukan saat regression test trimming
     # prompt) - sebelum ini, angka WA tamu TIDAK PERNAH benar-benar dikirim sebagai teks
