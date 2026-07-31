@@ -1295,6 +1295,41 @@ async def _send_wa_document_smart(conv: Optional[dict], filename: str, mimetype:
     return await _waha_send_file(f"{whatsapp}@c.us", filename, mimetype, data_base64, caption, session=identifier or WAHA_SESSION)
 
 
+# Model Router (2026-07-31, permintaan Agus) - gpt-4.1-mini tetap jadi model UTAMA/hemat
+# biaya, TAPI dieskalasi ke gpt-4.1 (5x lebih mahal per token, tapi jauh lebih taat
+# instruksi) HANYA utk giliran chat yang topiknya rawan salah - bukti nyata lewat tes live
+# 2026-07-31: gpt-4.1-mini sempat mengarang "biasanya jam checkin Day Use 14:00" padahal
+# instruksi eksplisit di TOOL_DOCS melarang menebak jam default itu sama sekali. Klasifikasi
+# MURNI keyword + status tool giliran sebelumnya - SENGAJA TIDAK pakai panggilan LLM
+# tambahan utk mengklasifikasi (itu justru menambah biaya/latensi, melawan tujuan
+# "menekan biaya" itu sendiri) - kalau nanti Agus laporkan pola kesalahan topik baru,
+# cukup tambahkan kata kuncinya di bawah, tidak perlu ubah arsitektur.
+MODEL_ESCALATION_KEYWORDS = [
+    # Jam/waktu spesifik - kasus nyata yang memicu perbaikan ini (jam check-in Day Use
+    # yang sebenarnya fleksibel, tapi model kadang menebak jam tetap yang salah).
+    "jam berapa", "jam check", "checkin jam", "check-in jam", "bebas jam", "jam bebas",
+    "jam fleksibel", "jam segini", "checkout jam",
+    # Kebijakan & uang - salah di sini langsung berdampak biaya/kepercayaan tamu.
+    "batal", "pembatalan", "refund", "dikembalikan", "pengembalian", "diskon", "dp ",
+    "deposit", "kebijakan", "denda", "biaya tambahan", "kena charge",
+    # Fasilitas yang beda per properti (Pelangi ada sarapan/AC, Harmoni tidak) - rawan
+    # model "mengingat" fasilitas properti lain dari pengetahuan umum.
+    "sarapan", "breakfast", "extra bed", "tambahan kasur", " ac ", "pendingin",
+]
+
+
+def _perlu_model_kuat(message: str, last_intent: Optional[str]) -> bool:
+    lower = f" {(message or '').lower()} "
+    if any(kw in lower for kw in MODEL_ESCALATION_KEYWORDS):
+        return True
+    # Giliran sebelumnya baru saja panggil tool bertaruh tinggi (data booking/pembayaran
+    # asli, atau status member yang menentukan diskon) - besar kemungkinan masih di
+    # tengah alur yang sama, butuh ketelitian tinggi jg di giliran-giliran berikutnya.
+    if last_intent in ("create_booking", "cancel_booking", "check_member_status"):
+        return True
+    return False
+
+
 async def _run_chat_turn(
     session_id: str, message: str, guest_name: Optional[str], whatsapp: Optional[str],
     bot_id: Optional[str], bot_code: Optional[str], channel: str = "simulator",
@@ -1388,7 +1423,9 @@ async def _run_chat_turn(
 
     settings_doc = await db.settings.find_one({"_id": "singleton"}) or {}
     llm_provider = settings_doc.get("llm_provider") or DEFAULT_PROVIDER
-    llm_model = settings_doc.get("llm_model") or DEFAULT_MODEL
+    llm_model_utama = settings_doc.get("llm_model") or DEFAULT_MODEL
+    llm_model_eskalasi = settings_doc.get("llm_model_eskalasi") or "gpt-4.1"
+    llm_model = llm_model_eskalasi if _perlu_model_kuat(message, conv.get("last_intent")) else llm_model_utama
 
     # First AI turn
     # Jaring pengaman (2026-07-26, temuan nyata lewat uji beban 10 percakapan bersamaan -
@@ -1649,6 +1686,10 @@ async def _run_chat_turn(
         "content": final_text,
         "timestamp": utc_now_iso(),
         "intent": tool or None,
+        # (2026-07-31) model AI yang benar-benar dipakai giliran ini - dipakai memantau
+        # seberapa sering Model Router mengeskalasi ke gpt-4.1 (lihat _perlu_model_kuat),
+        # supaya nanti bisa dicek biaya riil vs perkiraan, bukan kotak hitam.
+        "llm_model_used": llm_model,
     }
     conv["messages"].append(ai_msg)
 
