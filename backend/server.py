@@ -1415,6 +1415,7 @@ async def _run_chat_turn(
             "resolution": "unresolved",
             "booking_created": False,
             "last_intent": None,
+            "booking_draft": {},
             "response_time_ms": 0,
             "created_at": utc_now_iso(),
             "updated_at": utc_now_iso(),
@@ -1470,6 +1471,26 @@ async def _run_chat_turn(
     room_types = sorted({r["tipe"] for r in rooms_now if r.get("tipe")})
     system_prompt = await _system_prompt_for(bot, room_types=room_types)
     context = await _build_context(query=message, bot=bot, whatsapp=conv.get("whatsapp") or whatsapp, rooms=rooms_now)
+    # Slot memory (2026-08-01) - suntik apa yang SUDAH diketahui dari booking_draft (lihat
+    # dispatch tool di bawah) supaya AI tidak menanyakan ulang field yang tamu sudah jawab
+    # di giliran sebelumnya - beda dari mengandalkan model menyimpulkan sendiri dari
+    # riwayat chat mentah tiap kali (rawan lupa/re-ask, laporan Agus).
+    draft = conv.get("booking_draft") or {}
+    if draft:
+        label = {
+            "tipe": "Menginap/Day Use", "room_tipe": "Tipe kamar",
+            "tanggal_checkin": "Tanggal check-in", "tanggal_checkout": "Tanggal check-out",
+            "jumlah_kamar": "Jumlah kamar", "jumlah_tamu": "Jumlah tamu",
+            "jam_checkin": "Jam check-in (Day Use)", "payment_option": "Metode bayar (dp50/full)",
+        }
+        known = " | ".join(f"{label[k]}: {v}" for k, v in draft.items() if k in label)
+        missing = [label[k] for k in ("tipe", "room_tipe", "tanggal_checkin", "jumlah_kamar")
+                   if k not in draft or not draft.get(k)]
+        context += (
+            "\n\n# DATA BOOKING YANG SUDAH DIKETAHUI (jangan tanya ulang)\n"
+            f"{known}\n"
+            + (f"Yang BELUM diketahui: {', '.join(missing)}\n" if missing else "Semua data wajib sudah lengkap - lanjut ke ringkasan/konfirmasi.\n")
+        )
     history_text = compact_history(conv["messages"][:-1], max_turns=12)
 
     settings_doc = await db.settings.find_one({"_id": "singleton"}) or {}
@@ -1507,6 +1528,21 @@ async def _run_chat_turn(
                 tool_result = {"ok": False, "tool": tool, "error": f"service_type '{args.get('service_type')}' tidak diizinkan untuk bot ini"}
             else:
                 tool_result = await _handle_tool(tool, args or {}, conv)
+            # Slot memory (2026-08-01, permintaan Agus - PRD Natural Conversation Engine
+            # §13/14) - simpan info booking yang tamu SUDAH berikan (dari args tool, bukan
+            # dari inferensi ulang teks chat tiap giliran) supaya AI tidak menanyakan ulang
+            # field yang sudah dijawab. Diisi dari args APAPUN hasilnya (sukses/gagal - args
+            # tetap mencerminkan apa yang tamu bilang), dikosongkan lagi setelah
+            # create_booking BENAR-BENAR sukses (booking_created=True) karena setelah itu
+            # status sebenarnya lebih baik dibaca live dari lookup_booking, bukan draft basi.
+            if tool in ("preview_booking", "create_booking") and args:
+                draft_keys = ("tipe", "room_tipe", "tanggal_checkin", "tanggal_checkout",
+                              "jumlah_kamar", "jumlah_tamu", "jam_checkin", "payment_option")
+                draft = dict(conv.get("booking_draft") or {})
+                draft.update({k: args[k] for k in draft_keys if args.get(k)})
+                conv["booking_draft"] = draft
+            if tool == "create_booking" and tool_result and tool_result.get("ok"):
+                conv["booking_draft"] = {}
             # give AI a chance to acknowledge tool result with a second turn
             # PENGETATAN 2026-07-21 (insiden nyata berulang: AI narasikan "pembatalan sudah
             # diajukan" padahal tool yang barusan dipanggil cuma lookup_booking, cancel_booking
@@ -1521,7 +1557,14 @@ async def _run_chat_turn(
                 f"tool yang dipanggil cuma `lookup_booking` (mencari data), JANGAN bilang 'pembatalan sudah diajukan'/'sudah "
                 f"diproses' - itu klaim dari tool `cancel_booking` yang BELUM dipanggil. Kalau tamu jelas ingin lanjut ke "
                 f"aksi berikutnya (mis. batalkan) berdasar hasil lookup ini, TANYA konfirmasi & sebutkan kamu akan proses di "
-                f"langkah berikutnya - JANGAN klaim sudah selesai. Jangan panggil tool lagi kecuali tamu memintanya."
+                f"langkah berikutnya - JANGAN klaim sudah selesai. Jangan panggil tool lagi kecuali tamu memintanya. "
+                f"Balasan ini akan digabung dengan draftmu sebelum tool dipanggil (kalau ada) menjadi SATU balasan akhir - "
+                f"kalau draft sebelumnya cuma basa-basi menunggu (mis. 'saya cek dulu ya'), JANGAN ulangi/gemakan kalimat "
+                f"itu di sini, langsung tulis hasil final secara utuh seolah ini satu-satunya balasan ke tamu. LEBIH PENTING "
+                f"LAGI: kalau draft sebelumnya SUDAH TERLANJUR menebak status/detail (mis. 'belum lunas'/'saya kirim ulang "
+                f"link' padahal belum tahu hasil tool) dan tebakan itu BEDA dari hasil tool yang sebenarnya di atas, jangan "
+                f"cuma menambahkan koreksi setelahnya - balasan akhirmu harus MENGGANTIKAN tebakan yang salah itu sepenuhnya "
+                f"dengan fakta dari hasil tool, supaya tamu tidak melihat 2 klaim yang saling bertentangan dalam 1 pesan."
             )
             history_after = compact_history(
                 conv["messages"] + [{"role": "assistant", "content": clean_text or "(tool call)"}],
@@ -1757,6 +1800,7 @@ async def _run_chat_turn(
         update["bot_code"] = bot.get("code")
     if conv.get("last_booking_request"):
         update["last_booking_request"] = conv["last_booking_request"]
+    update["booking_draft"] = conv.get("booking_draft") or {}
     if tool == "request_handover":
         update["status"] = "waiting_admin"
         update["resolution"] = "handover"
@@ -2330,7 +2374,11 @@ async def whatsapp_cloud_webhook_receive(request: Request):
                 if i > 0:
                     await asyncio.sleep(random.uniform(1, 2))
                 room = await db.rooms.find_one({"$or": [{"photo_url": url}, {"images.url": url}]})
-                caption = room["name"] if room else ""
+                # Caption bernomor urut (2026-08-01, permintaan Agus - PRD Natural
+                # Conversation Engine §6) - "Foto 1/2/3" per foto, BUKAN label sudut/ruangan
+                # spesifik ("Foto Depan"/"Kamar Mandi") karena data foto (db.rooms.images)
+                # tidak menyimpan info sudut/ruangan sama sekali - menebaknya = mengarang.
+                caption = f"{room['name']} - Foto {i + 1}" if room else f"Foto {i + 1}"
                 await _wa_cloud_send_image(phone, url, caption, phone_number_id=phone_number_id)
         return {"ok": True}
     except Exception as e:
@@ -2398,7 +2446,11 @@ async def fonnte_webhook_receive(bot_id: str, request: Request):
                 if i > 0:
                     await asyncio.sleep(random.uniform(1, 2))
                 room = await db.rooms.find_one({"$or": [{"photo_url": url}, {"images.url": url}]})
-                caption = room["name"] if room else ""
+                # Caption bernomor urut (2026-08-01, permintaan Agus - PRD Natural
+                # Conversation Engine §6) - "Foto 1/2/3" per foto, BUKAN label sudut/ruangan
+                # spesifik ("Foto Depan"/"Kamar Mandi") karena data foto (db.rooms.images)
+                # tidak menyimpan info sudut/ruangan sama sekali - menebaknya = mengarang.
+                caption = f"{room['name']} - Foto {i + 1}" if room else f"Foto {i + 1}"
                 await _fonnte_send_link_message(token, sender, caption, url, label="Lihat foto")
         return {"ok": True}
     except Exception as e:
@@ -2491,7 +2543,7 @@ async def webhook_waha(request: Request, token: Optional[str] = None, _: None = 
                 # mencurigakan (2026-07-19, dikonfirmasi user kirim SEMUA foto kamar).
                 await asyncio.sleep(random.uniform(1, 2))
             room = await db.rooms.find_one({"$or": [{"photo_url": url}, {"images.url": url}]})
-            caption = room["name"] if room else ""
+            caption = f"{room['name']} - Foto {i + 1}" if room else f"Foto {i + 1}"
             await _waha_send_image(chat_id, url, caption, session=waha_session)
     return {"ok": True}
 

@@ -160,11 +160,11 @@ TOOL_DOCS = {
     'WAJIB dipanggil SETELAH tipe kamar+tanggal+jumlah kamar lengkap, SEBELUM create_booking (lihat ALUR WAJIB-nya). Hasil: "kedatangan_ke" (selalu ada), "diskon_member_persen"/"diskon_diskresi_persen" (cuma kalau berlaku), "rincian_harga" (tarif_kamar, diskon_rp, service_fee, service_fee_persen, total). Pakai untuk RINGKASAN ke tamu - JANGAN hitung sendiri angkanya.',
     "create_booking": '- create_booking : args {"guest_name":"...","whatsapp":"...","tipe":"day_use"|"menginap","room_tipe":__ROOM_TIPE__,"tanggal_checkin":"YYYY-MM-DD","jam_checkin":"HH:mm" (wajib jika day_use),"tanggal_checkout":"YYYY-MM-DD" (wajib jika menginap),"jumlah_kamar":1,"jumlah_tamu":1,"payment_option":"dp50"|"full" (WAJIB, lihat aturan di bawah),"diskon_diminta_tamu":true|false (true HANYA kalau tamu SENDIRI eksplisit minta diskon - lihat KEBIJAKAN DISKON di atas; jangan diisi kalau tidak pernah minta)}. '
     '"whatsapp" DEFAULT nomor WA tamu yang SUDAH ADA di konteks - jangan tanya "boleh minta nomor WA?", cukup konfirmasi nama. HANYA pakai nomor LAIN kalau tamu eksplisit bilang booking untuk orang lain - kalau ini terjadi, WAJIB jelaskan: "Program loyalitas & diskon member tercatat per nomor WhatsApp saat booking - kalau pakai nomor beda, riwayat kedatangannya tercatat terpisah, bukan digabung ke nomor ini." '
-    'ALUR WAJIB RINGKASAN & KONFIRMASI: (1) begitu tipe kamar+tanggal+jumlah kamar didapat, panggil preview_booking DULU (bukan langsung create_booking). (2) tulis RINGKASAN terstruktur (baris terpisah, bukan 1 paragraf): Nama, Nomor WA (SALIN PERSIS angka dari baris "NOMOR WA TAMU SESI INI" di konteks - JANGAN tulis placeholder ATAU mengarang angka sendiri), Tipe kamar & tanggal, Harga kamar, Diskon (kalau ada, sebutkan sumbernya - kalau tidak ada JANGAN tulis baris diskon), Service {service_fee_persen}%, Total. Tutup dengan "Apakah data di atas sudah benar, Kak?" - JANGAN digabung dengan pertanyaan DP/lunas di pesan yang sama. (3) TUNGGU konfirmasi tamu (giliran terpisah). (4) BARU tanya DP 50% atau lunas (kalau belum dijawab). (5) begitu tamu jawab DP/lunas, panggil create_booking dengan data SAMA PERSIS yang sudah dikonfirmasi - jangan ubah tanpa tamu minta. Kalau tamu KOREKSI data di langkah (3), update, panggil preview_booking LAGI, ulangi ringkasan & minta konfirmasi lagi - JANGAN lanjut ke create_booking dengan data yang belum dikonfirmasi. '
+    'ALUR WAJIB RINGKASAN & KONFIRMASI: (1) CEK blok "# DATA BOOKING YANG SUDAH DIKETAHUI" di konteks dulu - field yang SUDAH ada di situ JANGAN ditanya ulang walau tamu belum menyebutkannya lagi di pesan TERAKHIR ini. Begitu tipe kamar+tanggal+jumlah kamar (baik dari pesan baru maupun sudah ada di blok itu) lengkap, panggil preview_booking DULU (bukan langsung create_booking) - kalau blok itu sudah bilang "Semua data wajib sudah lengkap", LANGSUNG panggil preview_booking DI GILIRAN INI JUGA, JANGAN tanya izin dulu ("mau saya cek dulu?"/"boleh saya buat ringkasannya?") - preview_booking itu READ-ONLY (tidak membuat apa pun, 100% aman dipanggil), jadi tidak perlu minta izin sama sekali, langsung panggil lalu tampilkan hasilnya sekaligus di balasan yang sama. (2) tulis RINGKASAN terstruktur pakai format baris beremoji ini persis (bukan 1 paragraf, bukan format lain): Nama, Nomor WA (SALIN PERSIS angka dari baris "NOMOR WA TAMU SESI INI" di konteks - JANGAN tulis placeholder ATAU mengarang angka sendiri), lalu 🏡 Tipe kamar, 📅 Tanggal (check-in - check-out kalau menginap), 👥 Jumlah kamar, 💰 Harga kamar, (kalau ada diskon) Diskon (sebutkan sumbernya - kalau tidak ada JANGAN tulis baris ini), 💳 Service {service_fee_persen}%, lalu baris Total dengan angka DIBOLD pakai tanda bintang WhatsApp: "*Total: Rp{total}*". Tutup dengan "Kalau sudah sesuai, saya lanjutkan bookingnya ya Kak 😊" (atau variasi senada, jangan kaku "Apakah data di atas sudah benar?") - JANGAN digabung dengan pertanyaan DP/lunas di pesan yang sama. (3) TUNGGU konfirmasi tamu (giliran terpisah). (4) BARU tanya DP 50% atau lunas (kalau belum dijawab). (5) begitu tamu jawab DP/lunas, panggil create_booking dengan data SAMA PERSIS yang sudah dikonfirmasi - jangan ubah tanpa tamu minta. Kalau tamu KOREKSI data di langkah (3), update, panggil preview_booking LAGI, ulangi ringkasan & minta konfirmasi lagi - JANGAN lanjut ke create_booking dengan data yang belum dikonfirmasi. '
     'LARANGAN KERAS soal angka di ringkasan: setiap baris Harga kamar/Service/Total WAJIB berisi angka Rupiah ASLI dari hasil preview_booking giliran ini (field rincian_harga) - JANGAN PERNAH tulis placeholder seperti "(akan dihitung otomatis)"/"(menyusul)"/"TBD"/dibiarkan kosong. Kalau kamu belum benar-benar memanggil preview_booking di giliran ini (bukan giliran sebelumnya), JANGAN tulis ringkasan sama sekali dulu - panggil tool itu SEKARANG, tunggu hasilnya, baru tulis ringkasan lengkap dengan angka asli. Ringkasan dengan angka kosong/placeholder SAMA SALAHNYA dengan angka yang dikarang - keduanya tidak boleh terjadi. '
     'ATURAN WAJIB payment_option: SELALU tanya eksplisit "mau bayar DP 50% atau lunas?" dan TUNGGU jawabannya - JANGAN PERNAH panggil create_booking tanpa payment_option jawaban tamu SEBENARNYA, walau tamu sudah kasih semua data lain sekaligus. Kalau belum dijawab, tanya dulu, JANGAN panggil tool. '
     'ATURAN WAJIB jam_checkin (Day Use): JANGAN PERNAH menebak/isi sendiri (termasuk "14:00") - HARUS jam yang benar-benar disebutkan tamu (dipakai sistem cek bentrok dengan tamu Menginap yang checkout siang). Kalau belum disebutkan, tanya "jam berapa rencana kedatangannya?" dulu. '
-    'SETELAH tool ini, WAJIB baca field "status" - JANGAN asumsi selalu berhasil: '
+    'SETELAH tool ini berhasil, tulis konfirmasi sebagai SATU blok pesan yang mengalir (kode booking, ringkasan kamar/tanggal, total, status pembayaran, semua di pesan yang SAMA) - JANGAN pecah jadi beberapa kalimat pendek terpisah seperti "Booking berhasil!" lalu "Kode booking:" lalu "Status:" satu-satu, itu terasa terpotong-potong. WAJIB baca field "status" - JANGAN asumsi selalu berhasil: '
     '"waiting_payment" = Day Use OTOMATIS terkonfirmasi. Sistem SUDAH OTOMATIS kirim pesan TERPISAH berisi link bayar (field "checkout_url") - JANGAN ulangi/tempel link itu di balasanmu, cukup konfirmasi berhasil & bilang link menyusul (TANPA menulis URL-nya). '
     '"rejected" = kamar BENAR-BENAR PENUH (lihat "rejected_reason"), WAJIB minta maaf jujur & tawarkan tanggal/tipe lain - JANGAN bilang "sudah diproses"/"silakan bayar". '
     '"waiting_approval" = Menginap (selalu lewat review staf, BUKAN otomatis) ATAU Day Use yang belum bisa auto-approve (mis. grup >1 kamar) - jelaskan akan ditinjau staf dulu. '
@@ -172,8 +172,10 @@ TOOL_DOCS = {
     'Kalau ada "diskon_diskresi_persen" (dari KEBIJAKAN DISKON, cuma muncul kalau diskon_diminta_tamu:true DAN memenuhi syarat), WAJIB sampaikan pakai kalimat kebijakan diskon (bukan "diskon member"), mis. "Sesuai kebijakan kami, kami berikan diskon {diskon_diskresi_persen}%." Kalau diskon_diminta_tamu:true tapi field ini tidak muncul, artinya belum memenuhi syarat - sampaikan apa adanya, jangan mengarang alasan lain. '
     'Kalau ada "rincian_harga" (tarif_kamar, diskon_rp, subtotal_setelah_diskon, service_fee, service_fee_persen, total), WAJIB jelaskan di pesan konfirmasi yang SAMA, jangan cuma total. Format: "Harga kamar: Rp{tarif_kamar}", KALAU diskon_rp>0 tambah "Diskon: -Rp{diskon_rp}", lalu "Service {service_fee_persen}%: Rp{service_fee}", lalu "Total: Rp{total}". Angka PERSIS dari field itu, jangan hitung ulang. Kalau field ini tidak ada, jangan mengarang rincian sendiri.',
     "lookup_booking": '- lookup_booking : args {"whatsapp":"..."}. Nomor WA SUDAH ADA di konteks - WAJIB pakai langsung. JANGAN minta tamu ketik kode booking manual (jarang tahu/ingat sendiri). Panggil PROAKTIF setiap tamu tanya status/pembayaran/mau membatalkan, jangan nunggu diminta. '
+    'SAAT memanggil tool ini, JANGAN tulis apa pun sebelum marker [[TOOL: lookup_booking]] - TIDAK ADA teks pendahuluan sama sekali (bukan "saya cek dulu ya", BUKAN JUGA tebakan status seperti "sepertinya belum lunas"/"saya kirim ulang link" - kamu BELUM TAHU status sebenarnya sebelum tool ini benar-benar dijalankan). Semua penjelasan ke tamu (termasuk status pembayaran yang benar) WAJIB baru ditulis SETELAH hasil tool ini didapat, bukan sebelumnya - menebak dulu lalu mengoreksi belakangan bikin tamu lihat 2 klaim yang bertentangan dalam 1 pesan. '
     'KECUALI kalau kamu SENDIRI baru saja (giliran-giliran terakhir di riwayat chat ini) memberi tahu tamu bahwa booking sudah dibuat/link pembayaran akan/sudah dikirim, DAN tamu mengulang permintaan yang SAMA PERSIS tanpa info baru (mis. kirim ulang "dp aja kak" berkali-kali dalam waktu singkat) - dalam kasus ini JANGAN panggil lookup_booking ulang & JANGAN tulis ulang rincian booking/harga lengkap tiap kali (tamu bisa merasa di-spam info yang sama). Cukup balas singkat menenangkan, mis. "Sudah saya proses ya Kak, link pembayarannya akan masuk sebentar lagi ke chat ini - mohon ditunggu 🙏", TANPA memanggil tool lagi. '
-    'Tiap item hasil punya "kode_permintaan" (internal, BUKAN kode booking, JANGAN ditampilkan/dipakai) dan "booking_ringkasan" (list, tiap elemen punya "kode" sendiri, mis. "BKO-..." - INI kode booking asli yang valid, satu-satunya boleh ditampilkan). Tiap elemen juga punya "sudah_diajukan_pembatalan" (true/false) - kalau true, sudah ada permintaan menunggu staf, JANGAN tawarkan batal lagi (akan ditolak server) - bilang sudah dalam antrian.',
+    'Tiap item hasil punya "kode_permintaan" (internal, BUKAN kode booking, JANGAN ditampilkan/dipakai) dan "booking_ringkasan" (list, tiap elemen punya "kode" sendiri, mis. "BKO-..." - INI kode booking asli yang valid, satu-satunya boleh ditampilkan). Tiap elemen juga punya "sudah_diajukan_pembatalan" (true/false) - kalau true, sudah ada permintaan menunggu staf, JANGAN tawarkan batal lagi (akan ditolak server) - bilang sudah dalam antrian. '
+    'ATURAN WAJIB soal "status_bayar" tiap elemen booking_ringkasan (2026-08-01, permintaan Agus - JANGAN PERNAH menyimpang dari status sebenarnya): kalau status_bayar == "dp", DP SUDAH DITERIMA - JANGAN PERNAH lagi tawarkan "kirim ulang link pembayaran"/"lanjut pembayaran"/"bayar sekarang" untuk elemen itu, walau tamu tanya soal pembayaran lagi. Framing yang benar: DP sudah diterima, voucher sudah terbit, sisa tagihan ("sisa_tagihan") dibayar SAAT CHECK-IN di lokasi - bukan lewat link lagi. Kalau status_bayar == "lunas", jangan singgung soal pembayaran sama sekali kecuali tamu tanya langsung. Kalau status_bayar == "belum_bayar", baru boleh tawarkan kirim ulang link pembayaran.',
     "cancel_booking": '- cancel_booking (BUKAN pembatalan final - CUMA MENGAJUKAN permintaan yang ditinjau staf) : args {"whatsapp":"...","kode":"..." (OPSIONAL),"alasan":"..." (opsional)}. '
     '"kode" BOLEH DIKOSONGKAN - PMS cari sendiri booking aktif tamu dari nomor WA (aman kalau cuma 1 booking aktif). Isi HANYA kalau kamu sudah tahu persis kode BKO- yang benar dari booking_ringkasan[].kode (mis. tamu punya beberapa booking & sudah sebut yang mana, atau cancel_booking sebelumnya balas error dengan field "kandidat"). JANGAN pakai "kode_permintaan" (bukan kode booking) atau kode yang tamu ketik sendiri tanpa validasi. '
     'ALUR WAJIB tiap tamu minta batal: (1) sampaikan kebijakan (H-7 s/d H-3 sebelum check-in = refund 100%, H-2 s/d hari check-in = biaya 50%, berlaku day_use & menginap) dan bahwa staf akan meninjau & refund manual - JANGAN sebut angka rupiah pasti di tahap ini. (2) tunggu tamu KONFIRMASI eksplisit lanjut batal. (3) begitu konfirmasi (giliran berikutnya), WAJIB LANGSUNG panggil cancel_booking (kode boleh kosong, jangan lookup_booking dulu "just in case") - jangan cuma bilang "akan diproses" tanpa benar-benar memanggil tool. '
@@ -186,7 +188,7 @@ TOOL_DOCS = {
     "catat_kedatangan_tamu": '- catat_kedatangan_tamu (tiket masuk PMS, dipantau staf - BUKAN check-in resmi, staf tetap yang proses check-in sungguhan begitu tamu tiba) : args {"whatsapp":"...","guest_name":"...","room_nomor":"..." (isi HANYA kalau tamu sebutkan sendiri),"catatan":"..." (opsional, mis. "naik taksi, 15 menit lagi")}. '
     'WAJIB panggil PROAKTIF begitu tamu bilang sudah tiba/dalam perjalanan/di depan properti (mis. "aku udah sampai", "otw", "5 menit lagi nyampe", "udah di depan pagar") - JANGAN nunggu diminta, JANGAN cuma balas basa-basi tanpa memanggil tool ini. '
     'Setelah tool ini berhasil (ok=true), beri tahu tamu bahwa staf sudah diberi tahu & akan segera menyambut - JANGAN PERNAH bilang "sudah check-in"/"kamar sudah siap" (check-in sungguhan - verifikasi identitas, pembayaran, serah kunci - tetap dilakukan staf langsung saat tamu tiba di lokasi, bukan lewat chat).',
-    "request_handover": '- request_handover : args {"reason":"..."}',
+    "request_handover": '- request_handover : args {"reason":"..."}. JANGAN PERNAH bilang ke tamu bahwa "staf akan segera membantu"/"sudah saya eskalasi ke admin"/kalimat sejenis KECUALI kamu BENAR-BENAR memanggil tool ini DI GILIRAN INI dan berhasil (ok=true) - sebelum tool ini benar-benar dipanggil & sukses, jangan klaim eskalasi sudah terjadi, cukup bantu semampunya dulu.',
     "remember_guest_fact": '- remember_guest_fact : args {"whatsapp":"...","fact":"..."}. WAJIB dipanggil tiap tamu minta sesuatu "dicatat"/"diingat", atau sebutkan preferensi/alergi/nama panggilan/kebiasaan relevan. JANGAN bilang "sudah dicatat" TANPA benar-benar memanggil tool ini di baris yang sama - mengaku mencatat tanpa memanggil = data tidak tersimpan. Bukan untuk data booking/transaksi (sudah otomatis di PMS) - hanya fakta personal tamu.',
 }
 
@@ -272,6 +274,39 @@ dari memori/training sendiri - selalu hitung dari tanggal hari ini di atas.
 ## GUARDRAIL (WAJIB DIPATUHI)
 {guard_block}
 
+## GAYA BICARA - VARIASI & KEHANGATAN (2026-08-01, permintaan Agus: AI harus terasa
+seperti resepsionis hotel sungguhan yang mengobrol, bukan chatbot formulir)
+- JANGAN pakai kalimat pembuka seperti "saya cek dulu ya", "mohon tunggu sebentar",
+  "sedang saya proses" sebelum memanggil tool - SEMUA tool yang tersedia saat ini hasilnya
+  langsung ada di giliran yang sama (tidak ada yang benar-benar lambat), jadi langsung
+  sampaikan HASILNYA, bukan basa-basi menunggu. Kalau kamu sudah menulis draft
+  "saya cek dulu..." sebelum tool dipanggil, JANGAN ulangi/gemakan kalimat itu lagi di
+  balasan final setelah hasil tool didapat - balasan final harus terbaca seolah itu
+  satu-satunya balasan, bukan sambungan dari draft sebelumnya.
+- JANGAN sebut nama tamu di SETIAP balasan - itu terasa seperti template. Pakai nama HANYA
+  di sapaan pertama kali, ucapan terima kasih setelah booking selesai, atau momen formal
+  (ringkasan booking). Di balasan lain, variasikan sapaan pendek tanpa nama: "Kak", "Baik
+  Kak", "Siap Kak", "Oke Kak", "Tentu Kak" - atau tanpa sapaan sama sekali kalau sudah di
+  tengah alur percakapan.
+- Contoh nada lebih hangat (pakai gaya seperti ini, bukan kaku/formal):
+  * "Apakah data di atas sudah benar?" -> "Kalau sudah sesuai, saya lanjutkan bookingnya
+    ya Kak 😊"
+  * "Baik, saya proses." -> "Siap, saya bantu ya 😊"
+  * "Apakah ingin melanjutkan booking?" -> "Mau saya lanjutkan proses booking sekarang ya
+    Kak?"
+- Struktur tiap balasan: (1) akui apa yang tamu baru bilang, (2) jawab/beri info yang
+  dibutuhkan, (3) arahkan ke langkah wajar berikutnya - jadikan SATU alur natural, bukan
+  3 kalimat terpisah berurutan yang terasa seperti daftar. Maksimal 1-2 emoji per balasan
+  (bukan nol, jangan juga berlebihan). Hindari pertanyaan bertubi-tubi (banyak tanda tanya
+  berturut-turut dalam beberapa giliran terasa seperti mengisi formulir, bukan mengobrol).
+- Saat MASIH mengumpulkan info awal booking (tanggal / tipe kamar / menginap-atau-day-use
+  / jumlah kamar) dan beberapa hal itu sekaligus belum diketahui, tanyakan 2-3 yang
+  berkaitan dalam SATU pesan (mis. "Menginap atau Day Use? Berapa kamar?"), JANGAN satu
+  per satu per giliran seperti formulir. Aturan ini KHUSUS fase pengumpulan info AWAL -
+  TIDAK berlaku untuk tahap konfirmasi ringkasan/DP di alur create_booking (lihat instruksi
+  tool itu), yang SENGAJA dipisah per giliran sebagai jeda sebelum bicara uang - jangan
+  gabungkan kedua tahap itu.
+
 ## KODE BOOKING (BKO-.../REQ-...)
 Kode booking SELALU berformat lengkap dengan akhiran acak setelah tanda hubung terakhir
 (contoh: BKO-20260719234332-4051, BUKAN cuma BKO-20260719234332). JANGAN PERNAH memotong,
@@ -307,15 +342,21 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
     """Build a compact context string for the AI."""
     parts = []
     maps_line = f"Google Maps: {settings['maps_url']}\n" if settings.get("maps_url") else ""
-    if settings.get("map_directions"):
-        # (2026-08-01, permintaan Agus) - titik Maps cuma antar sampai area umum, bukan
-        # pintu masuk persis, jadi arah lanjutan ini WAJIB langsung disertakan setiap kali
-        # link Maps dikirim ke tamu - JANGAN tanya izin dulu / tunggu tamu minta, karena
-        # tamu yang benar-benar di lokasi butuh info ini SEKARANG juga, bukan nanti.
+    if settings.get("maps_url"):
+        # Format pesan lokasi (2026-08-01, permintaan Agus - PRD Natural Conversation
+        # Engine §7): "📍 [link] - klik lalu pilih Navigasi", diikuti arah jalan kaki
+        # (kalau ada) dan tawaran bantu kalau nyasar - WAJIB langsung disertakan setiap
+        # kali link Maps dikirim, JANGAN tanya izin dulu / tunggu tamu minta, karena tamu
+        # yang benar-benar di lokasi butuh info ini SEKARANG juga, bukan nanti.
         maps_line += (
-            f"Arah setelah sampai di titik map (WAJIB langsung disertakan setiap kali "
-            f"link Maps di atas dikirim ke tamu, jangan tunggu ditanya): "
-            f"{settings['map_directions']}\n"
+            "Format WAJIB saat mengirim link Maps ini ke tamu: \"📍 Lokasi kami: "
+            f"{settings['maps_url']} - klik lalu pilih Navigasi.\""
+        )
+        if settings.get("map_directions"):
+            maps_line += f" Lalu tambahkan arah jalan kaki dari titik itu: {settings['map_directions']}"
+        maps_line += (
+            " Tutup dengan tawaran bantu kalau tamu nyasar, mis. \"Kalau sempat nyasar, "
+            "kabari saya ya Kak, saya bantu arahkan 😊\"\n"
         )
     parts.append(f"# INFO HOTEL\nNama: {settings.get('hotel_name','Pelangi Homestay')}\n"
                  f"Alamat: {settings.get('address','-')}\n"
