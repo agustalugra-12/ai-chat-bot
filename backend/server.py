@@ -560,11 +560,17 @@ async def convs_reply(conv_id: str, body: ConvReplyIn, user=Depends(get_current_
     await db.conversations.update_one({"_id": conv_id}, {"$set": update})
 
     sent_to_whatsapp = False
-    if conv.get("channel") in ("whatsapp", "whatsapp_cloud") and conv.get("whatsapp"):
-        # Balas lewat channel & nomor WA yang SAMA dengan yang tamu hubungi (WAHA atau
-        # Cloud API, bisa beda-beda sejak multi-nomor per AI bot 2026-07-19 dan migrasi
-        # Cloud API 2026-07-21) - fallback ke default kalau conv lama belum punya field ini
-        # (dibuat sebelum fitur ini ada).
+    # Bug nyata ditemukan 2026-07-31 (Agus tanya apakah AI diam kalau dia ambil alih chat
+    # langsung) - "fonnte" TIDAK PERNAH masuk daftar ini sebelumnya (cuma "whatsapp"/
+    # "whatsapp_cloud", sisa dari sebelum migrasi Fonnte 2026-07-31) - balasan manual staf
+    # KORBAN DIAM-DIAM tidak pernah benar-benar terkirim ke tamu via Fonnte (Pelangi &
+    # Harmoni SEKARANG DUA-DUANYA Fonnte) meski AI sudah benar berhenti membalas & status
+    # tersimpan "waiting_admin" - tamu tidak pernah lihat balasan staf sama sekali.
+    if conv.get("channel") in ("whatsapp", "whatsapp_cloud", "fonnte") and conv.get("whatsapp"):
+        # Balas lewat channel & nomor WA yang SAMA dengan yang tamu hubungi (WAHA, Cloud
+        # API, atau Fonnte, bisa beda-beda sejak multi-nomor per AI bot 2026-07-19, migrasi
+        # Cloud API 2026-07-21, migrasi Fonnte 2026-07-31) - fallback ke default kalau conv
+        # lama belum punya field ini (dibuat sebelum fitur ini ada).
         sent_to_whatsapp = await _send_wa_smart(conv, text)
 
     await _audit_log(user, "conversation_manual_reply", f"conv {conv_id}: {text[:200]}")
