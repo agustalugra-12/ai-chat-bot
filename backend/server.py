@@ -99,6 +99,33 @@ from connectors.fonnte_connector import _fonnte_send_text, _fonnte_send_link_mes
 # dihajar dari IP mana pun kalau token bocor/ditebak).
 _rate_limit_buckets: Dict[str, List[float]] = {}
 
+# Kunci per-percakapan (2026-08-01, bug nyata ditemukan lewat laporan Agus "AI seperti
+# spam ke konsumen setelah kirim link payment") - _run_chat_turn tidak pernah punya
+# concurrency guard: kalau tamu kirim 2 pesan cepat berturut-turut SEBELUM giliran
+# pertama selesai diproses (LLM+tool-calling bisa makan puluhan detik), webhook Fonnte
+# mengirim 2 request terpisah yang KEDUANYA diproses bersamaan oleh 2 pemanggilan
+# _run_chat_turn yang overlap - masing-masing baca `conv["messages"]` versi LAMA (giliran
+# pertama belum sempat simpan balasannya), jadi giliran kedua TIDAK TAHU booking baru saja
+# dibuat & bisa membuat booking KEDUA yang duplikat (dikonfirmasi nyata: 1 tamu, 1 kali
+# bilang "dp aja kak" 2x karena tidak sabar, hasilnya 2 booking asli + 2 link pembayaran +
+# 1 voucher - persis pola yang dilaporkan). Server ini 1 proses/1 worker (uvicorn tanpa
+# --workers), jadi asyncio.Lock in-process per session_id sudah cukup, tidak perlu lock
+# terdistribusi (Redis/Mongo).
+_conversation_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _get_conversation_lock(session_id: str) -> asyncio.Lock:
+    lock = _conversation_locks.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _conversation_locks[session_id] = lock
+        # Katup pengaman sama pola dgn _rate_limit_buckets - jarang kena di skala 1-2
+        # hotel, tapi murah dijaga supaya dict tidak tumbuh tak terbatas.
+        if len(_conversation_locks) > 20000:
+            _conversation_locks.clear()
+            _conversation_locks[session_id] = lock
+    return lock
+
 
 def _client_ip(request: Request) -> str:
     xff = request.headers.get("x-forwarded-for")
@@ -1376,6 +1403,25 @@ def _perlu_model_kuat(message: str, last_intent: Optional[str]) -> bool:
 
 
 async def _run_chat_turn(
+    session_id: str, message: str, guest_name: Optional[str], whatsapp: Optional[str],
+    bot_id: Optional[str], bot_code: Optional[str], channel: str = "simulator",
+    waha_session: Optional[str] = None, cloud_phone_number_id: Optional[str] = None,
+    fonnte_token: Optional[str] = None,
+) -> dict:
+    """Wrapper penguncian (2026-08-01) - lihat `_get_conversation_lock`. Memastikan HANYA
+    1 giliran chat per session_id yang benar-benar diproses dalam satu waktu, giliran
+    kedua yang datang saat giliran pertama masih jalan akan MENUNGGU (bukan langsung
+    diproses paralel dengan state percakapan yang basi) - mencegah booking duplikat kalau
+    tamu kirim 2 pesan cepat berturut-turut. Isi asli fungsi ini ada di
+    `_run_chat_turn_locked` di bawah."""
+    async with _get_conversation_lock(session_id):
+        return await _run_chat_turn_locked(
+            session_id, message, guest_name, whatsapp, bot_id, bot_code, channel,
+            waha_session, cloud_phone_number_id, fonnte_token,
+        )
+
+
+async def _run_chat_turn_locked(
     session_id: str, message: str, guest_name: Optional[str], whatsapp: Optional[str],
     bot_id: Optional[str], bot_code: Optional[str], channel: str = "simulator",
     waha_session: Optional[str] = None, cloud_phone_number_id: Optional[str] = None,
