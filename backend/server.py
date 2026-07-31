@@ -127,6 +127,21 @@ def _get_conversation_lock(session_id: str) -> asyncio.Lock:
     return lock
 
 
+# Debounce pesan Fonnte (2026-08-01, permintaan Agus - laporan nyata: tamu yang ngetik
+# beberapa pesan cepat berturut-turut sebelumnya dapat balasan AI TERPISAH utk TIAP
+# pesan, terasa seperti di-spam) - lihat _fonnte_debounced_dispatch di dekat
+# fonnte_webhook_receive utk detail alurnya. State ini in-process (server 1 worker,
+# sama seperti _conversation_locks) - KETERBATASAN DISADARI: kalau proses restart PAS
+# giliran sedang menunggu jeda debounce (maks FONNTE_DEBOUNCE_SECONDS detik), pesan yang
+# belum sempat diproses akan hilang (webhook sudah lanjut balas 200 OK ke Fonnte lebih
+# dulu, jadi Fonnte tidak akan kirim ulang) - risiko kecil & disengaja diterima demi
+# jendela debounce yang singkat, sudah didiskusikan & disetujui Agus.
+FONNTE_DEBOUNCE_SECONDS = 4.0
+_fonnte_pending_messages: Dict[str, List[str]] = {}
+_fonnte_pending_ctx: Dict[str, dict] = {}
+_fonnte_debounce_tasks: Dict[str, asyncio.Task] = {}
+
+
 def _client_ip(request: Request) -> str:
     xff = request.headers.get("x-forwarded-for")
     if xff:
@@ -2432,12 +2447,87 @@ async def whatsapp_cloud_webhook_receive(request: Request):
         return {"ok": True}
 
 
+async def _fonnte_process_and_reply(session_id: str, message_text: str, guest_name: str, sender: str,
+                                     bot_id: str, bot_code: Optional[str], token: str) -> None:
+    """Proses 1 giliran chat & kirim balasannya lewat Fonnte - isi asli
+    fonnte_webhook_receive, dipisah jadi fungsi sendiri (2026-08-01) supaya bisa dipanggil
+    dari _fonnte_debounced_dispatch dengan `message_text` yang sudah digabung dari
+    beberapa pesan tamu yang datang beruntun, bukan cuma 1 pesan mentah."""
+    hasil = await _run_chat_turn(
+        session_id, message_text, guest_name, sender, bot_id, bot_code,
+        channel="fonnte", fonnte_token=token,
+    )
+    if hasil.get("reply"):
+        await asyncio.sleep(random.uniform(3, 5))
+        clean_text, image_urls = parse_img_markers(hasil["reply"])
+        if clean_text:
+            terkirim = await _fonnte_send_text(token, sender, clean_text)
+            if not terkirim:
+                logging.getLogger("fonnte").error(
+                    f"Gagal kirim balasan WA ke {sender} (conv session {session_id}) via Fonnte - "
+                    f"cek status device di dashboard Fonnte (bisa jadi disconnected)."
+                )
+                try:
+                    await _pms_alert_owner(
+                        f"⚠️ AI GAGAL kirim balasan WhatsApp (Fonnte) ke tamu {sender} - "
+                        f"cek status device Fonnte, kemungkinan disconnected. "
+                        f"Hubungi tamu manual kalau perlu."
+                    )
+                except Exception:
+                    pass
+        # Fonnte (paket Agus) tidak support attachment sama sekali - foto kamar
+        # ([[IMG: url]] marker) dikirim sbg LINK teks, bukan gambar native (beda dgn
+        # Cloud API/WAHA di atas yang kirim gambar asli).
+        for i, url in enumerate(image_urls):
+            if i > 0:
+                await asyncio.sleep(random.uniform(1, 2))
+            room = await db.rooms.find_one({"$or": [{"photo_url": url}, {"images.url": url}]})
+            # Caption bernomor urut (2026-08-01, permintaan Agus - PRD Natural
+            # Conversation Engine §6) - "Foto 1/2/3" per foto, BUKAN label sudut/ruangan
+            # spesifik ("Foto Depan"/"Kamar Mandi") karena data foto (db.rooms.images)
+            # tidak menyimpan info sudut/ruangan sama sekali - menebaknya = mengarang.
+            caption = f"{room['name']} - Foto {i + 1}" if room else f"Foto {i + 1}"
+            await _fonnte_send_link_message(token, sender, caption, url, label="Lihat foto")
+
+
+async def _fonnte_debounced_dispatch(session_id: str) -> None:
+    """Tunggu FONNTE_DEBOUNCE_SECONDS - kalau ada pesan BARU masuk utk session ini
+    sebelum jeda itu habis, task INI dibatalkan (lihat fonnte_webhook_receive, `.cancel()`
+    dipanggil di sana) & digantikan task baru yang mulai menunggu dari awal lagi - jadi
+    efektifnya, giliran cuma benar-benar diproses begitu tamu BERHENTI mengetik selama
+    FONNTE_DEBOUNCE_SECONDS detik penuh. Semua pesan yang menumpuk selama itu digabung
+    jadi SATU giliran (satu balasan AI), bukan dibalas satu-satu terpisah - laporan nyata
+    Agus 2026-08-01: tamu yang ngetik beberapa pesan cepat berturut-turut ("halo", "iya
+    lanjut", "iya boleh") sebelumnya dapat balasan AI terpisah utk TIAP pesan, terasa
+    seperti di-spam walau tidak ada bug data (booking tetap benar tidak dobel, lihat
+    _get_conversation_lock) - ini murni soal pengalaman tamu menerima banyak balasan
+    beruntun."""
+    try:
+        await asyncio.sleep(FONNTE_DEBOUNCE_SECONDS)
+    except asyncio.CancelledError:
+        return  # pesan susulan datang - giliran gabungan yang BARU akan menangani ini
+    pending = _fonnte_pending_messages.pop(session_id, [])
+    ctx = _fonnte_pending_ctx.pop(session_id, None)
+    _fonnte_debounce_tasks.pop(session_id, None)
+    if not pending or not ctx:
+        return
+    combined = "\n".join(pending)
+    try:
+        await _fonnte_process_and_reply(
+            session_id, combined, ctx["guest_name"], ctx["sender"],
+            ctx["bot_id"], ctx["bot_code"], ctx["token"],
+        )
+    except Exception as e:
+        logging.getLogger("fonnte").warning(f"Gagal proses giliran ter-debounce utk {session_id}: {e}")
+
+
 @api.post("/webhook/fonnte/{bot_id}")
 async def fonnte_webhook_receive(bot_id: str, request: Request):
-    """Terima pesan masuk dari Fonnte & balas lewat AI - pola SAMA dgn webhook Cloud API/
-    WAHA (reuse _run_chat_turn), bedanya cuma bentuk payload (JSON flat: device/sender/
-    message/name, lihat docs.fonnte.com) & cara kirim balasan (_fonnte_send_text/
-    _fonnte_send_link_message, bukan _wa_cloud_send_*/_waha_send_*).
+    """Terima pesan masuk dari Fonnte, DEBOUNCE dulu (lihat _fonnte_debounced_dispatch),
+    baru balas lewat AI - pola dasar SAMA dgn webhook Cloud API/WAHA (ujung-ujungnya reuse
+    _run_chat_turn lewat _fonnte_process_and_reply), bedanya cuma bentuk payload (JSON
+    flat: device/sender/message/name, lihat docs.fonnte.com) & cara kirim balasan
+    (_fonnte_send_text/_fonnte_send_link_message, bukan _wa_cloud_send_*/_waha_send_*).
 
     Auth (2026-07-31): Fonnte TIDAK punya skema tanda tangan webhook resmi (beda dari
     Meta yang punya X-Hub-Signature-256) - `bot_id` di path ITU SENDIRI dipakai sbg
@@ -2463,42 +2553,16 @@ async def fonnte_webhook_receive(bot_id: str, request: Request):
             return {"ok": True, "diabaikan": "tanpa nomor pengirim/isi pesan"}
 
         session_id = f"fon-{bot_id}-{sender}"
-        hasil = await _run_chat_turn(
-            session_id, message_text, guest_name, sender, bot_id, bot.get("code"),
-            channel="fonnte", fonnte_token=token,
-        )
-        if hasil.get("reply"):
-            await asyncio.sleep(random.uniform(3, 5))
-            clean_text, image_urls = parse_img_markers(hasil["reply"])
-            if clean_text:
-                terkirim = await _fonnte_send_text(token, sender, clean_text)
-                if not terkirim:
-                    logging.getLogger("fonnte").error(
-                        f"Gagal kirim balasan WA ke {sender} (conv session {session_id}) via Fonnte - "
-                        f"cek status device di dashboard Fonnte (bisa jadi disconnected)."
-                    )
-                    try:
-                        await _pms_alert_owner(
-                            f"⚠️ AI GAGAL kirim balasan WhatsApp (Fonnte) ke tamu {sender} - "
-                            f"cek status device Fonnte, kemungkinan disconnected. "
-                            f"Hubungi tamu manual kalau perlu."
-                        )
-                    except Exception:
-                        pass
-            # Fonnte (paket Agus) tidak support attachment sama sekali - foto kamar
-            # ([[IMG: url]] marker) dikirim sbg LINK teks, bukan gambar native (beda dgn
-            # Cloud API/WAHA di atas yang kirim gambar asli).
-            for i, url in enumerate(image_urls):
-                if i > 0:
-                    await asyncio.sleep(random.uniform(1, 2))
-                room = await db.rooms.find_one({"$or": [{"photo_url": url}, {"images.url": url}]})
-                # Caption bernomor urut (2026-08-01, permintaan Agus - PRD Natural
-                # Conversation Engine §6) - "Foto 1/2/3" per foto, BUKAN label sudut/ruangan
-                # spesifik ("Foto Depan"/"Kamar Mandi") karena data foto (db.rooms.images)
-                # tidak menyimpan info sudut/ruangan sama sekali - menebaknya = mengarang.
-                caption = f"{room['name']} - Foto {i + 1}" if room else f"Foto {i + 1}"
-                await _fonnte_send_link_message(token, sender, caption, url, label="Lihat foto")
-        return {"ok": True}
+        _fonnte_pending_messages.setdefault(session_id, []).append(message_text)
+        _fonnte_pending_ctx[session_id] = {
+            "guest_name": guest_name, "sender": sender, "bot_id": bot_id,
+            "bot_code": bot.get("code"), "token": token,
+        }
+        old_task = _fonnte_debounce_tasks.get(session_id)
+        if old_task and not old_task.done():
+            old_task.cancel()
+        _fonnte_debounce_tasks[session_id] = asyncio.create_task(_fonnte_debounced_dispatch(session_id))
+        return {"ok": True, "debounced": True}
     except Exception as e:
         logging.getLogger("fonnte").warning(f"Gagal proses webhook Fonnte: {e}")
         return {"ok": True}
