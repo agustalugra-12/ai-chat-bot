@@ -388,7 +388,14 @@ function ProfileTab({ bot, onChange }) {
       <div className="grid grid-cols-2 gap-3">
         <F label="Channel">
           <select data-testid="bot-profile-channel" value={bot.channel_type || ""} onChange={(e) => onChange({ channel_type: e.target.value })} className="w-full px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm bg-white">
-            {["simulator", "whatsapp", "telegram", "website", "mobile"].map((c) => <option key={c} value={c}>{c}</option>)}
+            {/* "fonnte"/"whatsapp_cloud" ditambahkan 2026-08-01 - bug nyata ditemukan:
+               keduanya channel ASLI yang dipakai bot Pelangi & Harmoni sekarang, tapi
+               sebelumnya tidak ada di daftar opsi ini sama sekali - <select> terkontrol
+               dgn value yang tidak match opsi mana pun, begitu form Profile ini disimpan
+               (utk alasan apa pun, mis. ubah field lain), channel_type ikut ke-reset diam-
+               diam ke opsi lain (kejadian nyata: bot Harmoni jadi "whatsapp", webhook
+               Fonnte langsung 404, tamu chat tidak dibalas sama sekali). */}
+            {["simulator", "fonnte", "whatsapp_cloud", "whatsapp", "telegram", "website", "mobile"].map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </F>
         <F label="Bahasa">
