@@ -1816,7 +1816,18 @@ async def _run_chat_turn_locked(
     # sama sekali menyebut "Cottage" - jawaban yang BENAR (baik menyetujui utk Cottage
     # maupun menolak utk tipe lain) SELALU harus menyebut "Cottage" karena itu satu-satunya
     # tipe yang valid, jadi ketidakhadirannya adalah sinyal kuat klaim tsb salah/karangan.
-    if re.search(r"extra\s*bed", final_text, re.IGNORECASE) and "cottage" not in final_text.lower():
+    # False-positive nyata ditemukan 2026-08-01 (laporan Agus: chat berakhir dengan koreksi
+    # extra bed yang tidak nyambung sama sekali) - kondisi lama cuma cek "extra bed" TANPA
+    # "cottage", jadi kalimat SAH seperti "mau tambah layanan (extra bed, handuk, antar-
+    # jemput)?" (sekadar daftar layanan opsional, TIDAK ada klaim kelayakan apa pun) ikut
+    # kena & DIGANTIKAN TOTAL oleh koreksi generik yang tidak relevan dgn pesan tamu,
+    # plus alert Telegram palsu "AI mengarang kebijakan" padahal tidak ada yang salah.
+    # Ditambah syarat "standard" HARUS ikut disebut - hanya scenario asli (model
+    # menyetujui/menjelaskan extra bed UNTUK kamar Standard secara spesifik) yang punya
+    # kombinasi ini; sekadar menyebut "extra bed" di daftar layanan tanpa nama tipe kamar
+    # sama sekali tidak lagi ke-trigger.
+    if (re.search(r"extra\s*bed", final_text, re.IGNORECASE) and "cottage" not in final_text.lower()
+            and re.search(r"\bstandard\b", final_text, re.IGNORECASE)):
         logging.getLogger("hallucination_guard").warning(
             f"extra bed non-Cottage hallucination terdeteksi & dikoreksi - conv {conv.get('_id')}, "
             f"teks asli: {final_text!r}"
@@ -2458,7 +2469,16 @@ async def _fonnte_process_and_reply(session_id: str, message_text: str, guest_na
         channel="fonnte", fonnte_token=token,
     )
     if hasil.get("reply"):
-        await asyncio.sleep(random.uniform(3, 5))
+        # Jeda 3-5 detik "human-paced" SEBELUM kirim DIHAPUS di sini (2026-08-01) - bug
+        # nyata ditemukan lewat laporan Agus: begitu create_booking sukses, PMS mengirim
+        # notifikasi link pembayaran SENDIRI hampir seketika (lewat _kirim_dengan_alert,
+        # jalur terpisah, tidak kena debounce/jeda apa pun) - balasan konfirmasi AI sendiri
+        # (yang menjelaskan ringkasan & bilang "link menyusul") yang SEHARUSNYA sampai
+        # LEBIH DULU malah tertunda ekstra 3-5 detik di atas waktu proses giliran ter-
+        # debounce (lihat _fonnte_debounced_dispatch, sudah ada jeda alami dari situ) -
+        # hasilnya tamu terima link duluan, ringkasan & penjelasan DP menyusul belakangan,
+        # urutannya kebalik & membingungkan. Debounce+proses LLM sudah cukup memberi jeda
+        # alami, jeda tambahan ini sekarang cuma bikin balapan lawan notifikasi PMS.
         clean_text, image_urls = parse_img_markers(hasil["reply"])
         if clean_text:
             terkirim = await _fonnte_send_text(token, sender, clean_text)
