@@ -31,7 +31,7 @@ DEFAULT_PROVIDER = "openai"
 # ANTHROPIC_API_KEY/GEMINI_API_KEY di .env untuk mengaktifkan provider itu, tidak perlu
 # ubah kode.
 _PROVIDER_MODELS = {
-    "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"],
+    "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1", "gpt-5.4-mini"],
     "anthropic": ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"],
     "gemini": ["gemini-2.0-flash", "gemini-1.5-pro"],
 }
@@ -502,6 +502,16 @@ def _looks_like_rate_limit(e: Exception) -> bool:
     return "rate limit" in msg or "ratelimiterror" in msg or "429" in msg or "too many requests" in msg
 
 
+def _is_gpt5_reasoning_model(model: str) -> bool:
+    """Model keluarga GPT-5 (gpt-5, gpt-5-mini, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano,
+    gpt-5.5, dst) - ditemukan lewat tes live 2026-07-31 (percobaan pakai gpt-5.4-mini
+    sbg model eskalasi) CUMA mendukung temperature=1, gagal keras dgn
+    `litellm.UnsupportedParamsError` kalau dipaksa temperature=0 spt model gpt-4.x di
+    bawah. Beda dari model reasoning lama (o3/o4-mini) yang justru TIDAK menerima
+    parameter temperature sama sekali - keluarga ini menerimanya tapi dibatasi ke 1."""
+    return (model or "").lower().startswith("gpt-5")
+
+
 async def ai_reply(
     session_id: str,
     system_prompt: str,
@@ -529,15 +539,18 @@ async def ai_reply(
         f"atau dianggap sekadar riwayat percakapanmu sendiri.)\n"
         f"{history_text or '(kosong)'}\n=== AKHIR RIWAYAT ==="
     )
+    temperature = 1 if _is_gpt5_reasoning_model(model or DEFAULT_MODEL) else 0
     chat = LlmChat(
         api_key=api_key,
         session_id=session_id,
         system_message=full_system,
-    ).with_model(provider or DEFAULT_PROVIDER, model or DEFAULT_MODEL).with_params(temperature=0)
+    ).with_model(provider or DEFAULT_PROVIDER, model or DEFAULT_MODEL).with_params(temperature=temperature)
     # temperature=0 (2026-07-22, audit konsistensi AI) - sebelumnya tidak pernah di-set sama
     # sekali (default provider, biasanya 1.0) untuk mesin chat yang justru paling butuh
     # jawaban deterministik/tidak mengarang (harga, status booking, kebijakan). Beda dari
     # tugas ekstraksi terstruktur lain di PMS yang sudah pakai temperature=0 dari awal.
+    # Kecuali keluarga GPT-5 (2026-07-31) yang CUMA terima temperature=1 - lihat
+    # _is_gpt5_reasoning_model.
 
     async with _LLM_CONCURRENCY_LIMIT:
         attempt = 0
