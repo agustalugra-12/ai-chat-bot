@@ -5,10 +5,13 @@ import { toast } from "sonner";
 import { AlertTriangle, CheckCircle2, MessagesSquare, Send, Bot, Loader2, UserRound, ChevronUp, ChevronDown } from "lucide-react";
 import { ChatMessageContent } from "@/components/ChatMessageContent";
 
-// Nama teknis di database -> label yang dimengerti orang awam. Channel "whatsapp" (WAHA)
-// dan "whatsapp_cloud" (Meta Cloud API) sama-sama tampil sebagai "WhatsApp" - beda transport
-// itu detail teknis di belakang layar, bukan sesuatu yang perlu dipikirkan pemilik/staf.
+// Nama teknis di database -> label yang dimengerti orang awam. "fonnte" (channel aktif
+// sekarang), "whatsapp" (WAHA lama, dihapus 2026-08-01 - percakapan lama tetap tampil
+// dgn label ini) dan "whatsapp_cloud" (Meta Cloud API) sama-sama tampil sebagai
+// "WhatsApp" - beda transport itu detail teknis di belakang layar, bukan sesuatu yang
+// perlu dipikirkan pemilik/staf.
 const CHANNEL_LABEL = {
+  fonnte: "WhatsApp",
   whatsapp: "WhatsApp",
   whatsapp_cloud: "WhatsApp",
   simulator: "Simulator (uji coba)",

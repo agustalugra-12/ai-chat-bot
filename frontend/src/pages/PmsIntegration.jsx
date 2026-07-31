@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { PageHeader, Badge } from "@/components/ui-parts";
-import { api, API_BASE } from "@/lib/api";
+import { api } from "@/lib/api";
 import { toast } from "sonner";
 import {
-  Save, Eye, EyeOff, Copy, Check, RefreshCw, Loader2, Zap,
+  Save, Eye, EyeOff, RefreshCw, Loader2, Zap,
   CheckCircle2, XCircle, ChevronDown, ChevronRight,
 } from "lucide-react";
 
@@ -40,7 +40,6 @@ export default function PmsIntegration() {
   const [cfg, setCfg] = useState(null);
   const [form, setForm] = useState(null);
   const [showKey, setShowKey] = useState(false);
-  const [copied, setCopied] = useState(null);
   const [busy, setBusy] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [testing, setTesting] = useState(false);
@@ -101,18 +100,6 @@ export default function PmsIntegration() {
     } finally { setTesting(false); }
   };
 
-  const regenToken = async () => {
-    if (!window.confirm("Token webhook lama akan langsung tidak berlaku (WAHA akan otomatis disinkronkan ke token baru). Lanjutkan?")) return;
-    setBusy(true);
-    try {
-      const { data } = await api.post("/pms-integration/regenerate-webhook-token");
-      setCfg(data); setForm(data);
-      toast.success("Token webhook baru dibuat & WAHA disinkronkan");
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Gagal generate ulang token");
-    } finally { setBusy(false); }
-  };
-
   const doSync = async (jenis) => {
     setSyncBusy(jenis);
     try {
@@ -123,15 +110,6 @@ export default function PmsIntegration() {
       toast.error(e?.response?.data?.detail || "Gagal sync");
     } finally { setSyncBusy(null); }
   };
-
-  const salin = async (label, value) => {
-    if (!value) return;
-    await navigator.clipboard.writeText(value);
-    setCopied(label);
-    setTimeout(() => setCopied(null), 2000);
-  };
-
-  const webhookUrl = cfg.webhook_token ? `${API_BASE}/webhook/waha?token=${cfg.webhook_token}` : null;
 
   return (
     <div>
@@ -208,24 +186,6 @@ export default function PmsIntegration() {
                 ))}
               </div>
             )}
-          </div>
-        </div>
-
-        {/* Webhook URL */}
-        <div className="pelangi-panel p-5 space-y-3">
-          <div className="font-[Fraunces] font-semibold">Webhook URL (masuk dari WAHA)</div>
-          <p className="text-xs text-[hsl(var(--muted-foreground))]">
-            URL ini yang dikonfigurasikan di sesi WAHA untuk mengirim pesan WhatsApp masuk ke ai-chat-bot.
-            Regenerate token akan otomatis menyinkronkan konfigurasi WAHA - tidak perlu langkah manual lagi.
-          </p>
-          <div className="flex items-center gap-2">
-            <input readOnly value={webhookUrl || "-"} data-testid="pms-webhook-url" className="flex-1 px-3 py-2 rounded-md border border-[hsl(var(--border))] text-xs font-mono bg-stone-50" onFocus={(e) => e.target.select()} />
-            <button onClick={() => salin("webhook", webhookUrl)} className="inline-flex items-center gap-1.5 text-sm px-3 py-2 rounded-md border border-[hsl(var(--border))] hover:bg-stone-50">
-              {copied === "webhook" ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-            </button>
-            <button onClick={regenToken} disabled={busy} data-testid="pms-regen-token" className="inline-flex items-center gap-1.5 text-sm px-3 py-2 rounded-md border border-[hsl(var(--border))] hover:bg-stone-50 disabled:opacity-50">
-              <RefreshCw className="w-3.5 h-3.5" /> Generate Ulang
-            </button>
           </div>
         </div>
 

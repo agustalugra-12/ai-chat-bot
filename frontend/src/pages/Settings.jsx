@@ -1,60 +1,8 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import { PageHeader, Badge } from "@/components/ui-parts";
+import { PageHeader } from "@/components/ui-parts";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
-import { Save, Wifi, WifiOff, Smartphone, Globe, Check, XCircle, Loader2, RefreshCw } from "lucide-react";
-
-const WAHA_STATUS_LABEL = {
-  WORKING: { label: "Terhubung", tone: "success" },
-  SCAN_QR_CODE: { label: "Menunggu Kode/Scan", tone: "warn" },
-  STARTING: { label: "Memulai…", tone: "warn" },
-  STOPPED: { label: "Terputus", tone: "muted" },
-  FAILED: { label: "Gagal/Terputus", tone: "danger" },
-};
-
-function KoneksiWhatsApp() {
-  // Sejak 2026-07-19 tiap AI bisa punya nomor WA sendiri-sendiri - kelola sambung/putus
-  // per nomor di tab "Koneksi WhatsApp" pada masing-masing AI (AI List), bukan di sini
-  // lagi. Panel ini cuma ringkasan status semua nomor + link cepat ke tab tersebut.
-  const [sessions, setSessions] = useState(null);
-
-  const load = () => api.get("/waha/sessions").then((r) => setSessions(r.data)).catch(() => setSessions([]));
-  useEffect(() => { load(); const t = setInterval(load, 8000); return () => clearInterval(t); }, []);
-
-  return (
-    <div className="pelangi-panel p-5 space-y-3" data-testid="waha-panel">
-      <div className="flex items-center gap-2 font-[Fraunces] font-semibold">
-        <Smartphone className="w-4 h-4" /> Koneksi WhatsApp
-      </div>
-      <div className="text-xs text-[hsl(var(--muted-foreground))]">
-        Tiap AI bisa punya nomor WhatsApp sendiri. Kelola sambung/putus dari menu <Link to="/ai/bots" className="text-[hsl(var(--primary))] hover:underline">AI List</Link> → pilih AI → tab "Koneksi WhatsApp".
-      </div>
-      {sessions === null ? (
-        <p className="text-xs text-[hsl(var(--muted-foreground))]">Memuat…</p>
-      ) : sessions.length === 0 ? (
-        <p className="text-xs text-[hsl(var(--muted-foreground))]">Belum ada nomor WhatsApp yang tersambung.</p>
-      ) : (
-        <div className="space-y-2">
-          {sessions.map((s) => {
-            const st = WAHA_STATUS_LABEL[s.status] || { label: s.status, tone: "neutral" };
-            const nomor = s.me?.id ? s.me.id.split("@")[0] : null;
-            return (
-              <div key={s.name} className="flex items-center justify-between px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm">
-                <div className="flex items-center gap-2">
-                  {s.status === "WORKING" ? <Wifi className="w-3.5 h-3.5 text-emerald-600" /> : <WifiOff className="w-3.5 h-3.5 text-[hsl(var(--muted-foreground))]" />}
-                  <span className="font-medium">{s.linked_bot?.name || s.name}</span>
-                  {nomor && <span className="text-xs text-[hsl(var(--muted-foreground))]">{nomor}</span>}
-                </div>
-                <Badge tone={st.tone}>{st.label}</Badge>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
+import { Save, Globe, Check, XCircle, Loader2, RefreshCw } from "lucide-react";
 
 function ModelLLM({ s, setS }) {
   const [options, setOptions] = useState(null);
@@ -271,7 +219,6 @@ export default function Settings() {
 
         <ModelLLM s={s} setS={setS} />
         <SinkronisasiWebPelangi />
-        <KoneksiWhatsApp />
       </div>
     </div>
   );

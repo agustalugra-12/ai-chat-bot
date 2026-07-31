@@ -1,9 +1,10 @@
 """Pelangi AI — AI Customer Service Platform (FastAPI backend).
 
-Brain Platform reusable lintas channel (WhatsApp/website chat/dst, lihat
-connectors/waha_connector.py untuk adapter WhatsApp) & lintas bisnis (Business System
-Connector, lihat connectors/pms_connector.py untuk integrasi Pelangi PMS) - bukan
-"AI WhatsApp Bot" yang terikat satu channel/satu bisnis (PRD v2, 2026-07-19).
+Brain Platform reusable lintas channel (WhatsApp lewat Fonnte/Cloud API, website chat/dst)
+& lintas bisnis (Business System Connector, lihat connectors/pms_connector.py untuk
+integrasi Pelangi PMS) - bukan "AI WhatsApp Bot" yang terikat satu channel/satu bisnis
+(PRD v2, 2026-07-19). WAHA (gateway self-hosted lama) dihapus 2026-08-01, digantikan
+Fonnte sepenuhnya.
 """
 import os
 import asyncio
@@ -69,10 +70,6 @@ from seed import seed_all
 # dipindahkan ke modul connectors/ terpisah - server.py (AI Customer Platform) pakai
 # fungsinya lewat import di bawah, tidak lagi tahu detail HTTP/auth sistem luar.
 # Lihat connectors/__init__.py untuk penjelasan pembagian tanggung jawabnya.
-from connectors.waha_connector import (
-    WAHA_BASE_URL, WAHA_API_KEY, WAHA_SESSION, WAHA_WEBHOOK_TOKEN,
-    _waha_call, _waha_send_text, _waha_send_image, _waha_send_file, _waha_list_sessions, _waha_ensure_session,
-)
 from connectors.pms_connector import (
     PMS_API_BASE_URL, PMS_API_KEY, PMS_DEFAULT_ENDPOINTS,
     PMS_CAPABILITY_WIRED, PMS_DEFAULT_CAPABILITIES, PMS_INTEGRATION_DEFAULT,
@@ -84,7 +81,6 @@ from connectors.pms_connector import (
 from connectors.webpelangi_connector import (
     _web_content_config, _sync_hotel_profile, _sync_faq,
 )
-from waha_health_monitor import waha_health_monitor_loop
 from connectors.whatsapp_cloud_connector import (
     WHATSAPP_CLOUD_PHONE_NUMBER_ID, _wa_cloud_send_text, _wa_cloud_send_image, _wa_cloud_send_document,
     _wa_cloud_send_template,
@@ -212,7 +208,6 @@ async def _log_validation_error(request: Request, exc: RequestValidationError):
 async def on_startup():
     await seed_all(db)
     logger.info("Seed complete")
-    asyncio.create_task(waha_health_monitor_loop())
     await db.wa_cloud_dedup.create_index("wamid", unique=True)
     await db.wa_cloud_dedup.create_index("ts", expireAfterSeconds=86400)
 
@@ -1238,7 +1233,12 @@ def _channel_info_from_conv(conv: dict) -> tuple[str, Optional[str]]:
         return "whatsapp_cloud", phone_number_id
     if sid.startswith("fon-"):
         return "fonnte", conv.get("fonnte_token")
-    return "whatsapp", conv.get("waha_session")
+    # WAHA dihapus (2026-08-01, digantikan Fonnte) - sisa percakapan lama dari sebelum
+    # migrasi (session_id tanpa prefix "wac-"/"fon-") tidak bisa dibalas otomatis lagi,
+    # channel "whatsapp_legacy" ini cuma penanda supaya caller tahu utk gagal dgn baik
+    # (bukan diam-diam salah kirim ke channel lain) - riwayatnya tetap bisa dibaca staf
+    # di dashboard, cuma tidak bisa dikirimi balasan baru lewat jalur otomatis.
+    return "whatsapp_legacy", conv.get("waha_session")
 
 
 async def _channel_info_from_property_slug(property_slug: Optional[str]) -> Optional[tuple[str, Optional[str]]]:
@@ -1274,7 +1274,13 @@ async def _send_wa_smart(conv: dict, text: str) -> bool:
         return await _wa_cloud_send_text(conv["whatsapp"], text, phone_number_id=identifier or "")
     if channel == "fonnte":
         return await _fonnte_send_text(identifier or "", conv["whatsapp"], text)
-    return await _waha_send_text(f"{conv['whatsapp']}@c.us", text, session=identifier or WAHA_SESSION)
+    # "whatsapp_legacy" - percakapan dari sebelum migrasi Fonnte, WAHA sudah dihapus,
+    # tidak ada jalur otomatis lagi utk kirim balasan ke sini (lihat _channel_info_from_conv).
+    logging.getLogger("send_wa").warning(
+        f"Tidak bisa kirim balasan - percakapan {conv.get('_id')} pakai channel lama (WAHA, "
+        f"sudah dihapus) yang tidak lagi didukung. Hubungi tamu manual kalau perlu."
+    )
+    return False
 
 
 def _last_inbound_at(conv: Optional[dict]) -> Optional[datetime]:
@@ -1322,12 +1328,17 @@ async def _send_wa_transactional(conv: Optional[dict], text: str, whatsapp_fallb
         channel, identifier = resolved if resolved else ("whatsapp_cloud", WHATSAPP_CLOUD_PHONE_NUMBER_ID)
 
     if channel == "fonnte":
-        # Fonnte - bukan API resmi Meta, tidak ada pembatasan jendela 24 jam (sama spt WAHA).
+        # Fonnte - bukan API resmi Meta, tidak ada pembatasan jendela 24 jam.
         return await _fonnte_send_text(identifier or "", whatsapp, text)
 
-    if channel != "whatsapp_cloud":
-        # WAHA - bukan API resmi Meta, tidak ada pembatasan jendela 24 jam.
-        return await _waha_send_text(f"{whatsapp}@c.us", text, session=identifier or WAHA_SESSION)
+    if channel == "whatsapp_legacy":
+        # Percakapan lama sebelum migrasi Fonnte - WAHA sudah dihapus (2026-08-01), tidak
+        # ada jalur otomatis lagi. Lihat _channel_info_from_conv.
+        logging.getLogger("send_wa").warning(
+            f"Tidak bisa kirim notifikasi transaksional - whatsapp {whatsapp} pakai channel "
+            f"lama (WAHA, sudah dihapus). Hubungi tamu manual kalau perlu."
+        )
+        return False
 
     last_inbound = _last_inbound_at(conv)
     within_window = bool(last_inbound) and (datetime.now(timezone.utc) - last_inbound) < timedelta(hours=24)
@@ -1379,7 +1390,13 @@ async def _send_wa_document_smart(conv: Optional[dict], filename: str, mimetype:
             logging.getLogger("fonnte").warning(f"Dokumen '{filename}' tidak ada url publik - tidak bisa dikirim lewat Fonnte (paket tanpa attachment)")
             return False
         return await _fonnte_send_link_message(identifier or "", whatsapp, caption, url, label="Unduh dokumen")
-    return await _waha_send_file(f"{whatsapp}@c.us", filename, mimetype, data_base64, caption, session=identifier or WAHA_SESSION)
+    # "whatsapp_legacy" - percakapan lama sebelum migrasi Fonnte, WAHA sudah dihapus
+    # (2026-08-01), tidak ada jalur otomatis lagi. Lihat _channel_info_from_conv.
+    logging.getLogger("send_wa").warning(
+        f"Tidak bisa kirim dokumen '{filename}' - whatsapp {whatsapp} pakai channel lama "
+        f"(WAHA, sudah dihapus). Hubungi tamu manual kalau perlu."
+    )
+    return False
 
 
 # Model Router (2026-07-31, permintaan Agus) - gpt-4.1-mini tetap jadi model UTAMA/hemat
@@ -1902,82 +1919,6 @@ async def chat_message(body: ChatSendRequest, user=Depends(get_current_user)):
 
 
 
-def _webhook_url_for(token: str) -> str:
-    return f"http://host.docker.internal:8002/api/webhook/waha?token={token}"
-
-
-@api.get("/waha/sessions")
-async def waha_sessions_list(user=Depends(get_current_user)):
-    """Semua nomor WA yang ada (WAHA session) digabung dengan AI bot yang terhubung ke
-    masing-masing (kalau ada) - satu tempat untuk lihat semua koneksi sekaligus, dipakai
-    panel Koneksi WhatsApp di tiap bot (BotDetail) maupun ringkasan kalau dibutuhkan."""
-    sessions = await _waha_list_sessions()
-    bots = await db.ai_bots.find({"channel_type": "whatsapp", "channel_id": {"$ne": None, "$ne": ""}}).to_list(50)
-    bot_by_session = {b["channel_id"]: {"id": b["_id"], "name": b.get("name")} for b in bots}
-    out = []
-    for s in sessions:
-        out.append({**s, "linked_bot": bot_by_session.get(s.get("name"))})
-    return out
-
-
-@api.get("/waha/sessions/{session}/status")
-async def waha_session_status(session: str, user=Depends(get_current_user)):
-    _, data = await _waha_call("GET", f"/api/sessions/{session}")
-    return data
-
-
-class WahaConnectIn(BaseModel):
-    phone_number: str
-    bot_id: Optional[str] = None  # kalau diisi, session ini otomatis ditautkan ke bot ini
-
-
-@api.post("/waha/sessions/{session}/connect")
-async def waha_session_connect(session: str, body: WahaConnectIn, user=Depends(get_current_user)):
-    """Mulai/pairing ulang 1 nomor WhatsApp (session WAHA) lewat kode angka (bukan QR -
-    lebih gampang dipakai tanpa perlu scan gambar). Kalau session belum pernah dibuat di
-    WAHA (nomor baru), otomatis dibuat dulu. PENTING: WhatsApp membatasi sementara akun
-    yang terlalu sering connect/disconnect dalam waktu singkat ("reachout timelock") -
-    jangan panggil endpoint ini berulang-ulang kalau baru saja gagal, tunggu beberapa menit."""
-    phone = (body.phone_number or "").strip()
-    if not phone:
-        raise HTTPException(400, "phone_number wajib diisi (format 62xxx)")
-
-    cfg = await _pms_config()
-    token = cfg.get("webhook_token") or WAHA_WEBHOOK_TOKEN
-    await _waha_ensure_session(session, _webhook_url_for(token))
-
-    _, cur = await _waha_call("GET", f"/api/sessions/{session}")
-    if cur.get("status") not in ("SCAN_QR_CODE",):
-        await _waha_call("POST", f"/api/sessions/{session}/logout")
-        await asyncio.sleep(2)
-        start_status, start_data = await _waha_call("POST", f"/api/sessions/{session}/start")
-        if start_status >= 400:
-            raise HTTPException(start_status, start_data.get("error") or "Gagal memulai sesi WAHA")
-        await asyncio.sleep(3)
-
-    code_status, code_data = await _waha_call(
-        "POST", f"/api/{session}/auth/request-code", {"phoneNumber": phone},
-    )
-    if code_status >= 400:
-        raise HTTPException(code_status, code_data.get("message") or code_data.get("error") or "Gagal meminta kode pairing")
-
-    if body.bot_id:
-        await db.ai_bots.update_one(
-            {"_id": body.bot_id}, {"$set": {"channel_type": "whatsapp", "channel_id": session}},
-        )
-    await _audit_log(user, "waha_connect", f"session {session}, phone {phone}")
-    return code_data
-
-
-@api.post("/waha/sessions/{session}/disconnect")
-async def waha_session_disconnect(session: str, user=Depends(get_current_user)):
-    status, data = await _waha_call("POST", f"/api/sessions/{session}/logout")
-    if status >= 400:
-        raise HTTPException(status, data.get("error") or "Gagal memutus sesi WAHA")
-    await _audit_log(user, "waha_disconnect", f"session {session}")
-    return {"ok": True}
-
-
 # ---------------------------------------------------------------------------
 # PMS INTEGRATION PANEL (configuration layer - lihat catatan arsitektur di atas)
 # ---------------------------------------------------------------------------
@@ -2023,24 +1964,6 @@ async def update_pms_capabilities(body: dict, user=Depends(get_current_user)):
     )
     if changed:
         await _audit_log(user, "pms_capability_toggle", ", ".join(changed))
-    return _pms_config_public(await _pms_config())
-
-
-@api.post("/pms-integration/regenerate-webhook-token")
-async def regenerate_pms_webhook_token(user=Depends(get_current_user)):
-    """Regenerate token webhook masuk (dipakai WAHA memanggil /webhook/waha di sini) -
-    otomatis update juga konfigurasi webhook di WAHA supaya tidak perlu langkah manual
-    tambahan (dulu ini harus di-sinkronkan manual lewat terminal server)."""
-    new_token = secrets.token_hex(20)
-    await db.pms_integration_config.update_one(
-        {"_id": "singleton"}, {"$set": {"webhook_token": new_token, "updated_at": utc_now_iso()}}, upsert=True,
-    )
-    await _audit_log(user, "pms_webhook_token_regenerate")
-    if WAHA_BASE_URL and WAHA_API_KEY:
-        await _waha_call(
-            "PUT", f"/api/sessions/{WAHA_SESSION}",
-            {"config": {"webhooks": [{"url": f"http://host.docker.internal:8002/api/webhook/waha?token={new_token}", "events": ["message"]}]}},
-        )
     return _pms_config_public(await _pms_config())
 
 
@@ -2586,96 +2509,6 @@ async def fonnte_webhook_receive(bot_id: str, request: Request):
     except Exception as e:
         logging.getLogger("fonnte").warning(f"Gagal proses webhook Fonnte: {e}")
         return {"ok": True}
-
-
-@api.post("/webhook/waha")
-async def webhook_waha(request: Request, token: Optional[str] = None, _: None = Depends(rate_limiter(30, 10))):
-    """Dipanggil WAHA (gateway WhatsApp self-hosted) setiap ada pesan masuk. Publik (tidak
-    ada login), jadi divalidasi lewat `?token=` yang harus cocok `WAHA_WEBHOOK_TOKEN` — pola
-    sama seperti webhook masuk di Pelangi PMS (`webhook_config.webhook_token`). Reuse penuh
-    `_run_chat_turn` (logika sama dengan simulator `/chat/message`) supaya AI yang menjawab
-    tamu WhatsApp asli konsisten dengan yang staf uji coba di dashboard. Balasan dikirim
-    balik ke tamu dengan MEMANGGIL WAHA (`_waha_send_text`) — bukan lewat response webhook,
-    karena WAHA tidak merelai isi response webhook ke WhatsApp seperti sebagian provider lain.
-    Token dicocokkan ke `webhook_token` di `pms_integration_config` (dashboard Settings ->
-    PMS Integration), bisa di-regenerate dari sana - fallback ke env WAHA_WEBHOOK_TOKEN
-    kalau dokumen config belum pernah dibuat.
-    """
-    cfg = await _pms_config()
-    expected = cfg.get("webhook_token") or WAHA_WEBHOOK_TOKEN
-    if not expected or token != expected:
-        raise HTTPException(404, "Not Found")
-
-    payload = await request.json()
-    if payload.get("event") != "message":
-        return {"ok": True, "diabaikan": f"event '{payload.get('event')}' tidak diproses"}
-
-    data = payload.get("payload") or {}
-    if data.get("fromMe"):
-        return {"ok": True, "diabaikan": "pesan keluar dari nomor bot sendiri"}
-
-    chat_id = data.get("from") or ""
-    raw_id, _, domain = chat_id.partition("@")
-    message = data.get("body") or ""
-    if not raw_id or not message:
-        return {"ok": True, "diabaikan": "tanpa nomor pengirim/isi pesan (kemungkinan pesan media)"}
-
-    # Multi-nomor WA (2026-07-19): WAHA menyertakan nama session (nomor mana yang terima
-    # pesan ini) di tiap payload webhook - dipakai cari AI bot mana yang ditautkan ke
-    # nomor itu (lihat AiBot.channel_id/channel_type di BotDetail tab Koneksi WhatsApp).
-    # Kalau belum ada bot yang ditautkan ke session ini, fallback ke perilaku lama
-    # (bot_id=None -> _load_bot jatuh ke booking_marketing) supaya nomor yang sudah
-    # terhubung dari sebelum fitur ini ada tetap jalan tanpa perlu setup ulang.
-    waha_session = payload.get("session") or WAHA_SESSION
-    linked_bot = await db.ai_bots.find_one({"channel_type": "whatsapp", "channel_id": waha_session})
-    bot_id = linked_bot["_id"] if linked_bot else None
-
-    # WhatsApp punya fitur privasi "LID" (Linked ID) - sebagian pengirim dilaporkan WAHA
-    # lewat identifier "xxxx@lid", BUKAN "xxxx@c.us", dan angka di "xxxx" itu SAMA SEKALI
-    # BUKAN nomor telepon asli (ditemukan lewat laporan user 2026-07-18: link pembayaran
-    # gagal terkirim karena no_hp yang tersimpan ternyata LID, bukan nomor asli). Untuk
-    # domain selain c.us/s.whatsapp.net, JANGAN perlakukan raw_id sebagai nomor telepon -
-    # biarkan `whatsapp` kosong supaya AI (lewat create_booking dkk) tetap MEMINTA tamu
-    # ketik nomor WA asli secara eksplisit, bukan diam-diam pakai LID yang salah.
-    is_real_phone = domain in ("c.us", "s.whatsapp.net")
-    phone = raw_id if is_real_phone else None
-    guest_name = data.get("notifyName") or (phone if is_real_phone else "Tamu WhatsApp")
-    # session_id disertakan nomor bot (waha_session) - tamu yang sama chat ke 2 nomor
-    # berbeda (mis. tanya booking ke satu nomor, komplain ke nomor lain) harus jadi 2
-    # percakapan terpisah, bukan tercampur jadi 1 riwayat.
-    session_id = f"wa-{waha_session}-{raw_id}"
-
-    hasil = await _run_chat_turn(
-        session_id, message, guest_name, phone, bot_id, None,
-        channel="whatsapp", waha_session=waha_session,
-    )
-    if hasil.get("reply"):
-        # Jeda 3-5 detik sebelum kirim balasan (dikonfirmasi user 2026-07-19) - biar terasa
-        # seperti orang mengetik balasan (bukan bot yang membalas instan dalam hitungan
-        # milidetik, pola yang gampang dikenali WhatsApp sebagai bot & bisa memicu
-        # pembatasan/reachout timelock), sekaligus meredam beban kalau banyak pesan masuk
-        # bersamaan. HANYA di jalur WhatsApp asli - Chat Simulator (staf uji coba) tetap
-        # instan supaya tidak memperlambat proses testing.
-        await asyncio.sleep(random.uniform(3, 5))
-        # Marker [[IMG: url]] dikonversi jadi foto SUNGGUHAN via WAHA sendImage, bukan
-        # dikirim sebagai teks mentah (bug ditemukan 2026-07-19 dari riwayat chat nyata -
-        # tamu menerima literal "[[IMG: https://...]]"). Caption tiap foto = nama room
-        # kalau URL-nya cocok dengan foto room (photo_url/images) yang tersimpan, supaya
-        # rapi & jelas foto kamar yang mana - bukan cuma link polos.
-        clean_text, image_urls = parse_img_markers(hasil["reply"])
-        if clean_text:
-            await _waha_send_text(chat_id, clean_text, session=waha_session)
-        for i, url in enumerate(image_urls):
-            if i > 0:
-                # Jeda singkat ANTAR foto (beda dari jeda 3-5 detik di atas, yang cuma
-                # sekali sebelum mulai kirim) - supaya kiriman 6 foto sekaligus terasa
-                # seperti dikirim satu-satu secara wajar, bukan burst instan yang
-                # mencurigakan (2026-07-19, dikonfirmasi user kirim SEMUA foto kamar).
-                await asyncio.sleep(random.uniform(1, 2))
-            room = await db.rooms.find_one({"$or": [{"photo_url": url}, {"images.url": url}]})
-            caption = f"{room['name']} - Foto {i + 1}" if room else f"Foto {i + 1}"
-            await _waha_send_image(chat_id, url, caption, session=waha_session)
-    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------

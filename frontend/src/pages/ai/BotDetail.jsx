@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { toast } from "sonner";
 import {
   Save, ArrowLeft, Trash2, Bot, ShieldCheck, Wrench, Waypoints, BookOpenText, Target, FileTerminal,
-  Smartphone, Wifi, WifiOff, Loader2, RefreshCw, Eye, EyeOff, Building2,
+  Smartphone, Wifi, WifiOff, Eye, EyeOff, Building2,
 } from "lucide-react";
 
 const TABS = [
@@ -18,14 +18,6 @@ const TABS = [
   { key: "intents", label: "Intents", icon: Target },
   { key: "guardrail", label: "Guardrail", icon: ShieldCheck },
 ];
-
-const WAHA_STATUS_LABEL = {
-  WORKING: { label: "Terhubung", tone: "success" },
-  SCAN_QR_CODE: { label: "Menunggu Kode/Scan", tone: "warn" },
-  STARTING: { label: "Memulai…", tone: "warn" },
-  STOPPED: { label: "Terputus", tone: "muted" },
-  FAILED: { label: "Gagal/Terputus", tone: "danger" },
-};
 
 function slugifyCode(code) {
   return (code || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "bot";
@@ -96,157 +88,21 @@ function CloudApiConnectionTab({ bot, onChange }) {
 }
 
 function ConnectionTab({ bot, onChange }) {
-  const [mode, setMode] = useState(bot.channel_type === "whatsapp_cloud" ? "cloud" : "waha");
-  const isLinked = bot.channel_type === "whatsapp" && bot.channel_id;
-  const session = bot.channel_id || slugifyCode(bot.code);
-  const [status, setStatus] = useState(null);
-  const [phone, setPhone] = useState("");
-  const [pairCode, setPairCode] = useState(null);
-  const [busy, setBusy] = useState(false);
-
-  const load = async () => {
-    if (!isLinked) { setStatus(null); return; }
-    try {
-      const { data } = await api.get(`/waha/sessions/${session}/status`);
-      setStatus(data);
-      if (data.status === "WORKING") setPairCode(null);
-    } catch (e) { /* diam */ }
-  };
-
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 8000);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bot.channel_id]);
-
-  const connect = async () => {
-    const clean = phone.replace(/[^0-9]/g, "");
-    if (!clean || clean.length < 8) { toast.error("Isi nomor WhatsApp yang valid (format 62xxx)"); return; }
-    setBusy(true);
-    setPairCode(null);
-    try {
-      const { data } = await api.post(`/waha/sessions/${session}/connect`, { phone_number: clean, bot_id: bot.id });
-      setPairCode(data.code);
-      toast.success("Kode pairing dibuat - masukkan sekarang di WhatsApp");
-      onChange({ channel_type: "whatsapp", channel_id: session });
-      load();
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Gagal membuat kode pairing");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const disconnect = async () => {
-    if (!window.confirm("Putuskan koneksi WhatsApp AI ini? Nomor tidak akan menerima/membalas pesan sampai disambungkan lagi.")) return;
-    setBusy(true);
-    try {
-      await api.post(`/waha/sessions/${session}/disconnect`);
-      toast.success("Koneksi diputus");
-      setPairCode(null);
-      load();
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Gagal memutus koneksi");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const st = WAHA_STATUS_LABEL[status?.status] || { label: isLinked ? (status?.status || "Memuat…") : "Belum tersambung", tone: "neutral" };
-  const nomor = status?.me?.id ? status.me.id.split("@")[0] : null;
-
-  const ModeSwitcher = (
-    <div className="max-w-xl flex gap-2 mb-4" data-testid={`bot-connection-mode-${bot.id}`}>
-      <button
-        onClick={() => setMode("cloud")}
-        className={`flex-1 text-sm font-medium px-3 py-2 rounded-md border ${mode === "cloud" ? "border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))]" : "border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]"}`}
-      >
-        Meta Cloud API (resmi)
-      </button>
-      <button
-        onClick={() => setMode("waha")}
-        className={`flex-1 text-sm font-medium px-3 py-2 rounded-md border ${mode === "waha" ? "border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))]" : "border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]"}`}
-      >
-        WAHA (QR/Pairing)
-      </button>
-    </div>
-  );
-
-  if (mode === "cloud") {
-    return (
-      <div>
-        {ModeSwitcher}
-        <CloudApiConnectionTab bot={bot} onChange={onChange} />
-      </div>
-    );
-  }
-
+  // WAHA (QR/pairing self-hosted) dihapus 2026-08-01, digantikan Fonnte sepenuhnya -
+  // Fonnte TIDAK punya alur "connect" lewat dashboard ini (device dipasangkan &
+  // webhook-nya diisi manual langsung di dashboard Fonnte, lihat memory proyek), jadi
+  // satu-satunya channel yang masih bisa disambungkan lewat UI di sini adalah Cloud API.
+  const isFonnte = bot.channel_type === "fonnte";
   return (
     <div>
-      {ModeSwitcher}
-    <div className="pelangi-panel p-5 space-y-4 max-w-xl" data-testid={`bot-connection-${bot.id}`}>
-      <div className="flex items-center justify-between">
-        <div className="font-[Fraunces] font-semibold">Koneksi WhatsApp untuk AI ini</div>
-        {isLinked && (
-          <button onClick={load} className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]" title="Refresh status">
-            <RefreshCw className="w-4 h-4" />
-          </button>
-        )}
-      </div>
-      <div className="text-xs text-[hsl(var(--muted-foreground))]">
-        Setiap AI bisa punya nomor WhatsApp sendiri-sendiri - pesan yang masuk ke nomor ini otomatis dijawab oleh AI "{bot.name}" sesuai tools & knowledge yang diatur di tab lain.
-      </div>
-
-      <div className="flex items-center gap-2">
-        {status?.status === "WORKING" ? <Wifi className="w-4 h-4 text-emerald-600" /> : <WifiOff className="w-4 h-4 text-[hsl(var(--muted-foreground))]" />}
-        <Badge tone={st.tone}>{st.label}</Badge>
-        {nomor && <span className="text-xs text-[hsl(var(--muted-foreground))]">Nomor: {nomor}</span>}
-      </div>
-
-      <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md p-2.5">
-        Jangan sambung/putus berulang-ulang dalam waktu singkat — WhatsApp bisa memberi
-        pembatasan sementara ("reachout timelock") pada nomor. Kalau baru gagal, tunggu
-        beberapa menit sebelum coba lagi.
-      </div>
-
-      {status?.status !== "WORKING" && (
-        <div className="space-y-2">
-          <label className="text-xs font-medium">Nomor WhatsApp yang mau disambungkan ke AI ini</label>
-          <div className="flex gap-2">
-            <input
-              value={phone} onChange={(e) => setPhone(e.target.value)}
-              placeholder="628123456789" data-testid={`bot-connection-phone-${bot.id}`}
-              className="flex-1 px-3 py-2 rounded-md border border-[hsl(var(--border))] text-sm"
-            />
-            <button
-              onClick={connect} disabled={busy} data-testid={`bot-connection-connect-${bot.id}`}
-              className="inline-flex items-center gap-1.5 bg-[hsl(var(--primary))] text-white text-sm font-medium px-4 py-2 rounded-md hover:opacity-90 disabled:opacity-50"
-            >
-              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : null} Sambungkan
-            </button>
-          </div>
-          {pairCode && (
-            <div className="text-sm bg-emerald-50 border border-emerald-200 rounded-md p-3" data-testid={`bot-connection-paircode-${bot.id}`}>
-              Kode pairing: <span className="font-mono font-bold text-base">{pairCode}</span>
-              <div className="text-xs text-[hsl(var(--muted-foreground))] mt-1">
-                Buka WhatsApp di HP nomor tsb → titik tiga/Settings → Perangkat Tertaut → Tautkan Perangkat
-                → "Tautkan dengan nomor telepon" → masukkan kode ini sekarang (berlaku singkat).
-              </div>
-            </div>
-          )}
+      {isFonnte && (
+        <div className="max-w-xl text-xs text-[hsl(var(--muted-foreground))] bg-stone-50 border border-[hsl(var(--border))] rounded-md p-3 mb-4" data-testid={`bot-connection-fonnte-note-${bot.id}`}>
+          AI ini sekarang tersambung lewat <b>Fonnte</b> (token: <span className="font-mono">{bot.channel_id}</span>) -
+          dikelola langsung dari dashboard Fonnte (pairing device & webhook URL), bukan dari sini.
+          Form di bawah khusus untuk channel Meta Cloud API.
         </div>
       )}
-
-      {status?.status === "WORKING" && (
-        <button
-          onClick={disconnect} disabled={busy} data-testid={`bot-connection-disconnect-${bot.id}`}
-          className="inline-flex items-center gap-1.5 text-sm font-medium px-4 py-2 rounded-md border border-[hsl(var(--border))] hover:bg-stone-50 disabled:opacity-50"
-        >
-          {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : null} Putuskan Koneksi
-        </button>
-      )}
-    </div>
+      <CloudApiConnectionTab bot={bot} onChange={onChange} />
     </div>
   );
 }
@@ -394,8 +250,10 @@ function ProfileTab({ bot, onChange }) {
                dgn value yang tidak match opsi mana pun, begitu form Profile ini disimpan
                (utk alasan apa pun, mis. ubah field lain), channel_type ikut ke-reset diam-
                diam ke opsi lain (kejadian nyata: bot Harmoni jadi "whatsapp", webhook
-               Fonnte langsung 404, tamu chat tidak dibalas sama sekali). */}
-            {["simulator", "fonnte", "whatsapp_cloud", "whatsapp", "telegram", "website", "mobile"].map((c) => <option key={c} value={c}>{c}</option>)}
+               Fonnte langsung 404, tamu chat tidak dibalas sama sekali). "whatsapp" (WAHA)
+               dihapus dari daftar 2026-08-01 - WAHA sendiri sudah dihapus, tidak ada bot
+               yang masih pakai nilai ini (dicek db.ai_bots sebelum dihapus). */}
+            {["simulator", "fonnte", "whatsapp_cloud", "telegram", "website", "mobile"].map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </F>
         <F label="Bahasa">

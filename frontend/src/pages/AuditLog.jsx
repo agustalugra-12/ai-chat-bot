@@ -42,7 +42,7 @@ export default function AuditLog() {
       <PageHeader
         tid="audit-log-header"
         title="Audit Log"
-        subtitle="Riwayat aksi admin sensitif — konfigurasi Integrasi PMS, koneksi WAHA, Human Handover."
+        subtitle="Riwayat aksi admin sensitif — konfigurasi Integrasi PMS, koneksi WhatsApp, Human Handover."
         right={
           <button onClick={load} className="inline-flex items-center gap-1.5 text-sm px-3 py-2 rounded-md border border-[hsl(var(--border))] hover:bg-stone-50">
             <RefreshCw className="w-3.5 h-3.5" /> Refresh

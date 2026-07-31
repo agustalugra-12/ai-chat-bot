@@ -7,6 +7,7 @@ cukup panggil connector-nya.
 
 - pms_connector: Pelangi PMS (ketersediaan, booking request, tiket, status booking,
   business rules) - lihat backend/routes/integrasi_ai_bot.py di repo PMS untuk sisinya.
-- waha_connector: WAHA (WhatsApp gateway self-hosted) - channel adapter untuk kirim
-  pesan & kelola sesi WhatsApp.
+- fonnte_connector: Fonnte (WhatsApp gateway unofficial) - channel adapter aktif utk
+  kirim pesan (WAHA lama dihapus 2026-08-01, digantikan sepenuhnya oleh ini).
+- whatsapp_cloud_connector: WhatsApp Cloud API resmi Meta - channel alternatif.
 """

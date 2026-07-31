@@ -18,7 +18,6 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from db import db, new_id, utc_now_iso
-from connectors.waha_connector import WAHA_WEBHOOK_TOKEN
 
 PMS_API_BASE_URL = os.environ.get("PMS_API_BASE_URL", "")
 PMS_API_KEY = os.environ.get("PMS_API_KEY", "")
@@ -84,7 +83,7 @@ async def _pms_config(api_key_override: Optional[str] = None) -> dict:
         cfg = dict(PMS_INTEGRATION_DEFAULT)
         cfg["pms_base_url"] = PMS_API_BASE_URL
         cfg["pms_api_key"] = PMS_API_KEY
-        cfg["webhook_token"] = WAHA_WEBHOOK_TOKEN or secrets.token_hex(20)
+        cfg["webhook_token"] = secrets.token_hex(20)
         cfg["send_message_api_key"] = secrets.token_hex(20)
         cfg["updated_at"] = utc_now_iso()
         await db.pms_integration_config.insert_one(cfg)
@@ -99,7 +98,7 @@ async def _pms_config(api_key_override: Optional[str] = None) -> dict:
     if not merged.get("pms_api_key"):
         merged["pms_api_key"] = PMS_API_KEY
     if not merged.get("webhook_token"):
-        merged["webhook_token"] = WAHA_WEBHOOK_TOKEN
+        merged["webhook_token"] = secrets.token_hex(20)
     if api_key_override:
         merged["pms_api_key"] = api_key_override
     return merged
@@ -408,9 +407,9 @@ async def _sync_business_rules(api_key_override: Optional[str] = None) -> dict:
 
 async def _pms_alert_owner(pesan: str) -> bool:
     """Relay alert Telegram ke owner lewat bot Telegram PMS yang sudah ada (2026-07-20) -
-    dipakai waha_health_monitor untuk lapor masalah koneksi WhatsApp SENDIRI (bukan reuse
-    endpoint tiket/booking, ini murni notifikasi infrastruktur). Best-effort, tidak raise -
-    kegagalan alert tidak boleh mengganggu logika health monitor itu sendiri."""
+    notifikasi infrastruktur/keamanan lintas modul (gagal kirim WA, human handover,
+    hallucination guard, dst - bukan endpoint tiket/booking biasa). Best-effort, tidak
+    raise - kegagalan alert tidak boleh mengganggu logika pemanggilnya."""
     cfg = await _pms_config()
     if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
         return False
@@ -423,5 +422,5 @@ async def _pms_alert_owner(pesan: str) -> bool:
             )
         return resp.status_code < 400
     except Exception as e:
-        logging.getLogger("waha_health").warning(f"Gagal kirim alert owner: {e}")
+        logging.getLogger("pms_connector").warning(f"Gagal kirim alert owner: {e}")
         return False
