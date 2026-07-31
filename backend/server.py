@@ -1091,6 +1091,46 @@ async def _tool_catat_kedatangan_tamu(args: dict, conv: dict) -> dict:
     return {"ok": True, "tool": "catat_kedatangan_tamu", "tiket_id": tiket.get("id")}
 
 
+@register_tool("catat_klaim_stamp_member", {"member_stamp_claim"})
+async def _tool_catat_klaim_stamp_member(args: dict, conv: dict) -> dict:
+    """Migrasi kartu member fisik ke pencatatan digital (2026-08-01, permintaan Agus) -
+    banyak tamu member Pelangi masih pakai kartu stamp fisik yang sering TIDAK cocok
+    dengan "Total Kunjungan" yang tercatat sistem (mis. kunjungan lama sebelum sistem ini
+    ada). AI menanyakan & mencatat KLAIM tamu soal jumlah stamp kartunya - TAPI SENGAJA
+    TIDAK LANGSUNG mengubah data resmi (total_kunjungan) yang menentukan diskon member
+    (sampai 100% di kedatangan ke-10, risiko fraud nyata kalau dipercaya mentah-mentah
+    tanpa verifikasi). Sama prinsipnya dengan create_booking/cancel_booking/
+    catat_kedatangan_tamu - tool ini cuma membuat TIKET untuk staf verifikasi & proses
+    manual (cek kartu fisik cocok/tidak saat tamu check-in, baru update Total Kunjungan
+    di halaman Data Tamu kalau sesuai, sekalian ambil/simpan kartu fisiknya sesuai arahan
+    Agus - "penggunaan kartu member mulai dikurangi, mulai dicatat otomatis" MELALUI
+    proses verifikasi staf ini, bukan AI main percaya omongan tamu begitu saja)."""
+    whatsapp = args.get("whatsapp") or conv.get("whatsapp") or ""
+    guest_name = args.get("guest_name") or conv.get("guest_name") or ""
+    try:
+        jumlah_stamp = int(args.get("jumlah_stamp"))
+    except (TypeError, ValueError):
+        return {"ok": False, "tool": "catat_klaim_stamp_member", "error": "jumlah_stamp wajib angka"}
+    if jumlah_stamp < 0 or jumlah_stamp > 9:
+        return {"ok": False, "tool": "catat_klaim_stamp_member",
+                 "error": "jumlah_stamp di luar rentang wajar (0-9, siklus kartu 10 stamp) - tanya ulang ke tamu, mungkin salah dengar/ketik"}
+    deskripsi = (
+        f"🎫 Tamu KLAIM kartu member fisik sudah stamp ke-{jumlah_stamp} (berarti kedatangan "
+        f"ke-{jumlah_stamp + 1} kalau benar). PERLU VERIFIKASI STAF - klaim ini BELUM diverifikasi "
+        f"kartu fisik, JANGAN langsung dipakai sebagai diskon final. Saat tamu check-in: (1) cek "
+        f"kartu fisiknya, cocokkan jumlah stamp asli dengan klaim ini, (2) kalau cocok, update "
+        f"'Total Kunjungan' tamu ini di halaman Data Tamu jadi {jumlah_stamp}, (3) ambil & simpan "
+        f"kartu fisiknya (program migrasi ke pencatatan otomatis, sesuai arahan Agus)."
+    )
+    hasil = await _pms_buat_tiket("service_request", deskripsi, whatsapp, guest_name, "",
+                                  api_key_override=conv.get("_pms_api_key_override"))
+    if not hasil.get("ok"):
+        return {"ok": False, "tool": "catat_klaim_stamp_member", "error": hasil.get("error")}
+    tiket = hasil.get("tiket") or {}
+    return {"ok": True, "tool": "catat_klaim_stamp_member", "tiket_id": tiket.get("id"),
+            "klaim_kedatangan_ke": jumlah_stamp + 1}
+
+
 def _rename_kode_permintaan(items: list) -> list:
     """PMS ngembaliin tiap item dengan 2 field "kode" yang beda arti - top-level "kode"
     itu kode PERMINTAAN booking (REQ-...), sedangkan booking_ringkasan[].kode itu kode
@@ -2502,6 +2542,18 @@ async def fonnte_webhook_receive(bot_id: str, request: Request):
         guest_name = payload.get("name") or sender
         if not sender or not message_text:
             return {"ok": True, "diabaikan": "tanpa nomor pengirim/isi pesan"}
+        # Foto/media dari tamu (2026-08-01, dikonfirmasi live lewat log payload asli -
+        # paket Fonnte yg dipakai TIDAK menyertakan url/filename apa pun utk pesan media,
+        # field message-nya cuma literal string "non-text message") - JANGAN diteruskan
+        # apa adanya ke AI sbg kalau itu teks yang tamu ketik sungguhan (bisa bikin AI
+        # bingung/salah tafsir "non-text message" sbg ucapan tamu) - ganti jadi instruksi
+        # jujur, AI tidak bisa melihat gambar sama sekali di paket ini.
+        if message_text.lower() in ("non-text message", "non-button message"):
+            message_text = (
+                "[SISTEM: tamu mengirim foto/gambar/media, TAPI paket WhatsApp yang dipakai TIDAK BISA "
+                "menampilkan isinya ke kamu - kamu TIDAK melihat apa pun dari gambar itu, JANGAN berpura-pura "
+                "melihatnya. Minta tamu jelaskan lewat teks apa yang ingin disampaikan.]"
+            )
 
         session_id = f"fon-{bot_id}-{sender}"
         _fonnte_pending_messages.setdefault(session_id, []).append(message_text)
