@@ -1154,6 +1154,24 @@ def _channel_info_from_conv(conv: dict) -> tuple[str, Optional[str]]:
     return "whatsapp", conv.get("waha_session")
 
 
+async def _channel_info_from_property_slug(property_slug: Optional[str]) -> Optional[tuple[str, Optional[str]]]:
+    """Fallback channel resolution dari `property_slug` (2026-07-31, bug nyata ditemukan
+    lewat audit alur booking/payment/invoice) - dipakai `_send_wa_transactional`/
+    `_send_wa_document_smart` KHUSUS kalau tamu belum pernah punya percakapan AI sama
+    sekali (jadi `_channel_info_from_conv` tidak bisa dipakai). Sebelumnya kasus ini SELALU
+    hardcode `whatsapp_cloud` + nomor Pelangi - salah utk tamu Harmoni (device Fonnte
+    sendiri), DAN ternyata juga sudah basi utk Pelangi sendiri (bot "Admin pelangi"
+    sekarang channel_type-nya "fonnte", bukan Cloud API lagi). None kalau tidak ada bot
+    non-simulator utk property_slug ini - caller WAJIB tetap punya fallback lama sendiri
+    supaya tidak pernah gagal total kalau data ai_bots belum lengkap/salah setting."""
+    if not property_slug:
+        return None
+    bot = await db.ai_bots.find_one({"property_slug": property_slug, "channel_type": {"$nin": [None, "", "simulator"]}})
+    if not bot or not bot.get("channel_type"):
+        return None
+    return bot["channel_type"], bot.get("channel_id")
+
+
 async def _send_wa_smart(conv: dict, text: str) -> bool:
     """Kirim pesan ke tamu WhatsApp lewat channel yang SAMA dengan yang dipakai tamu itu
     ngobrol (WAHA, Cloud API, atau Fonnte), lihat `_channel_info_from_conv`. Dipakai baik
@@ -1190,7 +1208,8 @@ def _last_inbound_at(conv: Optional[dict]) -> Optional[datetime]:
 
 
 async def _send_wa_transactional(conv: Optional[dict], text: str, whatsapp_fallback: Optional[str] = None,
-                                  template_name: Optional[str] = None, template_params: Optional[List[str]] = None) -> bool:
+                                  template_name: Optional[str] = None, template_params: Optional[List[str]] = None,
+                                  property_slug: Optional[str] = None) -> bool:
     """Kirim notifikasi TRANSAKSIONAL yang PMS picu sendiri (approve booking, pembatalan,
     kamar siap, dst) - BEDA dari `_send_wa_smart` (balasan chat langsung/staf): fungsi ini
     sadar jendela layanan 24 jam Meta (2026-07-26, ditemukan lewat audit - 8 titik notifikasi
@@ -1199,7 +1218,12 @@ async def _send_wa_transactional(conv: Optional[dict], text: str, whatsapp_fallb
     Kalau di luar jendela (atau tidak ada percakapan WA sama sekali, mis. tamu batalkan
     lewat web publik bukan WA), WAJIB pakai Message Template yang sudah disetujui Meta -
     `template_name`/`template_params` optional supaya pemanggil lama tanpa template masih
-    jalan (nyoba teks bebas dulu, WAHA tidak kena aturan ini sama sekali)."""
+    jalan (nyoba teks bebas dulu, WAHA tidak kena aturan ini sama sekali).
+    `property_slug` (2026-07-31) - dipakai HANYA kalau `conv` kosong (tamu belum pernah
+    chat AI) supaya channel-nya di-resolve dari bot properti yang benar (lihat
+    `_channel_info_from_property_slug`), bukan hardcode Cloud API nomor Pelangi yang
+    ternyata salah utk Harmoni (device Fonnte sendiri) DAN sudah basi jg utk Pelangi
+    sendiri (bot Pelangi sekarang jg Fonnte)."""
     whatsapp = (conv or {}).get("whatsapp") or whatsapp_fallback
     if not whatsapp:
         return False
@@ -1207,7 +1231,8 @@ async def _send_wa_transactional(conv: Optional[dict], text: str, whatsapp_fallb
     if conv:
         channel, identifier = _channel_info_from_conv(conv)
     else:
-        channel, identifier = "whatsapp_cloud", WHATSAPP_CLOUD_PHONE_NUMBER_ID
+        resolved = await _channel_info_from_property_slug(property_slug)
+        channel, identifier = resolved if resolved else ("whatsapp_cloud", WHATSAPP_CLOUD_PHONE_NUMBER_ID)
 
     if channel == "fonnte":
         # Fonnte - bukan API resmi Meta, tidak ada pembatasan jendela 24 jam (sama spt WAHA).
@@ -1235,8 +1260,9 @@ async def _send_wa_transactional(conv: Optional[dict], text: str, whatsapp_fallb
     return False
 
 
-async def _send_wa_document_smart(conv: dict, filename: str, mimetype: str, data_base64: str, caption: str = "",
-                                   url: str = "") -> bool:
+async def _send_wa_document_smart(conv: Optional[dict], filename: str, mimetype: str, data_base64: str, caption: str = "",
+                                   url: str = "", whatsapp_fallback: Optional[str] = None,
+                                   property_slug: Optional[str] = None) -> bool:
     """Sibling dokumen dari `_send_wa_smart` - sama polanya, dipakai relay /send-document.
 
     `url` (2026-07-31, Fonnte) - paket Fonnte yang dipakai Agus TIDAK support attachment
@@ -1244,18 +1270,29 @@ async def _send_wa_document_smart(conv: dict, filename: str, mimetype: str, data
     dikirim sbg LINK di teks biasa, bukan attachment - caller (routes/pesan_whatsapp.py
     di PMS) WAJIB kirim `url` publik ke dokumennya kalau ingin dokumen itu sampai lewat
     Fonnte (base64 saja tidak cukup, beda dari whatsapp_cloud/WAHA yang upload
-    langsung dari base64)."""
-    if not conv.get("whatsapp"):
+    langsung dari base64).
+    `whatsapp_fallback`/`property_slug` (2026-07-31) - sama pola dgn `_send_wa_transactional`:
+    kalau tamu/staf ini belum pernah punya percakapan AI (`conv` None, mis. voucher
+    tamu baru atau slip gaji staf yang belum pernah chat), channel di-resolve dari bot
+    properti yang benar via `property_slug` - BUKAN lagi hardcode Cloud API nomor Pelangi
+    (bug nyata: salah utk Harmoni, dan sudah basi jg utk Pelangi sendiri sejak bot Pelangi
+    pindah ke Fonnte)."""
+    whatsapp = (conv or {}).get("whatsapp") or whatsapp_fallback
+    if not whatsapp:
         return False
-    channel, identifier = _channel_info_from_conv(conv)
+    if conv:
+        channel, identifier = _channel_info_from_conv(conv)
+    else:
+        resolved = await _channel_info_from_property_slug(property_slug)
+        channel, identifier = resolved if resolved else ("whatsapp_cloud", WHATSAPP_CLOUD_PHONE_NUMBER_ID)
     if channel == "whatsapp_cloud":
-        return await _wa_cloud_send_document(conv["whatsapp"], filename, data_base64, caption, phone_number_id=identifier or "")
+        return await _wa_cloud_send_document(whatsapp, filename, data_base64, caption, phone_number_id=identifier or "")
     if channel == "fonnte":
         if not url:
             logging.getLogger("fonnte").warning(f"Dokumen '{filename}' tidak ada url publik - tidak bisa dikirim lewat Fonnte (paket tanpa attachment)")
             return False
-        return await _fonnte_send_link_message(identifier or "", conv["whatsapp"], caption, url, label="Unduh dokumen")
-    return await _waha_send_file(f"{conv['whatsapp']}@c.us", filename, mimetype, data_base64, caption, session=identifier or WAHA_SESSION)
+        return await _fonnte_send_link_message(identifier or "", whatsapp, caption, url, label="Unduh dokumen")
+    return await _waha_send_file(f"{whatsapp}@c.us", filename, mimetype, data_base64, caption, session=identifier or WAHA_SESSION)
 
 
 async def _run_chat_turn(
@@ -1973,6 +2010,11 @@ class SendMessageIn(BaseModel):
     message: str
     template_name: Optional[str] = None
     template_params: Optional[List[str]] = None
+    # (2026-07-31) properti mana notifikasi ini tentang (mis. "pelangi"/"harmoni") - dipakai
+    # fallback channel resolution kalau nomor ini belum pernah punya percakapan AI, lihat
+    # _channel_info_from_property_slug. Opsional supaya caller lama tanpa field ini tetap jalan
+    # (fallback ke Cloud API Pelangi seperti sebelumnya).
+    property_slug: Optional[str] = None
 
 
 @api.post("/send-message")
@@ -2010,7 +2052,8 @@ async def send_message_relay(body: SendMessageIn, request: Request, _rl: None = 
     # dari input manual staf) - itu perilaku lama, tetap aman dipertahankan.
     conv = await db.conversations.find_one({"whatsapp": digits}, sort=[("updated_at", -1)])
     ok = await _send_wa_transactional(conv, body.message, whatsapp_fallback=digits,
-                                       template_name=body.template_name, template_params=body.template_params)
+                                       template_name=body.template_name, template_params=body.template_params,
+                                       property_slug=body.property_slug)
     await _pms_log("/send-message", "POST", 200 if ok else 502, 0, ok, f"to {digits}")
     if ok:
         await _catat_pesan_sistem(conv, digits, body.message)
@@ -2029,6 +2072,8 @@ class SendDocumentIn(BaseModel):
     # email_service.py di repo PMS) supaya dokumen bisa dikirim lewat Fonnte (paket
     # Agus tidak support attachment sama sekali) sbg link, bukan attachment base64.
     url: str = ""
+    # (2026-07-31) sama alasannya dgn SendMessageIn.property_slug - lihat catatan di sana.
+    property_slug: Optional[str] = None
 
 
 @api.post("/send-document")
@@ -2045,16 +2090,15 @@ async def send_document_relay(body: SendDocumentIn, request: Request, _rl: None 
     digits = _normalize_phone(body.to or "")
     if not digits or not body.data_base64:
         raise HTTPException(400, "to/data_base64 tidak valid")
+    # Bug nyata ditemukan & diperbaiki (2026-07-31, audit alur booking/payment/invoice):
+    # cabang "tidak ada percakapan" sebelumnya SELALU hardcode Cloud API nomor Pelangi
+    # langsung (bypass _send_wa_document_smart sepenuhnya) - salah utk dokumen (voucher/
+    # slip gaji) properti Harmoni (device Fonnte sendiri), dan basi jg utk Pelangi sendiri
+    # (bot Pelangi sekarang Fonnte, bukan Cloud API lagi). Sekarang selalu lewat
+    # _send_wa_document_smart yang resolve channel dari property_slug kalau conv kosong.
     conv = await db.conversations.find_one({"whatsapp": digits}, sort=[("updated_at", -1)])
-    if conv:
-        ok = await _send_wa_document_smart(conv, body.filename, body.mimetype, body.data_base64, body.caption, url=body.url)
-    else:
-        # Tidak ada percakapan tercatat (mis. staf yang belum pernah chat AI, lihat
-        # routes/payroll.py) - default ke Cloud API (2026-07-31, WAHA dihapus dari
-        # sistem, sebelumnya fallback ini hardcode WAHA & akan diam-diam gagal total
-        # begitu WAHA tidak ada lagi).
-        ok = await _wa_cloud_send_document(digits, body.filename, body.data_base64, body.caption,
-                                            phone_number_id=WHATSAPP_CLOUD_PHONE_NUMBER_ID)
+    ok = await _send_wa_document_smart(conv, body.filename, body.mimetype, body.data_base64, body.caption,
+                                       url=body.url, whatsapp_fallback=digits, property_slug=body.property_slug)
     await _pms_log("/send-document", "POST", 200 if ok else 502, 0, ok, f"to {digits}")
     if ok:
         catatan = f"📎 Dokumen dikirim: {body.filename}" + (f" — {body.caption}" if body.caption else "")
