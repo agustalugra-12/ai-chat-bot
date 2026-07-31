@@ -313,18 +313,25 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
 
     if rooms:
         # Data live dari Pelangi PMS (bukan data lokal ai-chat-bot) - lihat _pms_ketersediaan
-        # di server.py. Skema: {"tipe","tarif_day_use","tarif_menginap","kamar_tersedia",
-        # "estimasi_kosong_lagi"?, "estimasi_kamar_nomor"?} - dua field terakhir HANYA ada
-        # kalau penuhnya tipe itu HARI INI karena kamar Day Use yang akan checkout (2026-07-19,
-        # lihat ai_bot_ketersediaan di integrasi_ai_bot.py) - kalau tipe 0 kamar TANPA field
-        # itu, artinya penuh karena tamu Menginap (atau bukan hari ini) - JANGAN PERNAH
+        # di server.py. Skema: {"tipe","tarif_day_use","tarif_menginap",
+        # "tarif_menginap_dengan_sarapan","kamar_tersedia","estimasi_kosong_lagi"?,
+        # "estimasi_kamar_nomor"?} - dua field terakhir HANYA ada kalau penuhnya tipe itu
+        # HARI INI karena kamar Day Use yang akan checkout (2026-07-19, lihat
+        # ai_bot_ketersediaan di integrasi_ai_bot.py) - kalau tipe 0 kamar TANPA field itu,
+        # artinya penuh karena tamu Menginap (atau bukan hari ini) - JANGAN PERNAH
         # menawarkan estimasi kosong dalam kondisi itu, wajib bilang "penuh" apa adanya.
+        # `tarif_menginap_dengan_sarapan` (2026-07-31) - dihitung server-side PMS (tarif
+        # menginap + BREAKFAST_PRICE), BUKAN dihitung ulang di sini - sebelumnya AI sama
+        # sekali tidak tahu harga sarapan, bug nyata ditemukan lewat laporan user.
         parts.append(f"# KETERSEDIAAN KAMAR HARI INI ({rooms[0].get('_tanggal', '-')}, live dari PMS)")
         for r in rooms:
             baris = (
                 f"- Tipe {r['tipe']}: {r['kamar_tersedia']} kamar kosong | "
-                f"Day Use Rp {int(r['tarif_day_use']):,} (6 jam) | Menginap Rp {int(r['tarif_menginap']):,}/malam"
+                f"Day Use Rp {int(r['tarif_day_use']):,} (6 jam) | "
+                f"Menginap Rp {int(r['tarif_menginap']):,}/malam (tanpa sarapan)"
             )
+            if r.get("tarif_menginap_dengan_sarapan"):
+                baris += f" | Rp {int(r['tarif_menginap_dengan_sarapan']):,}/malam (dengan sarapan)"
             if r["kamar_tersedia"] == 0 and r.get("estimasi_kosong_lagi"):
                 baris += (f" | PENUH tapi Kamar {r['estimasi_kamar_nomor']} diperkirakan siap lagi "
                           f"mulai {r['estimasi_kosong_lagi']} (Day Use akan checkout, PERKIRAAN bukan jaminan)")
