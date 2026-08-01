@@ -353,7 +353,7 @@ Tulis balasan alami ke tamu dulu (1-4 kalimat), lalu marker [[IMG: ...]] bila ki
 
 
 def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], settings: dict,
-                         room_photos: Optional[List[dict]] = None) -> str:
+                         room_photos: Optional[List[dict]] = None, timeline_kamar: Optional[List[dict]] = None) -> str:
     """Build a compact context string for the AI."""
     parts = []
     maps_line = f"Google Maps: {settings['maps_url']}\n" if settings.get("maps_url") else ""
@@ -446,6 +446,28 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
         parts.append(
             "(Ini snapshot HARI INI saja - untuk tanggal lain, WAJIB panggil tool check_availability, "
             "jangan menyimpulkan dari data di atas.)"
+        )
+
+    if timeline_kamar:
+        # Gambaran operasional kamar hari ini (2026-08-01, permintaan Agus) - SELALU
+        # tersedia di context tiap giliran chat (lihat _build_context di server.py), bukan
+        # cuma pas tamu tanya persis. Beda dari blok "KETERSEDIAAN KAMAR HARI INI" di atas
+        # (yang rekap per TIPE) - ini daftar per KAMAR individual, jadi AI bisa jawab
+        # pertanyaan spesifik ("kamar mana yang paling cepat kosong?") tanpa perlu tebak.
+        # Jam dikonversi ke WIB di sini (bukan diserahkan ke LLM sbg ISO UTC mentah) supaya
+        # tidak ada risiko salah hitung offset di sisi model.
+        parts.append("\n# JADWAL KAMAR HARI INI (per kamar, live dari PMS - PERKIRAAN bukan jaminan)")
+        for t in timeline_kamar:
+            try:
+                jam_wib = (datetime.fromisoformat(t["estimasi_siap"]) + timedelta(hours=7)).strftime("%H:%M")
+            except Exception:
+                continue
+            status_label = "Day Use sedang berlangsung" if t["status_sekarang"] == "day_use" else "sedang/menunggu dibersihkan"
+            parts.append(f"- Kamar {t['room_nomor']} ({t['tipe']}, {status_label}) - perkiraan siap pakai sekitar jam {jam_wib} WIB")
+        parts.append(
+            "Pakai daftar ini untuk jawab proaktif soal jadwal kamar (mis. \"kamar mana yang paling cepat kosong\", "
+            "\"jam berapa ada yang checkout\") TANPA perlu tamu minta jumlah kamar spesifik dulu - tapi tetap SELALU "
+            "sebut ini PERKIRAAN, bukan jaminan pasti (housekeeping/checkout riil bisa meleset dari estimasi)."
         )
 
     detail_kamar = [r for r in (room_photos or []) if r.get("facilities") or r.get("description")]

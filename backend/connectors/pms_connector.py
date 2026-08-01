@@ -33,13 +33,14 @@ PMS_DEFAULT_ENDPOINTS = {
     "cancel_request_path": "/api/integrasi-ai-bot/cancel-request",
     "alert_owner_path": "/api/integrasi-ai-bot/alert-owner",
     "menu_path": "/api/integrasi-ai-bot/menu",
+    "timeline_kamar_path": "/api/integrasi-ai-bot/timeline-kamar",
 }
 
 # Kapabilitas yang BENAR-BENAR tersambung ke kode (toggle di luar daftar ini boleh
 # disimpan tapi tidak akan pernah bikin AI melakukan apa pun - endpoint PMS-nya belum ada).
 # Jangan tambah entry baru di sini tanpa juga menyambungkan handler-nya di server.py.
 PMS_CAPABILITY_WIRED = {"check_availability", "create_booking", "create_maintenance_ticket", "check_booking_status",
-                         "create_service_request", "cancel_booking"}
+                         "create_service_request", "cancel_booking", "timeline_kamar"}
 PMS_DEFAULT_CAPABILITIES = {
     "check_availability": True,
     "create_booking": True,
@@ -52,6 +53,7 @@ PMS_DEFAULT_CAPABILITIES = {
     "payment": False,                 # belum diimplementasikan
     "checkin": False,                 # belum diimplementasikan
     "menu": True,
+    "timeline_kamar": True,          # 2026-08-01: gambaran operasional kamar hari ini (Day Use/housekeeping)
 }
 
 PMS_INTEGRATION_DEFAULT = {
@@ -200,6 +202,40 @@ async def _pms_menu(api_key_override: Optional[str] = None) -> List[dict]:
     except Exception as e:
         await _pms_log(path, "GET", None, int((time.time() - started) * 1000), False, str(e))
         logging.getLogger("pms").warning(f"Gagal menghubungi PMS menu: {e}")
+        return []
+
+
+async def _pms_timeline_kamar(api_key_override: Optional[str] = None) -> List[dict]:
+    """Gambaran operasional PENUH kamar hari ini, LIVE dari PMS - semua kamar Day Use yang
+    sedang berlangsung + kamar yang sedang/menunggu dibersihkan, masing-masing dengan
+    estimasi jam siap lagi (2026-08-01, permintaan Agus: "AI mendapat info dari PMS tentang
+    apapun itu, misal kamar Day Use akan checkout jam 12, ada juga jam 13, dan ada yang
+    sedang dibersihkan mungkin 30 menit lagi selesai" - PMS selalu sinkron ke AI bot).
+    Dipanggil tiap giliran chat di _build_context (SELALU disuntik, bukan tool on-demand),
+    sama pola dengan _pms_menu/_pms_ketersediaan."""
+    cfg = await _pms_config(api_key_override)
+    if not cfg["capabilities"].get("timeline_kamar"):
+        return []
+    if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
+        return []
+    path = cfg["endpoints"].get("timeline_kamar_path", PMS_DEFAULT_ENDPOINTS["timeline_kamar_path"])
+    started = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=10) as http:
+            resp = await http.get(
+                f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"},
+            )
+        latency_ms = int((time.time() - started) * 1000)
+        if resp.status_code >= 400:
+            await _pms_log(path, "GET", resp.status_code, latency_ms, False, resp.text)
+            logging.getLogger("pms").warning(f"PMS timeline-kamar gagal HTTP {resp.status_code}: {resp.text[:300]}")
+            return []
+        await _pms_log(path, "GET", resp.status_code, latency_ms, True)
+        return resp.json().get("timeline") or []
+    except Exception as e:
+        await _pms_log(path, "GET", None, int((time.time() - started) * 1000), False, str(e))
+        logging.getLogger("pms").warning(f"Gagal menghubungi PMS timeline-kamar: {e}")
         return []
 
 

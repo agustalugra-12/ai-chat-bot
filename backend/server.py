@@ -76,7 +76,7 @@ from connectors.pms_connector import (
     SYNC_KINDS,
     _pms_config, _pms_log, _pms_ketersediaan, _pms_buat_booking_request,
     _pms_buat_tiket, _pms_status_booking, _pms_status_member, _pms_ajukan_pembatalan, _sync_business_rules,
-    _pms_alert_owner, _pms_preview_harga, _pms_menu,
+    _pms_alert_owner, _pms_preview_harga, _pms_menu, _pms_timeline_kamar,
 )
 from connectors.webpelangi_connector import (
     _web_content_config, _sync_hotel_profile, _sync_faq,
@@ -715,11 +715,20 @@ async def _get_guest_profile(whatsapp: Optional[str], property_slug: str = "pela
 
 
 async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None, whatsapp: Optional[str] = None,
-                          rooms: Optional[List[dict]] = None, menu: Optional[List[dict]] = None) -> str:
+                          rooms: Optional[List[dict]] = None, menu: Optional[List[dict]] = None,
+                          timeline_kamar: Optional[List[dict]] = None) -> str:
     if rooms is None:
         rooms = await _pms_ketersediaan()
     if menu is None:
         menu = await _pms_menu()
+    # Gambaran operasional kamar hari ini (2026-08-01, permintaan Agus: "AI mendapat info
+    # dari PMS tentang apapun itu... PMS selalu sinkron ke AI bot") - SELALU disuntik tiap
+    # giliran chat (bukan tool on-demand) supaya AI otomatis tahu ada Day Use yang akan
+    # checkout jam sekian / kamar sedang dibersihkan, tanpa perlu tamu tanya spesifik dulu.
+    # Pola sama dgn rooms/menu di atas - caller utama (_run_chat_turn) fetch duluan pakai
+    # api_key_override yang benar (multi-properti), di sini cuma fallback kalau tidak diisi.
+    if timeline_kamar is None:
+        timeline_kamar = await _pms_timeline_kamar()
 
     # Guard multi-properti (2026-07-31) - db.settings/db.rooms(lokal)/db.knowledge_base/
     # db.menu SEMUA masih 1 data global berisi konten PELANGI SAJA (alamat, foto kamar,
@@ -792,7 +801,7 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
     room_photos = await db.rooms.find(
         {"property_slug": property_slug}, {"name": 1, "photo_url": 1, "images": 1, "facilities": 1, "description": 1}
     ).to_list(50)
-    base = build_context_block(rooms, menu, kb, settings, room_photos)
+    base = build_context_block(rooms, menu, kb, settings, room_photos, timeline_kamar)
 
     if not is_pelangi_content:
         base += (
@@ -1606,9 +1615,10 @@ async def _run_chat_turn_locked(
     # dan supaya tipe kamar yang disebut AI selalu konsisten dengan yang di-tampilkan.
     rooms_now = await _pms_ketersediaan(api_key_override=conv["_pms_api_key_override"])
     menu_now = await _pms_menu(api_key_override=conv["_pms_api_key_override"])
+    timeline_kamar_now = await _pms_timeline_kamar(api_key_override=conv["_pms_api_key_override"])
     room_types = sorted({r["tipe"] for r in rooms_now if r.get("tipe")})
     system_prompt = await _system_prompt_for(bot, room_types=room_types)
-    context = await _build_context(query=message, bot=bot, whatsapp=conv.get("whatsapp") or whatsapp, rooms=rooms_now, menu=menu_now)
+    context = await _build_context(query=message, bot=bot, whatsapp=conv.get("whatsapp") or whatsapp, rooms=rooms_now, menu=menu_now, timeline_kamar=timeline_kamar_now)
     # Slot memory (2026-08-01) - suntik apa yang SUDAH diketahui dari booking_draft (lihat
     # dispatch tool di bawah) supaya AI tidak menanyakan ulang field yang tamu sudah jawab
     # di giliran sebelumnya - beda dari mengandalkan model menyimpulkan sendiri dari
