@@ -881,7 +881,7 @@ async def _tool_check_availability(args: dict, conv: dict) -> dict:
     try:
         rooms = await _pms_ketersediaan(
             tanggal=args.get("tanggal_checkin"), tipe=args.get("tipe"),
-            tanggal_checkout=args.get("tanggal_checkout"),
+            tanggal_checkout=args.get("tanggal_checkout"), jumlah_kamar=args.get("jumlah_kamar"),
             api_key_override=conv.get("_pms_api_key_override"),
         )
         return {"ok": True, "tool": "check_availability", "result": rooms}
