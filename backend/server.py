@@ -991,11 +991,16 @@ SERVICE_TYPE_LABEL = {
     "extra_bed": "Extra Bed", "extra_towel": "Extra Towel", "mineral_water": "Air Mineral",
     "cleaning": "Cleaning", "laundry": "Laundry", "motor_rental": "Sewa Motor",
     "airport_pickup": "Airport Pickup", "extra_breakfast": "Extra Breakfast",
+    # 2026-08-01, permintaan Agus - layanan KHUSUS yang butuh konfirmasi staf dulu (bisa/
+    # tidak dikerjakan TERGANTUNG kesiapan saat itu, harganya juga ditentukan staf, bukan
+    # tarif tetap) - beda dari layanan lain di atas yang staf tinggal sediakan/proses biasa.
+    "room_decoration": "Dekorasi Kamar", "birthday_anniversary": "Ucapan/Kejutan Ulang Tahun-Anniversary",
 }
 
 
 @register_tool("create_service_request", {"restaurant_order", "laundry_request", "housekeeping_request",
-                                           "room_service", "airport_pickup", "motor_rental"})
+                                           "room_service", "airport_pickup", "motor_rental",
+                                           "room_decoration", "birthday_anniversary"})
 async def _tool_create_service_request(args: dict, conv: dict) -> dict:
     """Diteruskan ke Pelangi PMS sebagai tiket (tipe='service_request', reuse mekanisme
     komplain/maintenance yang sama supaya staf benar-benar melihat & bisa menindaklanjuti -
