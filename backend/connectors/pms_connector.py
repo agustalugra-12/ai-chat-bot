@@ -129,7 +129,7 @@ async def _pms_log(endpoint: str, method: str, status_code: Optional[int], laten
 
 async def _pms_ketersediaan(tanggal: Optional[str] = None, tipe: Optional[str] = None,
                              tanggal_checkout: Optional[str] = None, jumlah_kamar: Optional[int] = None,
-                             api_key_override: Optional[str] = None) -> List[dict]:
+                             jam_checkin: Optional[str] = None, api_key_override: Optional[str] = None) -> List[dict]:
     """Ketersediaan & tarif kamar LIVE dari Pelangi PMS - satu-satunya sumber kebenaran,
     bukan koleksi `db.rooms` lokal ai-chat-bot (itu cuma dipakai fitur admin lokal lain,
     bukan untuk menjawab tamu)."""
@@ -148,6 +148,8 @@ async def _pms_ketersediaan(tanggal: Optional[str] = None, tipe: Optional[str] =
         params["tanggal_checkout"] = tanggal_checkout
     if jumlah_kamar:
         params["jumlah_kamar"] = jumlah_kamar
+    if jam_checkin:
+        params["jam_checkin"] = jam_checkin
     path = cfg["endpoints"]["ketersediaan_path"]
     started = time.time()
     try:
