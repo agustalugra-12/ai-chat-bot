@@ -2635,9 +2635,20 @@ async def fonnte_webhook_receive(bot_id: str, request: Request):
         # pribadinya sendiri sudah dikenal sistem sebagai "kontak darurat" (lihat
         # ai_service.py) - dipakai lagi di sini sbg identitas staf. Kalau nanti ada staf
         # lain, tambahkan nomornya (format 62xxx) ke set ini.
+        #
+        # Bug nyata ditemukan 2026-08-01 (keluhan Agus - dia mau test chat AI dari nomor
+        # pribadinya sendiri jadi susah): SEBELUMNYA setiap pesan dari nomor staf ke bot
+        # manapun langsung diintersep ke sini, apa pun isinya - kalau bukan persis "stop
+        # 62xxx"/"lanjut 62xxx", staf cuma dapat balasan error "Format command tidak
+        # dikenali", TIDAK PERNAH sampai ke AI sama sekali. Sekarang HANYA diintersep
+        # kalau kata pertama pesannya benar-benar salah satu keyword command - selain itu
+        # (termasuk staf sendiri mau ngetes chat sbg tamu biasa) lanjut normal ke pipeline
+        # AI seperti nomor manapun.
         if sender in STAFF_COMMAND_NUMBERS:
-            await _handle_staff_command(bot, token, sender, message_text)
-            return {"ok": True, "staff_command": True}
+            first_word = message_text.strip().split(None, 1)[0].lower() if message_text.strip() else ""
+            if first_word in STAFF_STOP_KEYWORDS or first_word in STAFF_RESUME_KEYWORDS:
+                await _handle_staff_command(bot, token, sender, message_text)
+                return {"ok": True, "staff_command": True}
 
         # Foto/media dari tamu (2026-08-01, dikonfirmasi live lewat log payload asli -
         # paket Fonnte yg dipakai TIDAK menyertakan url/filename apa pun utk pesan media,
