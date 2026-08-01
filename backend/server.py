@@ -2524,6 +2524,59 @@ async def _fonnte_debounced_dispatch(session_id: str) -> None:
         logging.getLogger("fonnte").warning(f"Gagal proses giliran ter-debounce utk {session_id}: {e}")
 
 
+# Command staf via WA (2026-08-01, permintaan Agus - lihat fonnte_webhook_receive).
+# Nomor pribadi Agus (sudah dikenal sistem sbg kontak darurat, ai_service.py) - tambahkan
+# nomor lain (format 62xxx, lewat _normalize_phone) kalau ada staf tambahan nanti.
+STAFF_COMMAND_NUMBERS = {"6287761611631"}
+STAFF_STOP_KEYWORDS = {"stop", "pause", "ambilalih", "ambil"}
+STAFF_RESUME_KEYWORDS = {"lanjut", "resume", "aktifkan", "lanjutkan"}
+
+
+async def _handle_staff_command(bot: dict, token: str, staff_sender: str, message_text: str) -> None:
+    """Parse & jalankan command staf ("stop 62812xxxx" / "lanjut 62812xxxx") yang dikirim
+    dari nomor pribadi staf ke nomor bot - alternatif ambil-alih chat TANPA buka PMS
+    (permintaan Agus: dia biasa balas tamu langsung dari WhatsApp HP, bukan dari kotak
+    reply Percakapan di PMS, jadi AI tidak pernah tahu dia sudah turun tangan - lihat
+    diskusi 2026-08-01). Selalu balas konfirmasi/error ke NOMOR STAF (bukan tamu) supaya
+    dia tahu command-nya berhasil/tidak tanpa perlu cek PMS."""
+    parts = message_text.strip().split(None, 1)
+    keyword = (parts[0].lower() if parts else "")
+    target_raw = parts[1] if len(parts) > 1 else ""
+    target = _normalize_phone(target_raw)
+
+    if keyword not in STAFF_STOP_KEYWORDS and keyword not in STAFF_RESUME_KEYWORDS:
+        await _fonnte_send_text(
+            token, staff_sender,
+            "Format command tidak dikenali. Contoh:\n"
+            "\"stop 6281234567890\" - hentikan AI utk tamu itu\n"
+            "\"lanjut 6281234567890\" - aktifkan AI lagi utk tamu itu",
+        )
+        return
+    if not target or sum(c.isdigit() for c in target) < 8:
+        await _fonnte_send_text(token, staff_sender, "Nomor tamu tidak valid/tidak disertakan. Contoh: \"stop 6281234567890\"")
+        return
+
+    conv = await db.conversations.find_one(
+        {"whatsapp": target, "bot_id": bot["_id"]}, sort=[("updated_at", -1)]
+    )
+    if not conv:
+        await _fonnte_send_text(token, staff_sender, f"Tidak ketemu percakapan aktif dgn nomor {target} di bot ini.")
+        return
+
+    if keyword in STAFF_STOP_KEYWORDS:
+        await db.conversations.update_one(
+            {"_id": conv["_id"]},
+            {"$set": {"status": "waiting_admin", "resolution": "handover", "updated_at": utc_now_iso()}},
+        )
+        await _fonnte_send_text(token, staff_sender, f"OK, AI dihentikan utk {conv.get('guest_name') or target}. Balas tamu langsung di WA seperti biasa.")
+    else:
+        await db.conversations.update_one(
+            {"_id": conv["_id"]},
+            {"$set": {"status": "active", "resolution": "handover", "updated_at": utc_now_iso()}},
+        )
+        await _fonnte_send_text(token, staff_sender, f"OK, AI aktif lagi utk {conv.get('guest_name') or target}.")
+
+
 @api.post("/webhook/fonnte/{bot_id}")
 async def fonnte_webhook_receive(bot_id: str, request: Request):
     """Terima pesan masuk dari Fonnte, DEBOUNCE dulu (lihat _fonnte_debounced_dispatch),
@@ -2554,6 +2607,16 @@ async def fonnte_webhook_receive(bot_id: str, request: Request):
         guest_name = payload.get("name") or sender
         if not sender or not message_text:
             return {"ok": True, "diabaikan": "tanpa nomor pengirim/isi pesan"}
+
+        # Command staf lewat WA (2026-08-01, permintaan Agus) - ambil alih/lanjutkan AI
+        # utk tamu tertentu langsung dari WhatsApp pribadi, TANPA buka PMS. Nomor
+        # pribadinya sendiri sudah dikenal sistem sebagai "kontak darurat" (lihat
+        # ai_service.py) - dipakai lagi di sini sbg identitas staf. Kalau nanti ada staf
+        # lain, tambahkan nomornya (format 62xxx) ke set ini.
+        if sender in STAFF_COMMAND_NUMBERS:
+            await _handle_staff_command(bot, token, sender, message_text)
+            return {"ok": True, "staff_command": True}
+
         # Foto/media dari tamu (2026-08-01, dikonfirmasi live lewat log payload asli -
         # paket Fonnte yg dipakai TIDAK menyertakan url/filename apa pun utk pesan media,
         # field message-nya cuma literal string "non-text message") - JANGAN diteruskan
