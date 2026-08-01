@@ -771,6 +771,10 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
                 "lewati bangunan restoran Tepi Beratan di sebelah kanan. Di ujung jalan "
                 "setelah melewati restoran itu, akan terlihat bangunan Harmoni Hills Village."
             ),
+            # Kontak darurat (2026-08-01, permintaan Agus) - nomor pribadinya sendiri,
+            # KHUSUS tamu tersesat/mau check-in mendesak di atas jam 23:00 (lihat guard di
+            # build_context_block, ai_service.py).
+            "emergency_phone": "087761611631",
         } if property_slug == "harmoni"
         else {}
     )

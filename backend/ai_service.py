@@ -368,6 +368,24 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
             " Tutup dengan tawaran bantu kalau tamu nyasar, mis. \"Kalau sempat nyasar, "
             "kabari saya ya Kak, saya bantu arahkan 😊\"\n"
         )
+    kontak_darurat = settings.get("emergency_phone") or ""
+    kontak_darurat_line = ""
+    if kontak_darurat:
+        # 2026-08-01, permintaan Agus - nomor kontak darurat BEDA dari telepon umum di atas,
+        # KHUSUS 2 situasi: (1) tamu benar-benar tersesat/tidak ketemu lokasi meski sudah
+        # dikasih link Maps+arah jalan kaki, (2) tamu mau check-in mendesak di atas jam 23:00
+        # (di luar jam kerja resepsionis biasa, butuh kontak langsung yang bisa diandalkan).
+        # WAJIB nomor yang bisa DITELEPON LANGSUNG (bukan cuma "kabari saya di chat" - chat
+        # bisa telat dibalas kalau tamu benar2 di jalan malam-malam/tersesat) - beda dari
+        # tawaran "kabari saya ya" di atas yang cukup buat kasus nyasar ringan.
+        kontak_darurat_line = (
+            f"\nKONTAK DARURAT: {kontak_darurat} - WAJIB langsung berikan nomor INI (bisa "
+            "ditelepon langsung, bukan cuma chat) di 2 situasi: (a) tamu bilang benar-benar "
+            "tersesat/tidak ketemu lokasi WALAU sudah dikasih link Maps & arah jalan kaki di "
+            "atas, (b) tamu mau check-in di atas jam 23:00 (di luar jam kerja resepsionis "
+            "normal). JANGAN berikan nomor ini untuk pertanyaan biasa/booking normal - HANYA "
+            "2 situasi darurat/mendesak itu.\n"
+        )
     parts.append(f"# INFO HOTEL\nNama: {settings.get('hotel_name','Pelangi Homestay')}\n"
                  f"Alamat: {settings.get('address','-')}\n"
                  f"Check-in: {settings.get('checkin_time','14:00')} | Check-out: {settings.get('checkout_time','12:00')} "
@@ -379,7 +397,7 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
                  "salah menolak tamu Day Use jam 10/11 pagi dengan alasan mengarang "
                  "\"Day Use mulai dari jam 14:00\" - tamu akhirnya batal booking di tempat "
                  "lain karena info salah ini - JANGAN PERNAH ulangi kesalahan ini).\n"
-                 f"Telepon: {settings.get('phone','-')}\n" + maps_line)
+                 f"Telepon: {settings.get('phone','-')}\n" + maps_line + kontak_darurat_line)
 
     if rooms:
         # Data live dari Pelangi PMS (bukan data lokal ai-chat-bot) - lihat _pms_ketersediaan
