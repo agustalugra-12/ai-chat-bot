@@ -431,6 +431,13 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
             if r["kamar_tersedia"] == 0 and r.get("estimasi_kosong_lagi"):
                 baris += (f" | PENUH tapi Kamar {r['estimasi_kamar_nomor']} diperkirakan siap lagi "
                           f"mulai {r['estimasi_kosong_lagi']} (Day Use akan checkout, PERKIRAAN bukan jaminan)")
+                if r.get("estimasi_durasi_dipersingkat"):
+                    baris += (f" - HANYA bisa dipakai sampai {r['estimasi_selesai_max']} "
+                              "(ada tamu Menginap check-in tak lama setelahnya, JANGAN janjikan "
+                              "durasi Day Use 6 jam penuh untuk slot ini, WAJIB sebutkan batas waktunya)")
+                if r.get("estimasi_alternatif"):
+                    alt_str = ", ".join(f"Kamar {a['room_nomor']} sekitar {a['siap_pakai']}" for a in r["estimasi_alternatif"])
+                    baris += f" | Kandidat lain yang juga akan siap: {alt_str} (boleh ditawarkan sebagai pilihan tambahan kalau relevan)"
             elif r["kamar_tersedia"] == 0:
                 baris += " | PENUH (tidak ada estimasi kapan kosong - jangan menebak/menjanjikan waktu)"
             parts.append(baris)
