@@ -216,6 +216,7 @@ async def _pms_buat_booking_request(args: dict, api_key_override: Optional[str] 
         "tanggal_checkout": args.get("tanggal_checkout"),
         "jumlah_kamar": args.get("jumlah_kamar"), "jumlah_tamu": args.get("jumlah_tamu"),
         "payment_option": args.get("payment_option"),
+        "metode_pembayaran": args.get("metode_pembayaran"),
         "diskon_diminta_tamu": bool(args.get("diskon_diminta_tamu")),
     }
     path = cfg["endpoints"]["booking_request_path"]
