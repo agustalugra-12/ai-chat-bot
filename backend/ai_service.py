@@ -447,6 +447,21 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
             "(Ini snapshot HARI INI saja - untuk tanggal lain, WAJIB panggil tool check_availability, "
             "jangan menyimpulkan dari data di atas.)"
         )
+        if timeline_kamar:
+            # Sambungan eksplisit ke blok "JADWAL KAMAR HARI INI" di bawah (2026-08-01,
+            # bug nyata ditemukan lewat tes live Agus: tamu minta 3 kamar Cottage, cuma 1
+            # tersedia di snapshot ini - AI cuma bilang "tidak tersedia" dan diam soal jadwal
+            # kamar meski datanya SUDAH ADA di context, karena tidak ada instruksi yang
+            # menghubungkan dua blok ini secara eksplisit). WAJIB ditulis di SINI (bukan
+            # cuma di blok JADWAL KAMAR sendiri) supaya AI membaca instruksi ini PAS lagi
+            # mengevaluasi kecukupan kamar, bukan berharap dia ingat blok terpisah di bawah.
+            parts.append(
+                "PENTING: kalau tamu minta LEBIH BANYAK kamar dari \"kamar kosong\" di atas untuk "
+                "tipe yang sama HARI INI, JANGAN langsung bilang \"tidak tersedia\" begitu saja - "
+                "cek dulu blok \"# JADWAL KAMAR HARI INI\" di bawah, kalau ada kamar tipe yang sama "
+                "di sana, sampaikan itu sebagai opsi menunggu (jujur sebagai PERKIRAAN) sebelum "
+                "menawarkan tanggal/tipe lain."
+            )
 
     if timeline_kamar:
         # Gambaran operasional kamar hari ini (2026-08-01, permintaan Agus) - SELALU
