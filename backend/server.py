@@ -2258,7 +2258,25 @@ async def send_message_relay(body: SendMessageIn, request: Request, _rl: None = 
     # API, jadi notifikasi (voucher, link bayar dst) gagal diam-diam saat WAHA down padahal
     # Cloud API-nya sehat. Fallback ke WAHA kalau belum pernah ada percakapan (mis. nomor
     # dari input manual staf) - itu perilaku lama, tetap aman dipertahankan.
-    conv = await db.conversations.find_one({"whatsapp": digits}, sort=[("updated_at", -1)])
+    #
+    # Bug nyata ditemukan 2026-08-01 (kasus Angga - dia chat ke bot Pelangi DAN Harmoni,
+    # booking barunya di Pelangi tapi link malah terkirim lewat nomor WA bot Harmoni):
+    # sebelumnya query ini SELALU ambil percakapan PALING BARU utk nomor ini apa pun
+    # propertinya - kalau tamu kebetulan lebih baru chat ke bot LAIN, notifikasi properti A
+    # terkirim lewat channel properti B (membingungkan, seolah nomor salah kirim). Sekarang
+    # kalau `property_slug` diisi (SELALU diisi oleh PMS - lihat _property_slug_untuk_relay
+    # di repo PMS), PRIORITASKAN percakapan milik bot properti yang SAMA dulu - baru fallback
+    # ke percakapan terbaru apa pun propertinya kalau memang belum pernah ada percakapan
+    # dengan properti ini sama sekali.
+    conv = None
+    if body.property_slug:
+        bot_ids_properti = [b["_id"] async for b in db.ai_bots.find({"property_slug": body.property_slug}, {"_id": 1})]
+        if bot_ids_properti:
+            conv = await db.conversations.find_one(
+                {"whatsapp": digits, "bot_id": {"$in": bot_ids_properti}}, sort=[("updated_at", -1)]
+            )
+    if not conv:
+        conv = await db.conversations.find_one({"whatsapp": digits}, sort=[("updated_at", -1)])
     ok = await _send_wa_transactional(conv, body.message, whatsapp_fallback=digits,
                                        template_name=body.template_name, template_params=body.template_params,
                                        property_slug=body.property_slug)
