@@ -457,13 +457,20 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
         # Jam dikonversi ke WIB di sini (bukan diserahkan ke LLM sbg ISO UTC mentah) supaya
         # tidak ada risiko salah hitung offset di sisi model.
         parts.append("\n# JADWAL KAMAR HARI INI (per kamar, live dari PMS - PERKIRAAN bukan jaminan)")
+        now_wib_date = (datetime.now(timezone.utc) + timedelta(hours=7)).date()
         for t in timeline_kamar:
             try:
-                jam_wib = (datetime.fromisoformat(t["estimasi_siap"]) + timedelta(hours=7)).strftime("%H:%M")
+                siap_wib = datetime.fromisoformat(t["estimasi_siap"]) + timedelta(hours=7)
             except Exception:
                 continue
+            jam_wib = siap_wib.strftime("%H:%M")
+            # Day Use yang check-in sore/malam bisa lewat tengah malam - WAJIB tandai "besok"
+            # kalau begitu, supaya AI tidak bilang jam yang sudah lewat hari ini (2026-08-01,
+            # ditemukan lewat verifikasi live: kamar 6 checkin 17:35 WIB, estimasi siap 00:05
+            # WIB HARI BERIKUTNYA - tanpa penanda ini terlihat seperti jam 00:05 yang sudah lewat).
+            besok = " (besok dini hari)" if siap_wib.date() > now_wib_date else ""
             status_label = "Day Use sedang berlangsung" if t["status_sekarang"] == "day_use" else "sedang/menunggu dibersihkan"
-            parts.append(f"- Kamar {t['room_nomor']} ({t['tipe']}, {status_label}) - perkiraan siap pakai sekitar jam {jam_wib} WIB")
+            parts.append(f"- Kamar {t['room_nomor']} ({t['tipe']}, {status_label}) - perkiraan siap pakai sekitar jam {jam_wib} WIB{besok}")
         parts.append(
             "Pakai daftar ini untuk jawab proaktif soal jadwal kamar (mis. \"kamar mana yang paling cepat kosong\", "
             "\"jam berapa ada yang checkout\") TANPA perlu tamu minta jumlah kamar spesifik dulu - tapi tetap SELALU "
