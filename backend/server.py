@@ -2608,6 +2608,28 @@ async def fonnte_webhook_receive(bot_id: str, request: Request):
         if not sender or not message_text:
             return {"ok": True, "diabaikan": "tanpa nomor pengirim/isi pesan"}
 
+        # Guard anti loop-antar-bot (2026-08-01, insiden nyata: nomor WA bot Pelangi &
+        # bot Harmoni sempat saling kirim pesan - masing-masing bot menganggap pesan
+        # sapaan bot lain sbg pesan tamu sungguhan, saling balas sapaan berulang tanpa
+        # henti selama ~2 menit / puluhan pesan sebelum ketahuan & dihentikan manual.
+        # Fonnte memang benar meneruskan pesan ini sbg "inbound" (nomor bot lain itu
+        # secara teknis eksternal dari sudut pandang device ini) - PMS-nya sendiri yang
+        # tidak tahu nomor itu adalah bot lain. Cek terhadap SEMUA nomor bot Fonnte aktif
+        # lain (field `own_whatsapp_number`, diisi manual sekali per bot) - kalau
+        # pengirim adalah bot kita sendiri yang lain, jangan proses sama sekali (bukan
+        # cuma waiting_admin - tidak perlu direspons apa pun, ini bukan tamu).
+        bot_numbers = {
+            b["own_whatsapp_number"] async for b in db.ai_bots.find(
+                {"channel_type": "fonnte", "own_whatsapp_number": {"$exists": True}, "_id": {"$ne": bot_id}},
+                {"own_whatsapp_number": 1},
+            )
+        }
+        if sender in bot_numbers:
+            logging.getLogger("fonnte").warning(
+                f"Pesan dari nomor bot kita sendiri ({sender}) ke bot {bot.get('code')} - diabaikan (anti loop-antar-bot)."
+            )
+            return {"ok": True, "diabaikan": "pengirim adalah nomor bot internal lain"}
+
         # Command staf lewat WA (2026-08-01, permintaan Agus) - ambil alih/lanjutkan AI
         # utk tamu tertentu langsung dari WhatsApp pribadi, TANPA buka PMS. Nomor
         # pribadinya sendiri sudah dikenal sistem sebagai "kontak darurat" (lihat
