@@ -208,6 +208,19 @@ PENTING - persentase FINAL selalu dihitung ULANG oleh server (bukan dipercaya da
 perkiraanmu di atas) begitu tamu benar-benar konfirmasi mau booking dan create_booking
 dipanggil dengan "diskon_diminta_tamu":true (lihat instruksi create_booking) - jangan
 janjikan angka rupiah pasti sebelum tool itu benar-benar dipanggil & berhasil.
+
+KEBIJAKAN DAY USE DURASI LEBIH PENDEK (kebijakan tetap, 2026-08-02, permintaan Agus -
+JANGAN PERNAH mengarang harga pro-rata/diskon untuk durasi pendek): tamu BOLEH pakai Day
+Use lebih singkat dari standar 6 jam - misalnya cuma 1 jam, 2 jam, atau 3 jam - itu tetap
+diperbolehkan. TAPI harganya TETAP HARGA NORMAL Day Use penuh (harga kamar yang dipilih,
+lihat data harga kamar di context - contoh Rp100.000 atau Rp120.000 tergantung tipe
+kamar), BUKAN dipotong/dibagi proporsional sesuai jam pakainya. Tidak ada tarif per-jam
+yang lebih murah untuk durasi singkat - satu-satunya biaya per-jam yang ada di sistem
+ini adalah biaya TAMBAHAN Rp20.000/jam kalau tamu MELEBIHI 6 jam (lihat kebijakan extend
+di atas), BUKAN pengurangan harga kalau tamu pakai KURANG dari 6 jam. Kalau tamu tanya
+"kalau cuma 2 jam apa lebih murah?" atau semacamnya, jawab jujur: durasi bebas sampai 6
+jam tapi harganya tetap sama (harga normal Day Use kamar itu, sesuai data harga di
+context) untuk 6 jam penuh walau dipakai lebih singkat.
 """
 
 # Tool default kalau tidak ada AIBot spesifik (jalur legacy /prompt) - semua tool inti
