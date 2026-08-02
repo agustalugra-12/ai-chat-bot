@@ -1259,9 +1259,17 @@ async def _tool_cancel_booking(args: dict, conv: dict) -> dict:
 
 @register_tool("request_handover", {"request_handover"})
 async def _tool_request_handover(args: dict, conv: dict) -> dict:
+    # `handover_reason` (2026-08-02, PRD Learning Engine) - sebelumnya `reason` cuma
+    # dipakai sekali pakai utk alert Telegram, tidak pernah disimpan - jadi tidak ada cara
+    # membangun "top alasan handover" di Analytics tanpa ini. Disimpan sbg field terpisah
+    # (bukan menimpa field lain) supaya tetap bisa diagregasi retroaktif dari data lama
+    # yang sudah punya field ini + data baru ke depan.
     await db.conversations.update_one(
         {"_id": conv["_id"]},
-        {"$set": {"status": "waiting_admin", "resolution": "handover", "updated_at": utc_now_iso()}},
+        {"$set": {
+            "status": "waiting_admin", "resolution": "handover", "updated_at": utc_now_iso(),
+            "handover_reason": args.get("reason") or "(tidak disebutkan)",
+        }},
     )
     # Beda dari 4 _pms_alert_owner lain (semua soal AI SALAH/gagal) - ini AI sendiri yang
     # sadar butuh manusia (2026-07-26, permintaan Agus: sebelumnya harus buka halaman
@@ -2932,6 +2940,33 @@ async def analytics_summary(user=Depends(get_current_user)):
             pass
     daily_series = [{"date": d, "count": daily[d]} for d in sorted(daily.keys())[-14:]]
 
+    # Learning Engine v1 (2026-08-02, PRD "AI Receptionist Intelligence Engine" Modul 14) -
+    # sumber datanya `handover_reason` (baru mulai disimpan hari ini di
+    # _tool_request_handover, sebelumnya cuma sekali pakai utk alert Telegram) - percakapan
+    # lama sebelum fix ini tidak akan punya field ini, wajar tidak ikut kehitung, bukan bug.
+    reason_counts: Dict[str, int] = {}
+    for c in convs:
+        if c.get("resolution") != "handover":
+            continue
+        r = c.get("handover_reason")
+        if r:
+            reason_counts[r] = reason_counts.get(r, 0) + 1
+    top_handover_reasons = sorted(
+        [{"reason": k, "count": v} for k, v in reason_counts.items()],
+        key=lambda x: x["count"], reverse=True,
+    )[:6]
+
+    flagged = sorted(
+        [c for c in convs if c.get("status") == "waiting_admin"],
+        key=lambda c: c.get("updated_at", ""), reverse=True,
+    )[:10]
+    flagged_conversations = [{
+        "session_id": c.get("session_id"),
+        "guest_name": c.get("guest_name") or c.get("whatsapp") or "-",
+        "reason": c.get("handover_reason") or c.get("resolution") or "-",
+        "updated_at": c.get("updated_at"),
+    } for c in flagged]
+
     return {
         "total_conversations": total_conv,
         "resolution_rate": round(resolution_rate, 1),
@@ -2941,6 +2976,8 @@ async def analytics_summary(user=Depends(get_current_user)):
         "avg_response_time_ms": round(avg_rt),
         "top_intents": top_intents,
         "daily_series": daily_series,
+        "top_handover_reasons": top_handover_reasons,
+        "flagged_conversations": flagged_conversations,
     }
 
 
