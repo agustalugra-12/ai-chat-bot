@@ -26,7 +26,19 @@ async def _fonnte_send_text(token: str, to: str, message: str) -> bool:
     """Kirim teks biasa. HTTP 200 TIDAK berarti sukses (Fonnte selalu balas 200, bahkan
     utk device disconnected/token salah) - WAJIB cek field `status` di body JSON, bukan
     cuma status code (ditemukan 2026-07-31 lewat tes langsung ke API asli: device yang
-    belum di-scan/connect tetap balas HTTP 200 dgn status:false + reason penjelasannya)."""
+    belum di-scan/connect tetap balas HTTP 200 dgn status:false + reason penjelasannya).
+
+    `countryCode="0"` (2026-08-02, bug nyata ditemukan - tamu "Peggy" nomor internasional
+    12082502575 tidak pernah dapat balasan): docs.fonnte.com - countryCode!="0" bikin
+    Fonnte "replace first 0 (if any) dari target ATAU TAMBAHKAN countryCode kalau nomor
+    tidak diawali 0" - sebelumnya hardcode "62" di sini bikin SEMUA nomor yang bukan
+    diawali "0" (termasuk nomor internasional yang sudah lengkap format E.164-nya, mis.
+    "1"+US number) ikut ditempeli prefix "62" jadi nomor tidak valid (Fonnte tetap balas
+    status:true, gagalnya silent, tidak ada error apa pun di log kita). `to` di sini SELALU
+    sudah nomor lengkap terformat (lihat _normalize_phone - cuma nomor diawali "0" yang
+    diubah jadi "62..", nomor lain termasuk internasional dibiarkan apa adanya) jadi countryCode
+    tidak perlu apply-apply-in apa pun lagi di sisi Fonnte - "0" = mode bypass sesuai docs
+    resmi mereka, pakai `target` persis apa adanya."""
     if not token:
         logger.warning("Fonnte token kosong - pesan tidak terkirim")
         return False
@@ -35,7 +47,7 @@ async def _fonnte_send_text(token: str, to: str, message: str) -> bool:
             resp = await http.post(
                 f"{FONNTE_API_BASE}/send",
                 headers={"Authorization": token},
-                data={"target": to, "message": message, "countryCode": "62"},
+                data={"target": to, "message": message, "countryCode": "0"},
             )
             body = resp.json()
             if resp.status_code >= 400 or body.get("status") is False:

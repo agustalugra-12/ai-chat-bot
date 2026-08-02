@@ -127,15 +127,26 @@ def _get_conversation_lock(session_id: str) -> asyncio.Lock:
 # beberapa pesan cepat berturut-turut sebelumnya dapat balasan AI TERPISAH utk TIAP
 # pesan, terasa seperti di-spam) - lihat _fonnte_debounced_dispatch di dekat
 # fonnte_webhook_receive utk detail alurnya. State ini in-process (server 1 worker,
-# sama seperti _conversation_locks) - KETERBATASAN DISADARI: kalau proses restart PAS
-# giliran sedang menunggu jeda debounce (maks FONNTE_DEBOUNCE_SECONDS detik), pesan yang
-# belum sempat diproses akan hilang (webhook sudah lanjut balas 200 OK ke Fonnte lebih
-# dulu, jadi Fonnte tidak akan kirim ulang) - risiko kecil & disengaja diterima demi
-# jendela debounce yang singkat, sudah didiskusikan & disetujui Agus.
+# sama seperti _conversation_locks) - KETERBATASAN LAMA yang SUDAH DIPERBAIKI (2026-08-02):
+# dulu kalau proses restart PAS giliran sedang menunggu jeda debounce (maks
+# FONNTE_DEBOUNCE_SECONDS detik) ATAU PAS sedang aktif diproses (panggil AI/kirim balasan),
+# pesan tamu HILANG TOTAL tanpa balasan/error apa pun - risiko ini sebelumnya sengaja
+# diterima (sudah didiskusikan & disetujui Agus) dgn asumsi restart jarang terjadi & jendela
+# debounce singkat. INSIDEN NYATA 2026-08-02: tamu Harmoni kirim pesan PERSIS saat restart
+# rutin (deploy fix lain) terjadi - pesannya hilang, tidak ada balasan sama sekali, tidak
+# ada jejak error. `_fonnte_inflight_tasks` (di bawah) + shutdown hook (lihat on_shutdown)
+# sekarang MELACAK & MENUNGGU semua giliran Fonnte yang masih berjalan (baik yang masih
+# menunggu jeda debounce MAUPUN yang sudah aktif memanggil AI/mengirim balasan) sebelum
+# proses benar-benar mati, bukan cuma yang masih di fase menunggu.
 FONNTE_DEBOUNCE_SECONDS = 4.0
 _fonnte_pending_messages: Dict[str, List[str]] = {}
 _fonnte_pending_ctx: Dict[str, dict] = {}
 _fonnte_debounce_tasks: Dict[str, asyncio.Task] = {}
+# Semua task Fonnte yang masih berjalan APAPUN FASENYA (menunggu debounce ATAU aktif
+# memproses) - task menambahkan dirinya sendiri saat dibuat, menghapus dirinya sendiri via
+# add_done_callback begitu selesai (sukses/error/cancel apapun). Dipakai on_shutdown() utk
+# menunggu semuanya kelar dulu sebelum proses benar-benar exit.
+_fonnte_inflight_tasks: set = set()
 
 
 def _client_ip(request: Request) -> str:
@@ -214,6 +225,33 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
+    # Tunggu semua giliran Fonnte yang masih berjalan (2026-08-02, insiden nyata: restart
+    # service - entah manual/deploy - yang kebetulan terjadi PAS ada tamu Harmoni kirim
+    # pesan bikin pesannya HILANG TOTAL, tidak ada balasan, tidak ada error/log apa pun -
+    # task di background ikut mati diam-diam bareng proses lama, Fonnte sendiri sudah
+    # terlanjur dibalas 200 OK jadi tidak akan kirim ulang). PERCOBAAN PERTAMA (flush manual
+    # HANYA utk task yang masih tidur di fase debounce) TERNYATA TIDAK CUKUP - dites ulang
+    # & ketahuan `_fonnte_debounced_dispatch` menghapus dirinya dari _fonnte_debounce_tasks/
+    # _fonnte_pending_messages SEGERA setelah jeda tidur selesai, SEBELUM proses AI+kirim
+    # balasan yang sebenarnya (bisa 2-5 detik) - jadi kalau restart terjadi PAS fase itu
+    # (bukan cuma pas masih tidur), task-nya sudah tidak lagi "ketemu" lewat dict manapun,
+    # tetap ikut mati percuma. Sekarang pakai `_fonnte_inflight_tasks` (lihat definisinya)
+    # yang melacak SELURUH siklus hidup task apapun fasenya - tinggal ditunggu di sini
+    # sampai semuanya betul-betul selesai (dgn batas waktu wajar) sebelum proses exit.
+    if _fonnte_inflight_tasks:
+        tasks = list(_fonnte_inflight_tasks)
+        logging.getLogger("fonnte").warning(
+            f"Shutdown dgn {len(tasks)} giliran Fonnte masih berjalan - tunggu sampai selesai (maks 25s)."
+        )
+        try:
+            await asyncio.wait(tasks, timeout=25)
+        except Exception as e:
+            logging.getLogger("fonnte").warning(f"Gagal menunggu giliran Fonnte saat shutdown: {e}")
+        masih_jalan = [t for t in tasks if not t.done()]
+        if masih_jalan:
+            logging.getLogger("fonnte").warning(
+                f"{len(masih_jalan)} giliran Fonnte MASIH belum selesai setelah batas waktu shutdown - kemungkinan tetap tidak sempat dibalas."
+            )
     client.close()
 
 
@@ -1488,6 +1526,25 @@ MODEL_ESCALATION_KEYWORDS = [
     # Fasilitas yang beda per properti (Pelangi ada sarapan/AC, Harmoni tidak) - rawan
     # model "mengingat" fasilitas properti lain dari pengetahuan umum.
     "sarapan", "breakfast", "extra bed", "tambahan kasur", " ac ", "pendingin",
+    # Link & proses pembayaran (2026-08-02, permintaan Agus - kasus nyata Made Ongki
+    # ganti DP->lunas awal sesi ini) - salah di sini = duit tamu sungguhan.
+    "link", "linknya", "kirim ulang", "lunas", "sisa bayar", "bayar", "transfer",
+    "qris", "belum sampai", "expired", "kadaluarsa",
+    # Kebijakan anak di bawah umur (guardrail baru 2026-08-01) - frasa spesifik, BUKAN
+    # kata "anak" polos (ditemukan lewat audit data chat: "anak" nyantol ke pertanyaan
+    # standar okupansi "jumlah tamu dewasa dan anaknya", false-positive banyak).
+    "di bawah umur", "belum punya ktp", "blm punya ktp",
+    # Komplain / minta bicara manusia - guard anti-halusinasi eskalasi ("jangan klaim
+    # sudah eskalasi kalau tool belum jalan") lebih taat di model yang lebih nurut.
+    "komplain", "keluhan", "kecewa", "bicara admin", "bicara staff", "bicara orang",
+    # Kamar penuh - format balasan wajib (estimasi checkout + tawaran konkret).
+    "penuh", "full",
+    # Reschedule/pindah kamar/upgrade - ubah data booking yang sudah jadi, salah = tamu
+    # datang ke tanggal/kamar yang salah.
+    "reschedule", "ubah tanggal", "ganti tanggal", "geser tanggal", "pindah tanggal",
+    "pindah kamar", "upgrade", "ganti kamar",
+    # Member/stempel - status diskon member ditentukan dari sini, salah = margin bocor.
+    "member", "stempel", "stamp",
 ]
 
 
@@ -1496,9 +1553,10 @@ def _perlu_model_kuat(message: str, last_intent: Optional[str]) -> bool:
     if any(kw in lower for kw in MODEL_ESCALATION_KEYWORDS):
         return True
     # Giliran sebelumnya baru saja panggil tool bertaruh tinggi (data booking/pembayaran
-    # asli, atau status member yang menentukan diskon) - besar kemungkinan masih di
-    # tengah alur yang sama, butuh ketelitian tinggi jg di giliran-giliran berikutnya.
-    if last_intent in ("create_booking", "cancel_booking", "check_member_status"):
+    # asli, status member yang menentukan diskon, atau preview harga persis sebelum
+    # booking beneran dibuat) - besar kemungkinan masih di tengah alur yang sama, butuh
+    # ketelitian tinggi jg di giliran-giliran berikutnya.
+    if last_intent in ("create_booking", "cancel_booking", "check_member_status", "preview_booking"):
         return True
     return False
 
@@ -1563,6 +1621,7 @@ async def _run_chat_turn_locked(
             "booking_created": False,
             "last_intent": None,
             "booking_draft": {},
+            "confirmed_booking_name": None,
             "response_time_ms": 0,
             "created_at": utc_now_iso(),
             "updated_at": utc_now_iso(),
@@ -1624,23 +1683,52 @@ async def _run_chat_turn_locked(
     # dispatch tool di bawah) supaya AI tidak menanyakan ulang field yang tamu sudah jawab
     # di giliran sebelumnya - beda dari mengandalkan model menyimpulkan sendiri dari
     # riwayat chat mentah tiap kali (rawan lupa/re-ask, laporan Agus).
-    draft = conv.get("booking_draft") or {}
+    # Identitas tamu (2026-08-02) - field TERPISAH dari conv["guest_name"] dgn SENGAJA:
+    # conv["guest_name"] itu nama KONTAK WhatsApp asli tamu (dari webhook, bisa nickname/
+    # emoji/ngawur, lihat _touch_guest_profile) - BUKAN sumber yang aman utk diasumsikan
+    # sbg nama pemesanan asli (persis bug class yang TOOL_DOCS create_booking sudah
+    # peringatkan: "booking tersimpan dgn nama emoji krn AI asal isi guest_name"). Field
+    # `confirmed_booking_name` HANYA terisi dari args tool create_booking/preview_booking
+    # (args["guest_name"], eksplisit disebutkan sendiri oleh tamu di chat - lihat dispatch
+    # tool di bawah), jadi aman dipakai lintas booking dalam 1 percakapan yang sama TANPA
+    # perlu tanya nama dari nol lagi walau booking_draft sudah di-reset (booking sebelumnya
+    # sukses). DISUNTIK ke draft yang sama (bukan blok terpisah) - TOOL_DOCS create_booking
+    # ALUR WAJIB eksplisit menyuruh model cek blok BERNAMA PERSIS "# DATA BOOKING YANG
+    # SUDAH DIKETAHUI", blok lain dgn judul beda TIDAK dikenali (ditemukan lewat tes: model
+    # tetap tanya nama walau info sudah ada di blok terpisah bernama lain).
+    draft = dict(conv.get("booking_draft") or {})
+    if conv.get("confirmed_booking_name") and not draft.get("guest_name"):
+        draft["guest_name"] = conv["confirmed_booking_name"]
     if draft:
         label = {
+            "guest_name": "Nama tamu",
             "tipe": "Menginap/Day Use", "room_tipe": "Tipe kamar",
             "tanggal_checkin": "Tanggal check-in", "tanggal_checkout": "Tanggal check-out",
             "jumlah_kamar": "Jumlah kamar", "jumlah_tamu": "Jumlah tamu",
             "jam_checkin": "Jam check-in (Day Use)", "payment_option": "Metode bayar (dp50/full)",
         }
         known = " | ".join(f"{label[k]}: {v}" for k, v in draft.items() if k in label)
-        missing = [label[k] for k in ("tipe", "room_tipe", "tanggal_checkin", "jumlah_kamar")
+        # "guest_name" WAJIB ikut dicek di sini (2026-08-02, bug nyata ditemukan - laporan
+        # Agus soal chat Frisnanda Maulana "berputar-putar"): sebelumnya field ini TIDAK
+        # ADA di draft_keys (lihat dispatch tool di bawah) sama sekali, jadi walau tamu
+        # sudah kasih nama, itu TIDAK PERNAH tersimpan ke draft - begitu mention nama itu
+        # lewat dari jendela compact_history, AI "lupa" & tanya nama lagi. Berulang 4x
+        # dalam 1 percakapan 73 pesan sebelum fix ini.
+        missing = [label[k] for k in ("guest_name", "tipe", "room_tipe", "tanggal_checkin", "jumlah_kamar")
                    if k not in draft or not draft.get(k)]
         context += (
             "\n\n# DATA BOOKING YANG SUDAH DIKETAHUI (jangan tanya ulang)\n"
             f"{known}\n"
             + (f"Yang BELUM diketahui: {', '.join(missing)}\n" if missing else "Semua data wajib sudah lengkap - lanjut ke ringkasan/konfirmasi.\n")
         )
-    history_text = compact_history(conv["messages"][:-1], max_turns=12)
+    # max_turns=20 (2026-08-02, permintaan eksplisit Agus: "ai bot mengingat konteks chat
+    # sebelumnya minimal 20 chat kebelakang setiap tamunya") - sebelumnya 12, terlalu
+    # pendek utk percakapan booking panjang (laporan nyata: tamu Frisnanda Maulana, 73
+    # pesan, AI berulang kali lupa detail yang sudah dibahas krn sudah keluar jendela.
+    # booking_draft di atas jadi penopang utama utk field booking spesifik (bertahan
+    # walau lewat jendela ini), history mentah di bawah tetap diperpanjang utk konteks
+    # umum lain (obrolan, preferensi, dst yang bukan bagian draft terstruktur).
+    history_text = compact_history(conv["messages"][:-1], max_turns=20)
 
     settings_doc = await db.settings.find_one({"_id": "singleton"}) or {}
     llm_provider = settings_doc.get("llm_provider") or DEFAULT_PROVIDER
@@ -1685,11 +1773,30 @@ async def _run_chat_turn_locked(
             # create_booking BENAR-BENAR sukses (booking_created=True) karena setelah itu
             # status sebenarnya lebih baik dibaca live dari lookup_booking, bukan draft basi.
             if tool in ("preview_booking", "create_booking") and args:
-                draft_keys = ("tipe", "room_tipe", "tanggal_checkin", "tanggal_checkout",
+                # "guest_name" (2026-08-02, bug nyata - lihat catatan di atas dekat
+                # compact_history soal chat Frisnanda Maulana): field ini SEBELUMNYA hilang
+                # dari daftar ini, jadi walau create_booking selalu diwajibkan menyertakan
+                # nama tamu (ALUR WAJIB langkah 0), nama itu TIDAK PERNAH ikut tersimpan ke
+                # draft persisten - begitu percakapan lanjut & mention nama lewat dari
+                # jendela history mentah, AI menanyakannya lagi dari nol. preview_booking
+                # sendiri TIDAK mengirim guest_name (lihat docstringnya) tapi itu tidak
+                # masalah - `if args.get(k)` di bawah otomatis skip key yang tidak ada.
+                draft_keys = ("guest_name", "tipe", "room_tipe", "tanggal_checkin", "tanggal_checkout",
                               "jumlah_kamar", "jumlah_tamu", "jam_checkin", "payment_option")
                 draft = dict(conv.get("booking_draft") or {})
                 draft.update({k: args[k] for k in draft_keys if args.get(k)})
                 conv["booking_draft"] = draft
+                # `confirmed_booking_name` (2026-08-02) - PISAH dari booking_draft, TIDAK
+                # PERNAH ikut ter-reset walau create_booking sukses & draft dikosongkan di
+                # bawah. Tanpa ini: tamu yang mau booking KEDUA di percakapan yang sama
+                # (mis. nambah Day Use lain setelah booking pertama selesai) akan ditanya
+                # nama lagi dari nol, padahal AI (dan kita) sudah tahu persis siapa dia.
+                # SENGAJA field baru, BUKAN nulis ke conv["guest_name"] (itu nama kontak WA
+                # asli dari webhook, dipakai fallback di tempat lain - lihat komentar di
+                # context injection dekat compact_history) - args["guest_name"] di sini
+                # nama yang tamu KETIK SENDIRI utk booking, sumber lebih terpercaya.
+                if args.get("guest_name"):
+                    conv["confirmed_booking_name"] = args["guest_name"]
             if tool == "create_booking" and tool_result and tool_result.get("ok"):
                 conv["booking_draft"] = {}
             # give AI a chance to acknowledge tool result with a second turn
@@ -1717,7 +1824,7 @@ async def _run_chat_turn_locked(
             )
             history_after = compact_history(
                 conv["messages"] + [{"role": "assistant", "content": clean_text or "(tool call)"}],
-                max_turns=14,
+                max_turns=20,
             )
             follow_raw = await ai_reply(session_id, system_prompt, context, history_after, follow_up_user, llm_provider, llm_model)
             follow_clean, _, _ = parse_tool_call(follow_raw)
@@ -1961,6 +2068,8 @@ async def _run_chat_turn_locked(
     if conv.get("last_booking_request"):
         update["last_booking_request"] = conv["last_booking_request"]
     update["booking_draft"] = conv.get("booking_draft") or {}
+    if conv.get("confirmed_booking_name"):
+        update["confirmed_booking_name"] = conv["confirmed_booking_name"]
     if tool == "request_handover":
         update["status"] = "waiting_admin"
         update["resolution"] = "handover"
@@ -2701,7 +2810,10 @@ async def fonnte_webhook_receive(bot_id: str, request: Request):
         old_task = _fonnte_debounce_tasks.get(session_id)
         if old_task and not old_task.done():
             old_task.cancel()
-        _fonnte_debounce_tasks[session_id] = asyncio.create_task(_fonnte_debounced_dispatch(session_id))
+        new_task = asyncio.create_task(_fonnte_debounced_dispatch(session_id))
+        _fonnte_debounce_tasks[session_id] = new_task
+        _fonnte_inflight_tasks.add(new_task)
+        new_task.add_done_callback(_fonnte_inflight_tasks.discard)
         return {"ok": True, "debounced": True}
     except Exception as e:
         logging.getLogger("fonnte").warning(f"Gagal proses webhook Fonnte: {e}")
