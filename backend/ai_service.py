@@ -240,6 +240,40 @@ mengubah pendekatan atau benar2 membantu, tamu makin frustrasi tiap giliran):
   untuk KE-3 KALINYA. Ganti pendekatan: akui terus terang ("Maaf ya Kak bikin bingung")
   DAN langsung panggil request_handover supaya staf yang lanjutkan secara langsung -
   jangan terus mencoba jelaskan sendiri kalau sudah kelihatan tidak berhasil.
+
+KEBIJAKAN AIR HANGAT (2026-08-02, permintaan Agus): "air hangat" AMBIGU - bisa berarti
+air hangat MANDI (water heater kamar mandi) atau air hangat dari TEKO LISTRIK (buat
+kopi/teh/mie instan dll). LARANGAN KERAS: begitu tamu tanya soal "air hangat" TANPA
+menyebutkan spesifik yang mana (belum bilang "mandi" atau "teko"/"buat kopi/teh" dsb),
+kamu TIDAK BOLEH langsung menjawab ketersediaan keduanya sekaligus - WAJIB tanya balik
+dulu SEBELUM menjawab apa pun, kalimat WAJIB persis semangat ini: "Air hangat untuk
+mandi atau teko listrik ya, Kak?" - berhenti di situ dulu, tunggu jawaban tamu di
+giliran berikutnya, jangan sekaligus mengonfirmasi ketersediaan di pesan yang sama.
+Kalau tamu SUDAH sebutkan spesifik dari awal (mis. "air panas buat mandi ada?" atau
+"bisa bikin kopi pakai air panas gak?"), baru langsung jawab tanpa perlu tanya balik
+lagi. Jawaban ketersediaan selalu dari data fasilitas kamar sungguhan (field
+"Fasilitas" di context, JANGAN mengarang) - SEMUA kamar (Pelangi maupun Harmoni)
+difasilitasi KEDUANYA (air panas kamar mandi DAN teko listrik), jadi apa pun jawaban
+tamu nanti, konfirmasi tersedia.
+
+KEBIJAKAN JEDA PERCAKAPAN (2026-08-02, permintaan Agus - AI harus paham konteks chat yang
+sebelumnya sempat jeda krn tamu tidak balas, bukan menganggap semua pesan berurutan
+rapat): histori percakapan sekarang menyisipkan baris "[jeda X jam/menit/hari - tamu
+tidak balas sebelum pesan berikutnya]" di antara 2 pesan kalau jaraknya cukup lama. Kalau
+kamu lihat penanda ini SEBELUM pesan tamu yang sekarang, pertimbangkan:
+- Kalau jedanya PENDEK (menit-jam beberapa) DAN pesan tamu sekarang jelas MELANJUTKAN
+  topik sebelum jeda (mis. jawaban singkat atas pertanyaanmu) - lanjutkan seperti biasa,
+  jangan tanya ulang info yang sudah dia kasih sebelum jeda.
+- Kalau jedanya PANJANG (berjam-jam s.d. berhari-hari), pertimbangkan situasi mungkin
+  sudah BERUBAH sejak jeda itu (ketersediaan kamar, harga, atau bahkan rencana tamu bisa
+  berubah) - JANGAN asumsikan semua info lama masih pasti berlaku begitu saja, terutama
+  soal ketersediaan/jam kedatangan - cek ulang lewat tool yang relevan kalau pesan tamu
+  menyinggung hal itu lagi, JANGAN sekadar mengulang jawaban lama dari sebelum jeda.
+- Kalau pesan tamu SETELAH jeda panjang jelas topik BARU yang lepas dari sebelumnya
+  (mis. sapaan baru, pertanyaan sama sekali beda) - JANGAN paksa menyambungkan ke topik
+  lama sebelum jeda, layani sebagai pertanyaan baru, tapi tetap boleh sebut singkat
+  konteks lama kalau relevan (mis. "Oh iya Kak, soal booking Day Use kemarin, masih
+  berminat atau ada yang mau ditanyakan lagi?").
 """
 
 # Tool default kalau tidak ada AIBot spesifik (jalur legacy /prompt) - semua tool inti
@@ -866,6 +900,8 @@ async def ai_reply(
                 await asyncio.sleep(delay)
 
 
+_JEDA_AMBANG_MENIT = 30  # (2026-08-02) di bawah ini dianggap chat lancar biasa, tidak perlu ditandai
+
 def compact_history(messages: List[dict], max_turns: int = 12) -> str:
     """Turn recent history into plain text for prompt.
 
@@ -873,10 +909,37 @@ def compact_history(messages: List[dict], max_turns: int = 12) -> str:
     "Staf" sendiri, BUKAN ikut dilabel "AI" (2026-07-26, ditemukan lewat audit alur
     resume-AI - sebelumnya koreksi/instruksi staf tercampur seolah AI sendiri yang pernah
     bilang begitu, jadi AI tidak pernah tahu itu arahan otoritatif dari manusia saat
-    percakapan diaktifkan lagi lewat "Aktifkan AI Lagi")."""
+    percakapan diaktifkan lagi lewat "Aktifkan AI Lagi").
+
+    Penanda JEDA (2026-08-02, permintaan Agus - AI harus paham kalau ada jeda lama krn
+    tamu tidak balas, bukan menganggap semua pesan berurutan rapat) - sebelumnya histori
+    ini SAMA SEKALI tidak membawa info waktu, jadi model tidak bisa tahu 2 pesan berjarak
+    beberapa detik atau beberapa JAM/HARI. Sekarang disisipkan baris `[jeda ...]` di
+    antara 2 pesan kalau jaraknya >= _JEDA_AMBANG_MENIT - instruksi cara memakainya ada
+    di UNIVERSAL_BOOKING_POLICY (KEBIJAKAN JEDA PERCAKAPAN)."""
     tail = messages[-max_turns:]
     lines = []
+    prev_ts = None
     for m in tail:
+        ts_raw = m.get("timestamp")
+        ts = None
+        if ts_raw:
+            try:
+                ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                ts = None
+        if ts and prev_ts:
+            selisih_menit = (ts - prev_ts).total_seconds() / 60
+            if selisih_menit >= _JEDA_AMBANG_MENIT:
+                if selisih_menit >= 1440:
+                    label = f"{selisih_menit / 1440:.1f} hari"
+                elif selisih_menit >= 60:
+                    label = f"{selisih_menit / 60:.1f} jam"
+                else:
+                    label = f"{int(selisih_menit)} menit"
+                lines.append(f"[jeda {label} - tamu tidak balas sebelum pesan berikutnya]")
+        if ts:
+            prev_ts = ts
         if m.get("role") == "user":
             role = "Tamu"
         elif m.get("from_admin"):
