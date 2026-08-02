@@ -2050,6 +2050,32 @@ async def _run_chat_turn_locked(
         except Exception:
             pass
 
+    # Jaring pengaman level KODE (2026-08-03) - insiden nyata ditemukan lewat audit PRD
+    # v2.0: prompt SUDAH 2x diperkuat (TOOL_DOCS["request_handover"]) tapi model TETAP
+    # menulis "saya bisa bantu teruskan ke admin"/kalimat sejenis TANPA benar-benar
+    # memanggil request_handover di giliran yang sama - beda dari kasus extra_bed di atas
+    # (itu klaim SALAH yang perlu DIKOREKSI), di sini klaimnya justru SAH (memang perlu
+    # dieskalasi), cuma tindakannya yang tidak benar-benar terjadi - jadi solusinya BUKAN
+    # mengganti teksnya, tapi membuat janjinya BENAR dgn memanggil tool ini sungguhan,
+    # sama seperti staf yang lihat chat itu pasti akan lakukan.
+    if tool != "request_handover" and re.search(
+        r"(teruskan|sampaikan|eskalasi|hubungkan|alihkan).{0,40}(admin|staf|owner|pemilik)",
+        final_text, re.IGNORECASE,
+    ):
+        logging.getLogger("hallucination_guard").warning(
+            f"AI menjanjikan eskalasi tanpa memanggil request_handover - dipanggil otomatis oleh sistem. "
+            f"conv {conv.get('_id')}, teks asli: {final_text!r}"
+        )
+        try:
+            await _tool_request_handover(
+                {"reason": "Auto-terdeteksi: AI menjanjikan eskalasi ke admin/staf tapi tidak memanggil tool-nya sendiri"},
+                conv,
+            )
+            tool = "request_handover"
+            tool_result = {"ok": True, "tool": "request_handover", "auto_triggered": True}
+        except Exception:
+            logging.getLogger("hallucination_guard").warning(f"Gagal auto-trigger request_handover utk conv {conv.get('_id')}")
+
     ai_msg = {
         "role": "assistant",
         "content": final_text,
