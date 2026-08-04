@@ -1560,6 +1560,70 @@ def _janji_eskalasi_sungguhan(text: str) -> bool:
     return False
 
 
+# (2026-08-04, permintaan Agus "perbaiki bug otomatis") - generalisasi guard besok/lusa
+# di bawah (3 varian ditemukan & diperbaiki hari yang sama: klaim jam kesiapan, kutip
+# ulang riwayat lama, klaim jumlah kamar - semuanya akar masalah SAMA: blok "HARI INI"
+# yang selalu disuntik ke context bocor ke pertanyaan soal tanggal LAIN). Sebelumnya
+# trigger cuma kata "besok"/"lusa" literal - diperluas ke nama hari & tanggal eksplisit
+# supaya varian penyebutan tanggal BARU (mis. "hari minggu ada kamar ga kak", "tanggal 10
+# gimana") otomatis ketangkap jaring pengaman yang SAMA, tanpa perlu nunggu laporan bug
+# baru tiap kali ada frasa tanggal yang belum dicoba.
+_HARI_INDO = ["senin", "selasa", "rabu", "kamis", "jumat", "sabtu", "minggu"]
+_BULAN_INDO = {
+    "januari": 1, "februari": 2, "maret": 3, "april": 4, "mei": 5, "juni": 6,
+    "juli": 7, "agustus": 8, "september": 9, "oktober": 10, "november": 11, "desember": 12,
+}
+
+
+def _tanggal_disebut_ke_target(text: str) -> Optional[tuple]:
+    """Ekstrak referensi tanggal NON-HARI-INI dari teks tamu - dipakai guard groundedness
+    ketersediaan di bawah supaya tidak cuma cover "besok"/"lusa" literal. Return
+    (label, "YYYY-MM-DD") kalau ketemu SATU referensi yang jelas, None kalau tidak ada
+    referensi tanggal non-hari-ini sama sekali (sengaja konservatif - ambigu/tidak ada
+    match = jangan trigger, drpd salah tebak tanggal & memaksa cek yang tidak perlu)."""
+    now_wib = datetime.now(timezone.utc) + timedelta(hours=7)
+    today = now_wib.date()
+    lower = text.lower()
+
+    if re.search(r"\bbesok\b", lower):
+        return ("besok", (today + timedelta(days=1)).strftime("%Y-%m-%d"))
+    if re.search(r"\blusa\b", lower):
+        return ("lusa", (today + timedelta(days=2)).strftime("%Y-%m-%d"))
+
+    # Tanggal eksplisit "10 Agustus"/"tanggal 10 Agustus 2026" - kalau tahun tidak
+    # disebut, asumsikan tahun berjalan (atau tahun depan kalau tanggalnya sudah lewat).
+    m = re.search(
+        r"\b(\d{1,2})\s+(" + "|".join(_BULAN_INDO.keys()) + r")\b(?:\s+(\d{4}))?",
+        lower,
+    )
+    if m:
+        hari_angka, bulan_nama, tahun = int(m.group(1)), m.group(2), m.group(3)
+        bulan_angka = _BULAN_INDO[bulan_nama]
+        tahun_angka = int(tahun) if tahun else today.year
+        try:
+            tgl = datetime(tahun_angka, bulan_angka, hari_angka).date()
+            if not tahun and tgl < today:
+                tgl = datetime(tahun_angka + 1, bulan_angka, hari_angka).date()
+            if tgl != today:
+                return (f"{hari_angka} {bulan_nama}", tgl.strftime("%Y-%m-%d"))
+        except ValueError:
+            pass
+
+    # Nama hari ("hari minggu", "hari senin depan") - HANYA match kalau eksplisit
+    # diawali kata "hari" (hindari false positive dari nama tempat/orang yang kebetulan
+    # sama dgn nama hari, mis. "Kamis" sbg nama tamu).
+    m = re.search(r"\bhari\s+(" + "|".join(_HARI_INDO) + r")\b", lower)
+    if m:
+        hari_diminta = _HARI_INDO.index(m.group(1))
+        hari_ini_idx = today.weekday()  # Senin=0
+        selisih = (hari_diminta - hari_ini_idx) % 7
+        selisih = selisih or 7  # "hari minggu" pas hari Minggu -> minggu DEPAN, bukan hari ini
+        tgl = today + timedelta(days=selisih)
+        return (f"hari {m.group(1)}", tgl.strftime("%Y-%m-%d"))
+
+    return None
+
+
 MODEL_ESCALATION_KEYWORDS = [
     # Jam/waktu spesifik - kasus nyata yang memicu perbaikan ini (jam check-in Day Use
     # yang sebenarnya fleksibel, tapi model kadang menebak jam tetap yang salah).
@@ -2050,11 +2114,16 @@ async def _run_chat_turn_locked(
     # menangkap pola ini sama sekali. Diperluas jadi 1 guard gabungan: klaim JAM kesiapan
     # ATAU klaim JUMLAH kamar tersedia/kosong, keduanya dicurigai kalau besok/lusa
     # disebut TAPI tool tidak dipanggil giliran ini.
+    #
+    # Perluasan KETIGA (2026-08-04, permintaan Agus "perbaiki bug otomatis" - generalisasi
+    # standing, bukan cuma insiden spesifik): deteksi tanggal diperluas dari literal
+    # "besok"/"lusa" ke _tanggal_disebut_ke_target() (nama hari, tanggal eksplisit) supaya
+    # varian penyebutan tanggal BARU yang belum pernah dilaporkan otomatis kena guard yang
+    # SAMA, tanpa perlu saya menunggu laporan bug baru tiap frasa tanggal berbeda.
     _recent_user_text = " ".join(
         m.get("content", "") for m in conv["messages"][-6:] if m.get("role") == "user"
     ) + " " + message
-    _besok_match = re.search(r"\bbesok\b", _recent_user_text, re.IGNORECASE)
-    _lusa_match = re.search(r"\blusa\b", _recent_user_text, re.IGNORECASE)
+    _tanggal_disebut = _tanggal_disebut_ke_target(_recent_user_text)
     _readiness_claim_besok = re.search(
         r"(siap|ready|tersedia\s*lagi|kosong\s*lagi|misalnya|contoh|semisal)[^.\n]{0,25}"
         r"\bjam\s*\d{1,2}[:.]\d{2}\b",
@@ -2064,13 +2133,50 @@ async def _run_chat_turn_locked(
         r"\d+\s*kamar[^.\n]{0,20}(kosong|tersedia)|(kosong|tersedia)[^.\n]{0,20}\d+\s*kamar",
         final_text, re.IGNORECASE,
     )
-    if tool != "check_availability" and (_readiness_claim_besok or _jumlah_kamar_claim_besok) and (_besok_match or _lusa_match):
-        offset_hari = 2 if (_lusa_match and not _besok_match) else 1
-        tanggal_target = (datetime.now(timezone.utc) + timedelta(hours=7) + timedelta(days=offset_hari)).strftime("%Y-%m-%d")
+    # (2026-08-04) - kasus BEDA lagi, ditemukan saat verifikasi guard di atas: model
+    # kadang MEMANG memanggil check_availability (jadi 2 guard di atas tidak trigger sama
+    # sekali), TAPI tanggal yang dipakai SALAH HITUNG - test nyata "kalau hari minggu ada
+    # kamar kosong?" (hari ini Selasa 4 Agustus) dipanggil dgn tanggal_checkin=2026-08-07
+    # (itu hari JUMAT, bukan Minggu - model salah hitung tanggal dari nama hari). Beda
+    # akar masalah dari 2 guard di atas (bukan lupa panggil tool, tapi salah ARGUMEN saat
+    # memanggil) - tapi sama-sama "tanggal yang diminta tamu != tanggal yang benar-benar
+    # dicek", jadi hasilnya sama-sama bisa salah info. _tanggal_disebut_ke_target()
+    # itu murni aritmatika tanggal Python (deterministik, tidak mungkin salah hitung
+    # spt LLM), jadi kalau beda dari yang dipakai model, percaya hitungan kita.
+    if (tool == "check_availability" and args and _tanggal_disebut
+            and args.get("tanggal_checkin") and args["tanggal_checkin"] != _tanggal_disebut[1]):
+        tanggal_label, tanggal_target = _tanggal_disebut
+        logging.getLogger("hallucination_guard").warning(
+            f"check_availability dipanggil dgn tanggal SALAH HITUNG - conv {conv.get('_id')}, "
+            f"tamu minta '{tanggal_label}' (harusnya {tanggal_target}), model pakai {args['tanggal_checkin']}"
+        )
+        hasil_asli = await _tool_check_availability({**args, "tanggal_checkin": tanggal_target}, conv)
+        follow_up_koreksi = (
+            f"[SISTEM] Kamu memanggil pengecekan ketersediaan dengan tanggal {args['tanggal_checkin']}, "
+            f"TAPI tamu minta '{tanggal_label}' yang tanggal SEBENARNYA adalah {tanggal_target} - hitungan "
+            f"tanggalmu SALAH & TELAH DIKOREKSI. Data ASLI untuk tanggal {tanggal_target} yang benar: "
+            f"{hasil_asli}. Tulis ULANG balasan ke tamu (Bahasa Indonesia, sopan, singkat) berdasarkan "
+            f"HANYA data asli ini - sebutkan tanggal {tanggal_target} yang benar ke tamu, jangan sebut "
+            f"kejadian koreksi ini, langsung jawab natural seolah ini jawaban pertamamu."
+        )
+        history_koreksi = compact_history(
+            conv["messages"] + [{"role": "assistant", "content": final_text}], max_turns=20,
+        )
+        try:
+            raw_koreksi = await ai_reply(session_id, system_prompt, context, history_koreksi, follow_up_koreksi, llm_provider, llm_model)
+            koreksi_clean, _, _ = parse_tool_call(raw_koreksi)
+            if koreksi_clean:
+                final_text = koreksi_clean
+                tool_result = hasil_asli
+        except ChatError:
+            pass
+
+    if tool != "check_availability" and (_readiness_claim_besok or _jumlah_kamar_claim_besok) and _tanggal_disebut:
+        tanggal_label, tanggal_target = _tanggal_disebut
         hasil_asli = await _tool_check_availability({"tanggal_checkin": tanggal_target}, conv)
         follow_up_koreksi = (
             f"[SISTEM] Balasanmu SEBELUMNYA menyebut jam kesiapan kamar dan/atau jumlah kamar tersedia "
-            f"untuk {'besok' if offset_hari == 1 else 'lusa'} ({tanggal_target}) TANPA benar-benar "
+            f"untuk {tanggal_label} ({tanggal_target}) TANPA benar-benar "
             f"mengecek tanggal itu - itu SALAH (kamu memakai data kamar HARI INI, bukan {tanggal_target}) "
             f"& TELAH DIBATALKAN. Data ASLI hasil pengecekan sungguhan untuk tanggal {tanggal_target}: "
             f"{hasil_asli}. Tulis ULANG balasan ke tamu (Bahasa Indonesia, sopan, singkat) berdasarkan "
@@ -2088,7 +2194,7 @@ async def _run_chat_turn_locked(
             koreksi_clean, _, _ = parse_tool_call(raw_koreksi)
             if koreksi_clean:
                 logging.getLogger("hallucination_guard").warning(
-                    f"klaim jam kesiapan/jumlah kamar besok/lusa tanpa check_availability terdeteksi & dikoreksi - "
+                    f"klaim jam kesiapan/jumlah kamar ({tanggal_label}) tanpa check_availability terdeteksi & dikoreksi - "
                     f"conv {conv.get('_id')}, tanggal {tanggal_target}, teks asli: {final_text!r}, data asli: {hasil_asli}"
                 )
                 final_text = koreksi_clean
