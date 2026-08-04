@@ -2474,6 +2474,68 @@ async def _run_chat_turn_locked(
         except Exception:
             logging.getLogger("hallucination_guard").warning(f"Gagal auto-trigger request_handover utk conv {conv.get('_id')}")
 
+    # Jaring pengaman KHUSUS catat_klaim_stamp_member (2026-08-04) - pengecekan lebih detail
+    # thd conversation Ajus di atas ternyata mengungkap masalah yang LEBIH mendasar dari
+    # capability yang mati: giliran "Baik Kak, sudah saya catat jumlah stamp member Kakak
+    # sebanyak 3..." punya intent=null di riwayat tersimpan - artinya tool TIDAK PERNAH
+    # dipanggil SAMA SEKALI giliran itu (bukan dipanggil-lalu-gagal). Pola PERSIS sama dgn
+    # insiden create_booking Dewa Putu Andreana (2026-08-01) & janji eskalasi Leny Savitri
+    # (2026-08-03) yang SUDAH dapat guard code-level - tool ini belum. Deteksi: klaim
+    # "sudah...catat...stamp" TANPA tool ini dipanggil giliran ini - kalau tamu baru saja
+    # sebutkan angka stamp (dicari di 3 pesan tamu terakhir), paksa panggil BENERAN dgn
+    # angka itu; kalau tidak ketemu angka yang jelas, minta model tanya ulang scr jujur
+    # drpd mengarang klaim "sudah dicatat".
+    _klaim_stamp_dicatat = re.search(
+        r"sudah\s+(saya\s+)?catat[^.\n]{0,30}stamp|stamp[^.\n]{0,20}sudah\s+(saya\s+)?catat",
+        final_text, re.IGNORECASE,
+    )
+    if tool != "catat_klaim_stamp_member" and _klaim_stamp_dicatat:
+        _pesan_tamu_terakhir = " ".join(
+            m.get("content", "") for m in conv["messages"][-3:] if m.get("role") == "user"
+        )
+        _angka_match = re.search(r"\b(\d)\b", _pesan_tamu_terakhir)
+        logging.getLogger("hallucination_guard").warning(
+            f"AI klaim 'sudah catat stamp member' TANPA memanggil catat_klaim_stamp_member sama sekali - "
+            f"conv {conv.get('_id')}, angka terdeteksi: {_angka_match.group(1) if _angka_match else None}, "
+            f"teks asli: {final_text!r}"
+        )
+        if _angka_match:
+            hasil_asli = await _tool_catat_klaim_stamp_member(
+                {"jumlah_stamp": int(_angka_match.group(1)), "whatsapp": conv.get("whatsapp"), "guest_name": conv.get("guest_name")},
+                conv,
+            )
+            follow_up_koreksi = (
+                f"[SISTEM] Balasanmu SEBELUMNYA mengklaim sudah mencatat stamp member PADAHAL tool "
+                f"catat_klaim_stamp_member belum pernah dipanggil sama sekali giliran ini - itu SALAH & "
+                f"TELAH DIBATALKAN. Tool itu BARU SAJA dipanggil sungguhan dengan angka {_angka_match.group(1)} "
+                f"(dari pesan tamu), hasilnya: {hasil_asli}. Tulis ULANG balasan ke tamu (Bahasa Indonesia, "
+                f"sopan, singkat) berdasarkan hasil asli ini - kalau ok=true, sampaikan sudah tercatat & "
+                f"staf akan konfirmasi ulang saat check-in; kalau ok=false, akui jujur ada kendala teknis. "
+                f"Jangan sebut kejadian koreksi ini ke tamu."
+            )
+        else:
+            follow_up_koreksi = (
+                f"[SISTEM] Balasanmu SEBELUMNYA mengklaim sudah mencatat stamp member PADAHAL kamu belum "
+                f"benar-benar memanggil tool catat_klaim_stamp_member & angka stamp-nya tidak jelas dari "
+                f"pesan tamu - itu SALAH & TELAH DIBATALKAN. Tulis ULANG balasan ke tamu (Bahasa Indonesia, "
+                f"sopan, singkat): tanya ULANG dengan jelas angka stamp kartu member-nya (jangan klaim sudah "
+                f"dicatat sebelum benar-benar tahu angkanya)."
+            )
+            hasil_asli = None
+        history_koreksi = compact_history(
+            conv["messages"] + [{"role": "assistant", "content": final_text}], max_turns=20,
+        )
+        try:
+            raw_koreksi = await ai_reply(session_id, system_prompt, context, history_koreksi, follow_up_koreksi, llm_provider, llm_model)
+            koreksi_clean, _, _ = parse_tool_call(raw_koreksi)
+            if koreksi_clean:
+                final_text = koreksi_clean
+                if hasil_asli is not None:
+                    tool = "catat_klaim_stamp_member"
+                    tool_result = hasil_asli
+        except ChatError:
+            pass
+
     # Jaring pengaman UMUM level KODE (2026-08-04, permintaan Agus "perbaiki bug otomatis")
     # - insiden nyata: tamu "Ajus" klaim kartu member fisik, AI panggil
     # catat_klaim_stamp_member TAPI tool-nya GAGAL (ok=false, capability "create_service_
