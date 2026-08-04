@@ -942,8 +942,30 @@ async def _tool_check_availability(args: dict, conv: dict) -> dict:
         # laporan Agus "AI kasih ketersediaan kamar yang sebenarnya terisi" utk lihat
         # tanggal_checkin PERSIS apa yang dipanggil AI, bukan cuma teks balasannya.
         logging.getLogger("pms").info(f"check_availability args diterima dari AI: {args}")
+        tipe_diminta = args.get("tipe")
+        # Pengaman umum (2026-08-04, permintaan Agus "solusi terbaik krn guard kadang
+        # salah") - bug nyata ditemukan hari ini (kasus tamu "Dar"): salah SATU guard
+        # koreksi kirim "tipe": "day_use" ke fungsi ini - param "tipe" di sini artinya
+        # TIPE KAMAR (Cottage/Standard), BUKAN tipe booking, jadi query PMS SELALU balik
+        # kosong [] apa pun kondisi sebenarnya, lalu model salah simpulkan "kosong =
+        # semua penuh". Guard yang salah itu SUDAH diperbaiki, tapi ini SATU-SATUNYA
+        # titik masuk semua pemanggil (tool call model sendiri MAUPUN semua guard
+        # koreksi) - pengaman di sini melindungi dari kesalahan SERUPA di masa depan
+        # (guard baru/model yang salah kirim tipe booking bukan tipe kamar), bukan cuma
+        # menambal 1 guard spesifik. Nilai yang JELAS bukan tipe kamar (tipe booking
+        # asli/variasi umum) di-strip & dicatat log, bukan diam-diam dikirim ke PMS &
+        # menghasilkan hasil kosong yang menyesatkan.
+        if tipe_diminta and tipe_diminta.strip().lower() in (
+            "day_use", "day use", "dayuse", "menginap", "overnight", "stay",
+        ):
+            logging.getLogger("hallucination_guard").warning(
+                f"check_availability dipanggil dgn tipe='{tipe_diminta}' - itu tipe BOOKING, "
+                f"bukan tipe KAMAR (Cottage/Standard/dst), pasti bikin PMS balik kosong. "
+                f"Di-strip otomatis, semua tipe kamar dikembalikan. conv {conv.get('_id')}"
+            )
+            tipe_diminta = None
         rooms = await _pms_ketersediaan(
-            tanggal=args.get("tanggal_checkin"), tipe=args.get("tipe"),
+            tanggal=args.get("tanggal_checkin"), tipe=tipe_diminta,
             tanggal_checkout=args.get("tanggal_checkout"), jumlah_kamar=args.get("jumlah_kamar"),
             jam_checkin=args.get("jam_checkin"),
             api_key_override=conv.get("_pms_api_key_override"),
