@@ -2474,6 +2474,58 @@ async def _run_chat_turn_locked(
         except Exception:
             logging.getLogger("hallucination_guard").warning(f"Gagal auto-trigger request_handover utk conv {conv.get('_id')}")
 
+    # Jaring pengaman UMUM level KODE (2026-08-04, permintaan Agus "perbaiki bug otomatis")
+    # - insiden nyata: tamu "Ajus" klaim kartu member fisik, AI panggil
+    # catat_klaim_stamp_member TAPI tool-nya GAGAL (ok=false, capability "create_service_
+    # request" ternyata tidak pernah diaktifkan di panel Integrasi PMS sejak awal - root
+    # cause-nya sudah diperbaiki terpisah). AI TETAP bilang "Baik Kak, sudah saya catat ya"
+    # ke tamu MESKI tool_result yang diterimanya persis bilang ok=false - TOOL_DOCS tool
+    # ini SUDAH ADA larangan eksplisit soal ini ("JANGAN PERNAH bilang...tanpa tool
+    # berhasil"), tapi tetap dilanggar - pola SAMA yang sudah berulang kali ditemukan sesi
+    # ini (prompt-only tidak cukup). Beda dari guard2 spesifik-per-tool di atas (yang
+    # masing2 fokus 1 tool/1 pola kalimat), ini generik utk SEMUA tool: kalau tool APA PUN
+    # dipanggil giliran ini & hasilnya ok=false, tapi balasan tetap pakai bahasa "berhasil/
+    # sudah tercatat/sudah diproses", itu jelas kontradiksi - device makna "berhasil"
+    # ada di balasan padahal tool bilang sebaliknya, jadi TIDAK perlu regex per-tool baru
+    # tiap kali ada tool baru yang kena pola ini.
+    _klaim_sukses_pattern = re.compile(
+        r"sudah\s+(saya\s+)?(catat|proses|buat|kirim|simpan|update|perbarui|laporkan|teruskan)"
+        r"|berhasil\s+(dibuat|diproses|disimpan|dikirim|dicatat|diperbarui|diteruskan)"
+        r"|(sudah\s+)?tercatat\b",
+        re.IGNORECASE,
+    )
+    if tool_result is not None and tool_result.get("ok") is False and _klaim_sukses_pattern.search(final_text):
+        logging.getLogger("hallucination_guard").warning(
+            f"AI klaim berhasil ('{_klaim_sukses_pattern.search(final_text).group(0)}') padahal tool "
+            f"'{tool}' gagal (ok=false) - conv {conv.get('_id')}, error: {tool_result.get('error')}, "
+            f"teks asli: {final_text!r}"
+        )
+        follow_up_koreksi = (
+            f"[SISTEM] Balasanmu SEBELUMNYA mengklaim berhasil ('{tool}') PADAHAL tool itu baru saja "
+            f"GAGAL (ok=false, error: {tool_result.get('error')}) - klaim itu SALAH & TELAH DIBATALKAN. "
+            f"Tulis ULANG balasan ke tamu (Bahasa Indonesia, sopan, singkat): akui jujur ada kendala "
+            f"teknis, JANGAN klaim sesuatu tercatat/berhasil - tawarkan tamu untuk kamu teruskan ke staf "
+            f"secara manual (lalu panggil request_handover), jangan sebut detail teknis error ke tamu, "
+            f"cukup 'ada kendala teknis sebentar'."
+        )
+        history_koreksi = compact_history(
+            conv["messages"] + [{"role": "assistant", "content": final_text}], max_turns=20,
+        )
+        try:
+            raw_koreksi = await ai_reply(session_id, system_prompt, context, history_koreksi, follow_up_koreksi, llm_provider, llm_model)
+            koreksi_clean, koreksi_tool, koreksi_args = parse_tool_call(raw_koreksi)
+            if koreksi_clean:
+                final_text = koreksi_clean
+                if koreksi_tool == "request_handover":
+                    try:
+                        await _tool_request_handover(koreksi_args or {"reason": f"Auto: tool '{tool}' gagal, tamu perlu bantuan manual"}, conv)
+                        tool = "request_handover"
+                        tool_result = {"ok": True, "tool": "request_handover", "auto_triggered": True}
+                    except Exception:
+                        pass
+        except ChatError:
+            pass
+
     ai_msg = {
         "role": "assistant",
         "content": final_text,
