@@ -2030,13 +2030,24 @@ async def _run_chat_turn_locked(
     # terakhir) menyebut "besok"/"lusa" TAPI balasan mengklaim jam kesiapan spesifik
     # ("siap"/"ready"/"tersedia lagi" + jam HH:MM) TANPA check_availability dipanggil
     # giliran ini - paksa panggil ulang dgn tanggal besok/lusa yang benar, tulis ulang.
+    #
+    # Perluasan (2026-08-04, laporan Agus LAGI di conversation YANG SAMA - Artha, ~3 jam
+    # setelah fix pertama live): giliran fix pertama BERHASIL cegah klaim baru, TAPI angka
+    # salah "11:58"/"16:24" dari giliran BURUK sebelum fix deploy sudah TERLANJUR tersimpan
+    # di riwayat percakapan ini - giliran-giliran BERIKUTNYA (jauh setelah fix live) tetap
+    # mengutip ulang angka itu sbg "contoh" ("Jam check-in (misalnya jam 11:58 WIB)") krn
+    # model membaca riwayatnya sendiri sbg fakta yang sudah mapan. Pola kata beda dari
+    # "siap/ready" asli (skip regex lama), makanya ditambah "misalnya/contoh/semisal jam
+    # HH:MM" sbg pemicu tambahan - guard tidak bisa menghapus riwayat lama, tapi minimal
+    # cegah angka salah itu terus dikutip ulang di balasan BARU.
     _recent_user_text = " ".join(
         m.get("content", "") for m in conv["messages"][-6:] if m.get("role") == "user"
     ) + " " + message
     _besok_match = re.search(r"\bbesok\b", _recent_user_text, re.IGNORECASE)
     _lusa_match = re.search(r"\blusa\b", _recent_user_text, re.IGNORECASE)
     _readiness_claim_besok = re.search(
-        r"(siap|ready|tersedia\s*lagi|kosong\s*lagi)[^.\n]{0,25}\bjam\s*\d{1,2}[:.]\d{2}\b",
+        r"(siap|ready|tersedia\s*lagi|kosong\s*lagi|misalnya|contoh|semisal)[^.\n]{0,25}"
+        r"\bjam\s*\d{1,2}[:.]\d{2}\b",
         final_text, re.IGNORECASE,
     )
     if tool != "check_availability" and _readiness_claim_besok and (_besok_match or _lusa_match):
