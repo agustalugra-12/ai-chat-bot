@@ -2040,6 +2040,16 @@ async def _run_chat_turn_locked(
     # "siap/ready" asli (skip regex lama), makanya ditambah "misalnya/contoh/semisal jam
     # HH:MM" sbg pemicu tambahan - guard tidak bisa menghapus riwayat lama, tapi minimal
     # cegah angka salah itu terus dikutip ulang di balasan BARU.
+    # Perluasan KEDUA (2026-08-04, laporan Agus - conversation BEDA, tamu "Ajus" tanya
+    # "besok apakah masih ada room kosong?" DI GILIRAN PERTAMA, blm ada riwayat apa pun yg
+    # bisa "meracuni" - AI TETAP jawab "2 kamar Cottage kosong" TANPA memanggil
+    # check_availability SAMA SEKALI (dicek log server, nihil). Dicek ke PMS: 2 itu PERSIS
+    # jumlah kosong HARI INI, bukan besok (besok kenyataannya 5 kosong) - source-nya SAMA
+    # persis (blok "KETERSEDIAAN KAMAR HARI INI" yg selalu disuntik), tapi manifestasinya
+    # BEDA (klaim JUMLAH kamar, bukan JAM kesiapan) - regex jam-kesiapan di atas tidak
+    # menangkap pola ini sama sekali. Diperluas jadi 1 guard gabungan: klaim JAM kesiapan
+    # ATAU klaim JUMLAH kamar tersedia/kosong, keduanya dicurigai kalau besok/lusa
+    # disebut TAPI tool tidak dipanggil giliran ini.
     _recent_user_text = " ".join(
         m.get("content", "") for m in conv["messages"][-6:] if m.get("role") == "user"
     ) + " " + message
@@ -2050,17 +2060,23 @@ async def _run_chat_turn_locked(
         r"\bjam\s*\d{1,2}[:.]\d{2}\b",
         final_text, re.IGNORECASE,
     )
-    if tool != "check_availability" and _readiness_claim_besok and (_besok_match or _lusa_match):
+    _jumlah_kamar_claim_besok = re.search(
+        r"\d+\s*kamar[^.\n]{0,20}(kosong|tersedia)|(kosong|tersedia)[^.\n]{0,20}\d+\s*kamar",
+        final_text, re.IGNORECASE,
+    )
+    if tool != "check_availability" and (_readiness_claim_besok or _jumlah_kamar_claim_besok) and (_besok_match or _lusa_match):
         offset_hari = 2 if (_lusa_match and not _besok_match) else 1
         tanggal_target = (datetime.now(timezone.utc) + timedelta(hours=7) + timedelta(days=offset_hari)).strftime("%Y-%m-%d")
         hasil_asli = await _tool_check_availability({"tanggal_checkin": tanggal_target}, conv)
         follow_up_koreksi = (
-            f"[SISTEM] Balasanmu SEBELUMNYA menyebut jam kesiapan kamar spesifik untuk "
-            f"{'besok' if offset_hari == 1 else 'lusa'} ({tanggal_target}) TANPA benar-benar mengecek "
-            f"tanggal itu - itu SALAH (kamu memakai data kamar HARI INI, bukan {tanggal_target}) & TELAH "
-            f"DIBATALKAN. Data ASLI hasil pengecekan sungguhan untuk tanggal {tanggal_target}: {hasil_asli}. "
-            f"Tulis ULANG balasan ke tamu (Bahasa Indonesia, sopan, singkat) berdasarkan HANYA data asli ini "
-            f"- kalau kamar_tersedia>0 untuk semua tipe relevan, jangan sebut 'siap jam berapa' sama sekali "
+            f"[SISTEM] Balasanmu SEBELUMNYA menyebut jam kesiapan kamar dan/atau jumlah kamar tersedia "
+            f"untuk {'besok' if offset_hari == 1 else 'lusa'} ({tanggal_target}) TANPA benar-benar "
+            f"mengecek tanggal itu - itu SALAH (kamu memakai data kamar HARI INI, bukan {tanggal_target}) "
+            f"& TELAH DIBATALKAN. Data ASLI hasil pengecekan sungguhan untuk tanggal {tanggal_target}: "
+            f"{hasil_asli}. Tulis ULANG balasan ke tamu (Bahasa Indonesia, sopan, singkat) berdasarkan "
+            f"HANYA data asli ini - sebutkan jumlah "
+            f"kamar_tersedia yang BENAR dari data asli (bukan jumlah/angka apa pun dari balasan lamamu), "
+            f"kalau kamar_tersedia>0 untuk semua tipe relevan, jangan sebut 'siap jam berapa' sama sekali "
             f"(kamar sudah kosong, bisa booking jam berapa saja yang tamu mau) - jangan sebut kejadian koreksi "
             f"ini ke tamu, langsung jawab natural seolah ini jawaban pertamamu."
         )
@@ -2072,7 +2088,7 @@ async def _run_chat_turn_locked(
             koreksi_clean, _, _ = parse_tool_call(raw_koreksi)
             if koreksi_clean:
                 logging.getLogger("hallucination_guard").warning(
-                    f"klaim jam kesiapan besok/lusa tanpa check_availability terdeteksi & dikoreksi - "
+                    f"klaim jam kesiapan/jumlah kamar besok/lusa tanpa check_availability terdeteksi & dikoreksi - "
                     f"conv {conv.get('_id')}, tanggal {tanggal_target}, teks asli: {final_text!r}, data asli: {hasil_asli}"
                 )
                 final_text = koreksi_clean
