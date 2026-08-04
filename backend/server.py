@@ -56,7 +56,7 @@ from models import (
 from ai_service import (
     ALL_TOOL_CODES, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_SYSTEM_PROMPT, ai_reply,
     compact_history, build_context_block, build_dynamic_prompt, parse_tool_call, parse_img_markers,
-    LLM_PROVIDER_OPTIONS, SERVICE_MAP,
+    LLM_PROVIDER_OPTIONS, SERVICE_MAP, detect_guest_language,
 )
 from emergentintegrations.llm.chat import ChatError
 from cloudinary_service import upload_image, upload_raw, delete_asset
@@ -547,6 +547,16 @@ async def convs_list(status_filter: Optional[str] = Query(None, alias="status"),
             {"channel_type": "whatsapp_cloud", "channel_id": {"$nin": [None, ""]}}
         ).to_list(50)
     }
+    # Penanda properti (2026-08-03, permintaan Agus) - staf tidak bisa langsung tahu 1
+    # percakapan itu tamu Pelangi atau Harmoni cuma dari daftar/detail (dua-duanya campur
+    # jadi satu daftar "Percakapan"). property_slug PER BOT sudah ada (lihat models.py),
+    # tapi conv sendiri cuma simpan bot_id/bot_code, bukan property_slug langsung - di-
+    # lookup di sini (1 query batch, bukan N+1) & disuntik ke tiap item, dipakai frontend
+    # utk badge. Fallback "pelangi" kalau bot_id kosong (percakapan lama sebelum field ini
+    # ada) - konsisten dgn fallback yang sama dipakai _run_chat_turn_locked.
+    all_bots = await db.ai_bots.find({}, {"code": 1, "property_slug": 1}).to_list(50)
+    bots_by_id = {b["_id"]: b for b in all_bots}
+    bots_by_code = {b["code"]: b for b in all_bots if b.get("code")}
 
     out = []
     for d in docs:
@@ -558,6 +568,8 @@ async def convs_list(status_filter: Optional[str] = Query(None, alias="status"),
             d["nomor_aktif"] = phone_number_id in active_cloud_ids
         else:
             d["nomor_aktif"] = True
+        bot_ref = bots_by_id.get(d.get("bot_id")) or bots_by_code.get(d.get("bot_code"))
+        d["property_slug"] = (bot_ref or {}).get("property_slug") or "pelangi"
         out.append(d)
     return out
 
@@ -926,6 +938,10 @@ def register_tool(name: str, required_tool_codes: Optional[set] = None):
 @register_tool("check_availability", {"check_availability"})
 async def _tool_check_availability(args: dict, conv: dict) -> dict:
     try:
+        # (2026-08-04) log args, sama pola dgn create_booking di bawah - dipakai audit
+        # laporan Agus "AI kasih ketersediaan kamar yang sebenarnya terisi" utk lihat
+        # tanggal_checkin PERSIS apa yang dipanggil AI, bukan cuma teks balasannya.
+        logging.getLogger("pms").info(f"check_availability args diterima dari AI: {args}")
         rooms = await _pms_ketersediaan(
             tanggal=args.get("tanggal_checkin"), tipe=args.get("tipe"),
             tanggal_checkout=args.get("tanggal_checkout"), jumlah_kamar=args.get("jumlah_kamar"),
@@ -1523,6 +1539,27 @@ async def _send_wa_document_smart(conv: Optional[dict], filename: str, mimetype:
 # tambahan utk mengklasifikasi (itu justru menambah biaya/latensi, melawan tujuan
 # "menekan biaya" itu sendiri) - kalau nanti Agus laporkan pola kesalahan topik baru,
 # cukup tambahkan kata kuncinya di bawah, tidak perlu ubah arsitektur.
+_ESKALASI_PATTERN = re.compile(
+    r"(teruskan|sampaikan|eskalasi|hubungkan|alihkan).{0,40}(admin|staf|owner|pemilik)",
+    re.IGNORECASE,
+)
+_KONDISIONAL_PATTERN = re.compile(r"^\s*(kalau|jika)\b", re.IGNORECASE)
+
+
+def _janji_eskalasi_sungguhan(text: str) -> bool:
+    """Dipakai jaring pengaman request_handover di bawah (2026-08-03) - pisah per kalimat
+    (bukan cek 1 blok teks penuh) supaya bisa bedakan janji eskalasi yang AKTIF/sungguhan
+    ("saya teruskan permintaan ini ke admin") dari basa-basi penutup HIPOTETIS ("Kalau mau
+    info lebih detail, saya bantu teruskan ke staf ya Kak" - pola nyata yang bikin bug
+    tamu Leny Savitri macet 3+ jam, lihat catatan lengkap di pemanggil). Kalimat yang
+    DIAWALI "kalau"/"jika" dianggap tawaran masa depan/kondisional, bukan aksi nyata
+    sekarang, walau pola kata "teruskan...staf" tetap cocok literal."""
+    for kalimat in re.split(r"(?<=[.!?\n])\s*", text):
+        if _ESKALASI_PATTERN.search(kalimat) and not _KONDISIONAL_PATTERN.match(kalimat.strip()):
+            return True
+    return False
+
+
 MODEL_ESCALATION_KEYWORDS = [
     # Jam/waktu spesifik - kasus nyata yang memicu perbaikan ini (jam check-in Day Use
     # yang sebenarnya fleksibel, tapi model kadang menebak jam tetap yang salah).
@@ -1687,6 +1724,25 @@ async def _run_chat_turn_locked(
     room_types = sorted({r["tipe"] for r in rooms_now if r.get("tipe")})
     system_prompt = await _system_prompt_for(bot, room_types=room_types)
     context = await _build_context(query=message, bot=bot, whatsapp=conv.get("whatsapp") or whatsapp, rooms=rooms_now, menu=menu_now, timeline_kamar=timeline_kamar_now)
+    # Deteksi bahasa tamu di level KODE (2026-08-03, laporan Agus - dites langsung: tamu
+    # yang menulis 3 pesan berturut-turut full Bahasa Inggris tetap dibalas 100% Bahasa
+    # Indonesia SETIAP giliran walau instruksi prompt soal ini sudah diperkuat 2x sebelumnya)
+    # - lihat detect_guest_language di ai_service.py utk alasan lengkap kenapa heuristik
+    # kode dipakai, bukan cuma prompt. `conv["guest_language"]` PERSISTEN (disimpan ke DB di
+    # bawah) supaya begitu tamu switch ke Inggris SEKALI, itu jadi acuan tiap giliran
+    # berikutnya - deteksi giliran ini HANYA menimpa kalau cukup yakin (non-None), pesan
+    # pendek/ambigu ("Ok"/"Ya") tidak mengubah bahasa yang sudah diketahui.
+    _bahasa_terdeteksi = detect_guest_language(message)
+    if _bahasa_terdeteksi:
+        conv["guest_language"] = _bahasa_terdeteksi
+    if conv.get("guest_language") == "en":
+        context += (
+            "\n\n# BAHASA PERCAKAPAN INI (WAJIB, terdeteksi otomatis)\n"
+            "Tamu ini sedang menulis dalam Bahasa Inggris - balas SELURUHNYA dalam Bahasa "
+            "Inggris (natural, sopan, gaya yang sama seperti biasa, termasuk kalimat konfirmasi "
+            "setelah tool dipanggil) sampai tamu ganti balik ke Bahasa Indonesia. JANGAN campur "
+            "dua bahasa dalam satu balasan.\n"
+        )
     # Slot memory (2026-08-01) - suntik apa yang SUDAH diketahui dari booking_draft (lihat
     # dispatch tool di bawah) supaya AI tidak menanyakan ulang field yang tamu sudah jawab
     # di giliran sebelumnya - beda dari mengandalkan model menyimpulkan sendiri dari
@@ -1816,19 +1872,20 @@ async def _run_chat_turn_locked(
             # supaya narasi TERIKAT KETAT ke tool yang BENAR-BENAR baru saja dieksekusi.
             follow_up_user = (
                 f"[SISTEM] Hasil tool `{tool}`: {tool_result}. "
-                f"Sampaikan konfirmasi natural ke tamu (Bahasa Indonesia, sopan, singkat) - TAPI JANGAN PERNAH mengklaim "
+                f"Sampaikan konfirmasi natural ke tamu (Bahasa Indonesia, sopan, SINGKAT) - TAPI JANGAN PERNAH mengklaim "
                 f"hasil/status dari tool LAIN yang BELUM dipanggil di giliran ini. Contoh nyata yang HARUS dihindari: kalau "
                 f"tool yang dipanggil cuma `lookup_booking` (mencari data), JANGAN bilang 'pembatalan sudah diajukan'/'sudah "
                 f"diproses' - itu klaim dari tool `cancel_booking` yang BELUM dipanggil. Kalau tamu jelas ingin lanjut ke "
                 f"aksi berikutnya (mis. batalkan) berdasar hasil lookup ini, TANYA konfirmasi & sebutkan kamu akan proses di "
                 f"langkah berikutnya - JANGAN klaim sudah selesai. Jangan panggil tool lagi kecuali tamu memintanya. "
-                f"Balasan ini akan digabung dengan draftmu sebelum tool dipanggil (kalau ada) menjadi SATU balasan akhir - "
-                f"kalau draft sebelumnya cuma basa-basi menunggu (mis. 'saya cek dulu ya'), JANGAN ulangi/gemakan kalimat "
-                f"itu di sini, langsung tulis hasil final secara utuh seolah ini satu-satunya balasan ke tamu. LEBIH PENTING "
-                f"LAGI: kalau draft sebelumnya SUDAH TERLANJUR menebak status/detail (mis. 'belum lunas'/'saya kirim ulang "
-                f"link' padahal belum tahu hasil tool) dan tebakan itu BEDA dari hasil tool yang sebenarnya di atas, jangan "
-                f"cuma menambahkan koreksi setelahnya - balasan akhirmu harus MENGGANTIKAN tebakan yang salah itu sepenuhnya "
-                f"dengan fakta dari hasil tool, supaya tamu tidak melihat 2 klaim yang saling bertentangan dalam 1 pesan."
+                f"Draftmu sebelum tool dipanggil (kalau ada, mis. 'saya cek dulu ya') SUDAH DIBUANG, TIDAK dikirim ke tamu "
+                f"sama sekali - balasan yang kamu tulis SEKARANG ini SATU-SATUNYA pesan yang akan diterima tamu. Karena "
+                f"itu: (1) JANGAN tulis basa-basi 'sedang mengecek'/'mohon tunggu'/'sebentar ya' sama sekali - itu semua "
+                f"sudah lewat, langsung ke hasilnya. (2) SINGKAT itu WAJIB, bukan saran - langsung ke inti (hasil + 1 "
+                f"tindak lanjut/pertanyaan), tanpa mengulang-ulang detail yang sama dgn kalimat berbeda. LEBIH PENTING LAGI: "
+                f"kalau draft sebelumnya SUDAH TERLANJUR menebak status/detail (mis. 'belum lunas'/'saya kirim ulang link' "
+                f"padahal belum tahu hasil tool) dan tebakan itu BEDA dari hasil tool yang sebenarnya di atas, balasan "
+                f"akhirmu harus MENGGANTIKAN tebakan yang salah itu sepenuhnya dengan fakta dari hasil tool."
             )
             history_after = compact_history(
                 conv["messages"] + [{"role": "assistant", "content": clean_text or "(tool call)"}],
@@ -1836,7 +1893,16 @@ async def _run_chat_turn_locked(
             )
             follow_raw = await ai_reply(session_id, system_prompt, context, history_after, follow_up_user, llm_provider, llm_model)
             follow_clean, _, _ = parse_tool_call(follow_raw)
-            final_text = (clean_text + "\n\n" + follow_clean).strip() if clean_text else follow_clean
+            # (2026-08-03, laporan Agus: balasan terasa "kepanjangan"/berulang bilang "saya
+            # cek dulu ya") - SEBELUMNYA draft pra-tool (clean_text, biasanya cuma basa-basi
+            # "sedang mengecek ketersediaan...") digabung DI DEPAN follow_clean jadi satu
+            # pesan WA (lihat _fonnte_process_and_reply - final_text dikirim sbg SATU bubble,
+            # bukan 2 pesan bertahap dgn jeda nyata) - hasilnya tamu baca "saya cek dulu ya...
+            # [langsung tanpa jeda] ini hasilnya..." tiap giliran yang pakai tool, berulang
+            # tiap kali tamu tanya lagi. clean_text SEKARANG DIBUANG total - follow_clean
+            # sendiri sudah diinstruksikan (follow_up_user di atas) jadi balasan lengkap &
+            # singkat, tidak butuh draft pembuka digabung lagi.
+            final_text = follow_clean
         else:
             final_text = clean_text
     except ChatError as e:
@@ -1893,6 +1959,198 @@ async def _run_chat_turn_locked(
             )
         except Exception:
             pass
+
+    # Jaring pengaman level KODE (2026-08-03) - insiden nyata ditemukan lewat investigasi
+    # Agus (chat Harmoni tamu "Suryaadichandra", sesi fon-...-6287846336619): AI mengklaim
+    # kamar Cottage "sudah terisi untuk jam 10 pagi" lalu "sudah terisi untuk jam 11 pagi"
+    # TANPA memanggil check_availability SAMA SEKALI di seluruh percakapan (intent=None di
+    # semua giliran) - dicek langsung ke PMS, KENYATAANNYA 4 dari 5 kamar Cottage Harmoni
+    # kosong & TIDAK ADA booking apapun utk tanggal itu, klaim "penuh" itu MURNI karangan
+    # (tampaknya model menebak pola "makin pagi makin penuh" dari jam 12 yang sudah dibahas
+    # sebelumnya, bukan data asli). TOOL_DOCS check_availability sudah punya aturan "jangan
+    # pernah bilang tersedia utk Day Use tanpa cek jam" tapi itu cuma cover klaim POSITIF -
+    # dan prompt-only utk pola serupa (jam_checkin wajib) sudah terbukti tidak 100% reliable
+    # (lihat kasus bahasa Inggris & handover-promise). Sama seperti pola cancel_booking di
+    # atas: kalau balasan mengklaim ketersediaan/keterisian kamar Day Use TERKAIT jam
+    # tertentu yang disebut tamu, TAPI check_availability TIDAK dipanggil giliran ini, paksa
+    # panggil sungguhan dgn jam itu, lalu minta model tulis ulang balasan HANYA berdasar
+    # data asli - supaya tamu tidak pernah menerima klaim ketersediaan yang tidak
+    # diverifikasi sungguhan ke PMS.
+    # Ekstraksi jam juga cover follow-up singkat tanpa kata "jam" (mis. "11 ada?" susulan
+    # dari "Jam 10 ada kak?" sebelumnya - persis pola nyata di kasus Surya di atas).
+    _jam_match = re.search(r"jam\s*(\d{1,2})\b", message, re.IGNORECASE) or re.search(
+        r"^\s*(\d{1,2})\s*(ada|kak)?\s*\??\s*$", message.strip(), re.IGNORECASE,
+    )
+    _klaim_ketersediaan = re.search(
+        r"(sudah|telah|masih)\s+(ter)?isi|(kamar|cottage)[^.\n]{0,30}\bpenuh\b"
+        r"|tidak\s+tersedia|belum\s+tersedia"
+        r"|\d+\s*kamar[^.\n]{0,30}tersedia|tersedia[^.\n]{0,30}(untuk\s+)?day\s*use",
+        final_text, re.IGNORECASE,
+    )
+    if tool != "check_availability" and _jam_match and _klaim_ketersediaan:
+        jam_tamu = f"{int(_jam_match.group(1)):02d}:00"
+        hasil_asli = await _tool_check_availability({"tipe": "day_use", "jam_checkin": jam_tamu}, conv)
+        follow_up_koreksi = (
+            f"[SISTEM] Balasanmu SEBELUMNYA menyebut ketersediaan/keterisian kamar Day Use jam "
+            f"{jam_tamu} TANPA benar-benar mengecek data - itu SALAH & TELAH DIBATALKAN. Data ASLI "
+            f"hasil pengecekan sungguhan ke sistem: {hasil_asli}. Tulis ULANG balasan ke tamu (Bahasa "
+            f"Indonesia, sopan, singkat) berdasarkan HANYA data asli ini - jangan sebut kejadian "
+            f"koreksi ini ke tamu, langsung jawab natural seolah ini jawaban pertamamu."
+        )
+        history_koreksi = compact_history(
+            conv["messages"] + [{"role": "assistant", "content": final_text}], max_turns=20,
+        )
+        try:
+            raw_koreksi = await ai_reply(session_id, system_prompt, context, history_koreksi, follow_up_koreksi, llm_provider, llm_model)
+            koreksi_clean, _, _ = parse_tool_call(raw_koreksi)
+            if koreksi_clean:
+                logging.getLogger("hallucination_guard").warning(
+                    f"klaim ketersediaan Day Use tanpa check_availability terdeteksi & dikoreksi - "
+                    f"conv {conv.get('_id')}, jam {jam_tamu}, teks asli: {final_text!r}, data asli: {hasil_asli}"
+                )
+                final_text = koreksi_clean
+                tool = "check_availability"
+                tool_result = hasil_asli
+        except ChatError:
+            pass
+
+    # Jaring pengaman level KODE (2026-08-04) - laporan Agus (chat Harmoni tamu Artha):
+    # tamu tanya "besok ada yang kosong kak untuk day use?" -> AI benar panggil
+    # check_availability(tanggal_checkin besok), semua kamar Cottage kosong besok. Giliran
+    # BERIKUTNYA tamu tanya "dari jam brp ready kak" -> AI TIDAK memanggil check_availability
+    # SAMA SEKALI, tapi menjawab "kamar Cottage yang tersedia akan siap sekitar jam 16:24
+    # WIB" - angka itu diverifikasi (via reproduksi Chat Simulator) berasal dari blok
+    # "# JADWAL KAMAR HARI INI" yang SELALU disuntik ke context tiap giliran (lihat
+    # build_context_block di ai_service.py) untuk kamar yang HARI INI sedang dipakai -
+    # bukan data besok sama sekali (besok, semua kamar sudah kosong sejak pagi, TIDAK ADA
+    # "siap jam berapa" yang relevan). Blok itu SUDAH ada disclaimer eksplisit "snapshot
+    # HARI INI saja... jangan menyimpulkan dari data di atas" tapi model tetap
+    # melanggarnya - prompt-only lagi-lagi tidak cukup (pola sama seperti guard multi-tipe
+    # & klaim-ketersediaan-Day-Use di atas). Deteksi: tamu (pesan ini ATAU beberapa pesan
+    # terakhir) menyebut "besok"/"lusa" TAPI balasan mengklaim jam kesiapan spesifik
+    # ("siap"/"ready"/"tersedia lagi" + jam HH:MM) TANPA check_availability dipanggil
+    # giliran ini - paksa panggil ulang dgn tanggal besok/lusa yang benar, tulis ulang.
+    _recent_user_text = " ".join(
+        m.get("content", "") for m in conv["messages"][-6:] if m.get("role") == "user"
+    ) + " " + message
+    _besok_match = re.search(r"\bbesok\b", _recent_user_text, re.IGNORECASE)
+    _lusa_match = re.search(r"\blusa\b", _recent_user_text, re.IGNORECASE)
+    _readiness_claim_besok = re.search(
+        r"(siap|ready|tersedia\s*lagi|kosong\s*lagi)[^.\n]{0,25}\bjam\s*\d{1,2}[:.]\d{2}\b",
+        final_text, re.IGNORECASE,
+    )
+    if tool != "check_availability" and _readiness_claim_besok and (_besok_match or _lusa_match):
+        offset_hari = 2 if (_lusa_match and not _besok_match) else 1
+        tanggal_target = (datetime.now(timezone.utc) + timedelta(hours=7) + timedelta(days=offset_hari)).strftime("%Y-%m-%d")
+        hasil_asli = await _tool_check_availability({"tanggal_checkin": tanggal_target}, conv)
+        follow_up_koreksi = (
+            f"[SISTEM] Balasanmu SEBELUMNYA menyebut jam kesiapan kamar spesifik untuk "
+            f"{'besok' if offset_hari == 1 else 'lusa'} ({tanggal_target}) TANPA benar-benar mengecek "
+            f"tanggal itu - itu SALAH (kamu memakai data kamar HARI INI, bukan {tanggal_target}) & TELAH "
+            f"DIBATALKAN. Data ASLI hasil pengecekan sungguhan untuk tanggal {tanggal_target}: {hasil_asli}. "
+            f"Tulis ULANG balasan ke tamu (Bahasa Indonesia, sopan, singkat) berdasarkan HANYA data asli ini "
+            f"- kalau kamar_tersedia>0 untuk semua tipe relevan, jangan sebut 'siap jam berapa' sama sekali "
+            f"(kamar sudah kosong, bisa booking jam berapa saja yang tamu mau) - jangan sebut kejadian koreksi "
+            f"ini ke tamu, langsung jawab natural seolah ini jawaban pertamamu."
+        )
+        history_koreksi = compact_history(
+            conv["messages"] + [{"role": "assistant", "content": final_text}], max_turns=20,
+        )
+        try:
+            raw_koreksi = await ai_reply(session_id, system_prompt, context, history_koreksi, follow_up_koreksi, llm_provider, llm_model)
+            koreksi_clean, _, _ = parse_tool_call(raw_koreksi)
+            if koreksi_clean:
+                logging.getLogger("hallucination_guard").warning(
+                    f"klaim jam kesiapan besok/lusa tanpa check_availability terdeteksi & dikoreksi - "
+                    f"conv {conv.get('_id')}, tanggal {tanggal_target}, teks asli: {final_text!r}, data asli: {hasil_asli}"
+                )
+                final_text = koreksi_clean
+                tool = "check_availability"
+                tool_result = hasil_asli
+        except ChatError:
+            pass
+
+    # Jaring pengaman level KODE (2026-08-03) - insiden nyata: tamu rombongan besar (Leny
+    # Savitri, 8 Cottage + 7 Standard) minta 2 tipe kamar sekaligus dalam 1 pesan, AI
+    # panggil check_availability dgn "tipe" TERISI (cuma 1 tipe) & balasannya HANYA sebut
+    # tipe itu, tipe kedua yang tamu minta sama sekali tidak disinggung - tamu harus tanya
+    # ulang baru dijawab, hampir bikin booking rombongan besar/penting ditinggal nunggu.
+    # Prompt sudah diperkuat ("kalau tamu minta >1 tipe, kosongkan tipe biar semua kembali")
+    # TETAP gagal 2x percobaan verifikasi - sama seperti pola bug lain di file ini, prompt
+    # saja tidak cukup diandalkan utk model ini. Deteksi generik (bukan spesifik Cottage/
+    # Standard, biar tidak basi kalau ada properti/tipe kamar baru): pesan tamu mengandung
+    # >=2 pola "angka + kata kamar" (mis. "8 cottage" & "7 room") TAPI tool dipanggil dgn
+    # "tipe" spesifik (bukan semua tipe) - paksa cek ULANG tanpa filter tipe (otomatis
+    # kembalikan SEMUA tipe kamar), lalu minta model tulis ulang balasan mencakup semua
+    # tipe yang tamu sebutkan.
+    multi_tipe_match = re.findall(r"\d+\s*(?:cottage|standard|kamar|room|unit)", message, re.IGNORECASE)
+    if tool == "check_availability" and len(multi_tipe_match) >= 2 and args and args.get("tipe"):
+        args_tanpa_tipe = {k: v for k, v in args.items() if k != "tipe"}
+        hasil_lengkap = await _tool_check_availability(args_tanpa_tipe, conv)
+        follow_up_koreksi = (
+            f"[SISTEM] Tamu meminta LEBIH DARI SATU tipe kamar sekaligus di pesan ini "
+            f"(\"{message}\"), tapi balasanmu SEBELUMNYA cuma menyebut satu tipe - itu SALAH "
+            f"& TELAH DIBATALKAN. Data ASLI ketersediaan SEMUA tipe kamar utk tanggal ini: "
+            f"{hasil_lengkap}. Tulis ULANG balasan ke tamu (Bahasa Indonesia, sopan, singkat) "
+            f"yang mencakup SEMUA tipe kamar yang tamu sebutkan di pesannya (abaikan tipe "
+            f"yang tidak disebut tamu), berdasarkan HANYA data asli ini."
+        )
+        history_koreksi = compact_history(
+            conv["messages"] + [{"role": "assistant", "content": final_text}], max_turns=20,
+        )
+        try:
+            raw_koreksi = await ai_reply(session_id, system_prompt, context, history_koreksi, follow_up_koreksi, llm_provider, llm_model)
+            koreksi_clean, _, _ = parse_tool_call(raw_koreksi)
+            if koreksi_clean:
+                logging.getLogger("hallucination_guard").warning(
+                    f"jawaban ketersediaan cuma sebut 1 dari beberapa tipe kamar yang diminta - "
+                    f"terdeteksi & dikoreksi - conv {conv.get('_id')}, teks asli: {final_text!r}, "
+                    f"data asli: {hasil_lengkap}"
+                )
+                final_text = koreksi_clean
+                tool_result = hasil_lengkap
+        except ChatError:
+            pass
+
+    # Jaring pengaman level KODE (2026-08-03) - insiden nyata: tamu tanya harga laundry, AI
+    # sebutkan 2 item ASLI (Cuci Kering/Cuci Setrika, sesuai data live kasir menu_now) TAPI
+    # lalu menambah sendiri baris "Express 6 Jam: Rp 15.000/kg" yang TIDAK ADA di data
+    # manapun (bukan di KB, bukan di kasir) - murni karangan. Prompt sudah diperkuat tegas
+    # ("JANGAN PERNAH menambah varian/tingkatan lain") TETAP muncul persis sama 3x berturut-
+    # turut (temperature=0 utk gpt-4o-mini, jadi genuinely reproducible, bukan random) -
+    # prompt-only terbukti tidak cukup, sama seperti pola bug lain di file ini. Deteksi
+    # generik (bukan cuma laundry): kalau balasan menyebut kata "express" dalam konteks
+    # laundry TAPI tidak ada satupun item menu ASLI kategori laundry yang namanya
+    # mengandung "express", paksa tulis ulang balasan HANYA berdasar daftar menu asli
+    # giliran ini (pola sama dgn guard ketersediaan di atas - force koreksi via panggilan
+    # AI kedua yang diberi data asli, bukan regex-replace teks langsung krn kalimatnya
+    # tidak bisa ditebak formatnya).
+    if re.search(r"laundry", final_text, re.IGNORECASE) and re.search(r"express", final_text, re.IGNORECASE):
+        real_laundry_items = [m for m in (menu_now or []) if m.get("kategori") == "laundry"]
+        ada_express_asli = any("express" in (m.get("nama") or "").lower() for m in real_laundry_items)
+        if not ada_express_asli and real_laundry_items:
+            daftar_asli = "; ".join(f"{m['nama']} - Rp {int(m.get('harga', 0)):,}" for m in real_laundry_items)
+            follow_up_koreksi = (
+                f"[SISTEM] Balasanmu SEBELUMNYA menyebut item/tarif laundry yang TIDAK ADA di "
+                f"data asli (mis. \"express\") - itu SALAH & TELAH DIBATALKAN. Data ASLI "
+                f"satu-satunya item laundry yang tersedia: {daftar_asli}. Tulis ULANG balasan "
+                f"ke tamu (Bahasa Indonesia, sopan, singkat) HANYA berdasar daftar itu - jangan "
+                f"sebut item/varian lain apa pun."
+            )
+            history_koreksi = compact_history(
+                conv["messages"] + [{"role": "assistant", "content": final_text}], max_turns=20,
+            )
+            try:
+                raw_koreksi = await ai_reply(session_id, system_prompt, context, history_koreksi, follow_up_koreksi, llm_provider, llm_model)
+                koreksi_clean, _, _ = parse_tool_call(raw_koreksi)
+                if koreksi_clean:
+                    logging.getLogger("hallucination_guard").warning(
+                        f"item laundry palsu (mis. 'express') terdeteksi & dikoreksi - "
+                        f"conv {conv.get('_id')}, teks asli: {final_text!r}, data asli: {daftar_asli}"
+                    )
+                    final_text = koreksi_clean
+            except ChatError:
+                pass
 
     # Jaring pengaman level KODE (2026-07-22) - insiden nyata: AI menulis RINGKASAN harga
     # (Nama/Tipe/Harga/Service X%/Total) TANPA memanggil preview_booking sama sekali (tool
@@ -2058,10 +2316,17 @@ async def _run_chat_turn_locked(
     # dieskalasi), cuma tindakannya yang tidak benar-benar terjadi - jadi solusinya BUKAN
     # mengganti teksnya, tapi membuat janjinya BENAR dgn memanggil tool ini sungguhan,
     # sama seperti staf yang lihat chat itu pasti akan lakukan.
-    if tool != "request_handover" and re.search(
-        r"(teruskan|sampaikan|eskalasi|hubungkan|alihkan).{0,40}(admin|staf|owner|pemilik)",
-        final_text, re.IGNORECASE,
-    ):
+    #
+    # BUG NYATA ditemukan 2026-08-03 (laporan Agus - tamu Leny Savitri, booking 15 kamar,
+    # macet 3+ jam TANPA balasan sama sekali): regex di atas match kalimat PENUTUP generik
+    # "Kalau mau info lebih detail atau ada permintaan khusus, saya bantu teruskan ke staf
+    # ya Kak" - ini basa-basi tawaran bantuan HIPOTETIS/masa depan (diawali "Kalau..."),
+    # BUKAN janji aktif menindaklanjuti permintaan yang SEDANG terjadi - tapi guard ini
+    # tetap memicu handover sungguhan, AI berhenti total membalas padahal tamu sedang di
+    # tengah alur booking besar. Diperbaiki: kalimat yang DIAWALI "kalau"/"jika" (penanda
+    # tawaran hipotetis, bukan aksi nyata sekarang) TIDAK dianggap janji eskalasi sungguhan,
+    # walau pola kata "teruskan...staf" tetap cocok.
+    if tool != "request_handover" and _janji_eskalasi_sungguhan(final_text):
         logging.getLogger("hallucination_guard").warning(
             f"AI menjanjikan eskalasi tanpa memanggil request_handover - dipanggil otomatis oleh sistem. "
             f"conv {conv.get('_id')}, teks asli: {final_text!r}"
@@ -2096,6 +2361,8 @@ async def _run_chat_turn_locked(
         "last_intent": tool,
         "response_time_ms": elapsed_ms,
     }
+    if conv.get("guest_language"):
+        update["guest_language"] = conv["guest_language"]
     if bot:
         update["bot_id"] = str(bot.get("_id")) if bot.get("_id") is not None else None
         update["bot_code"] = bot.get("code")

@@ -17,6 +17,17 @@ const CHANNEL_LABEL = {
   simulator: "Simulator (uji coba)",
 };
 
+// Penanda properti (2026-08-03, permintaan Agus) - daftar Percakapan sebelumnya
+// mencampur chat Pelangi & Harmoni tanpa tanda apa pun, staf harus buka satu-satu
+// buat tahu ini tamu properti mana. property_slug disuntik backend (GET /conversations,
+// lookup dari bot_id/bot_code percakapan) - warna beda per properti supaya kelihatan
+// sekilas tanpa baca teks.
+const PROPERTY_LABEL = { pelangi: "Pelangi", harmoni: "Harmoni" };
+const PROPERTY_CLS = {
+  pelangi: "bg-orange-100 text-orange-800",
+  harmoni: "bg-violet-100 text-violet-800",
+};
+
 // Kode tool internal -> label singkat yang gampang dibaca sekilas di tiap bubble chat.
 // Tool yang tidak ada di daftar ini sengaja TIDAK ditampilkan (drop ke null) daripada
 // menampilkan nama kode mentah yang tidak berarti apa-apa buat orang awam.
@@ -225,6 +236,12 @@ export default function Conversations() {
                   {c.whatsapp && <div className="text-[11px] text-[hsl(var(--muted-foreground))]">📱 {c.whatsapp}</div>}
                   <div className="text-xs text-[hsl(var(--muted-foreground))] truncate">{c.last_message}</div>
                   <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+                    <span
+                      data-testid={`conv-property-${c.id}`}
+                      className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${PROPERTY_CLS[c.property_slug] || "bg-slate-100 text-slate-600"}`}
+                    >
+                      {PROPERTY_LABEL[c.property_slug] || c.property_slug}
+                    </span>
                     <Badge tone={c.status === "waiting_admin" ? "danger" : c.resolution === "ai_resolved" ? "success" : "muted"}>
                       {c.status === "waiting_admin" ? "🔴 Butuh Kamu" : c.resolution === "ai_resolved" ? "AI Selesai" : c.status === "closed" ? "Selesai" : "AI Aktif"}
                     </Badge>
@@ -252,6 +269,12 @@ export default function Conversations() {
                 <div>
                   <div className="font-[Fraunces] font-semibold text-lg flex items-center gap-2">
                     {selected.guest_name || "Tamu Anonim"}
+                    <span
+                      data-testid="conv-detail-property"
+                      className={`text-[11px] px-2 py-0.5 rounded font-semibold ${PROPERTY_CLS[selected.property_slug] || "bg-slate-100 text-slate-600"}`}
+                    >
+                      {PROPERTY_LABEL[selected.property_slug] || selected.property_slug}
+                    </span>
                     {selected.nomor_aktif === false && <Badge tone="warn">Nomor lama (tidak aktif)</Badge>}
                   </div>
                   <div className="text-xs text-[hsl(var(--muted-foreground))]">

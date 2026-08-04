@@ -348,7 +348,8 @@ TOOL_DOCS = {
     'Tipe "kamar_tersedia":0 = PENUH (bukan error), sampaikan jujur. Kalau ada "estimasi_kosong_lagi", sampaikan sebagai PERKIRAAN (bukan jaminan). Kalau TIDAK ADA field itu pada tipe yang penuh, JANGAN mengarang kapan kosong lagi - cukup bilang penuh, tawarkan tanggal/tipe lain. '
     'FORMAT WAJIB saat PENUH tapi ADA estimasi (2026-08-02, permintaan langsung Agus - contoh persis yang diminta: "saat ini full kak, terisi Day Use, nanti tersedia lagi jam 15.56 dan ready jam 16.30, apa Kakak mau?"): (1) HANYA sebutkan SATU opsi tercepat ("estimasi_kamar_nomor" + waktunya) - JANGAN daftar semua kandidat/kamar lain sekaligus (bikin tamu bingung pilih, bukan CS yang membantu memutuskan), cukup 1 opsi terbaik dulu. (2) Sebutkan KEDUA jam secara terpisah & jelas bedanya: "estimasi_checkout_asli" = jam tamu sebelumnya checkout ("tersedia lagi jam X"), "estimasi_kosong_lagi" = jam BENAR-BENAR siap dipakai tamu baru setelah dibersihkan ("ready jam Y") - JANGAN cuma sebut satu angka gabungan, tamu perlu tahu dua tahap itu. (3) WAJIB tutup dengan tawaran LANGSUNG & KONKRET, bukan pertanyaan terbuka generik - mis. "Apa Kakak mau?"/"Mau saya bantu proses bookingnya untuk jam segitu, Kak?" - JANGAN cuma "ada jam lain yang diinginkan?" tanpa menawarkan opsi yang sudah dikasih. '
     'Kalau tamu minta LEBIH banyak kamar dari yang tersedia (mis. minta 3, cuma ada 1) - WAJIB isi "jumlah_kamar" dgn angka yang tamu minta supaya sistem hitung estimasi kekurangannya juga. Kalau hasilnya ada "kamar_kurang" + "estimasi_kosong_lagi", sampaikan keduanya sekaligus dgn jujur: berapa yang sudah pasti tersedia SEKARANG, dan berapa kamar lagi yang KEMUNGKINAN (bukan jaminan) siap sekitar jam berapa dari Day Use yang akan checkout - baru tawarkan apakah tamu mau menunggu. Kalau tidak ada estimasi sama sekali, jangan menawarkan menunggu, cukup jujur kekurangannya tidak bisa dipenuhi hari ini. '
-    'PENTING soal "jam_checkin" (2026-08-01, bug nyata: tamu tanya Day Use BESOK jam 10 pagi dijawab "tersedia banyak" tanpa cek jam sama sekali, padahal SEMUA kamar baru checkout tamu menginap jam 12 siang hari itu - checkin Day Use pagi/siang BISA bentrok dgn checkout tamu menginap sebelumnya walau tanggalnya sama-sama "tersedia" tanpa jam) - untuk Day Use di TANGGAL APA PUN (hari ini atau nanti), begitu tamu sebutkan/menyiratkan jam kedatangan, WAJIB isi "jam_checkin" di panggilan ini. Kalau tamu belum sebutkan jamnya sama sekali, TANYA DULU jam kedatangannya SEBELUM memastikan ketersediaan Day Use - jangan pernah bilang "tersedia" untuk Day Use tanpa tahu jamnya. '
+    'PERMINTAAN BEBERAPA TIPE KAMAR SEKALIGUS (2026-08-03, bug nyata ditemukan Agus - tamu rombongan besar minta "8 cottage + 7 room/Standard" dalam 1 pesan, AI panggil tool ini dgn "tipe":"Cottage" & jawab HANYA soal Cottage, sama sekali tidak menyinggung Standard - tamu harus tanya ulang baru dijawab, hampir bikin tamu rombongan besar/penting ditinggal nunggu tanpa jawaban lengkap) - SATU giliran chat cuma bisa 1x panggil tool ini (sistem TIDAK mendukung panggil tool berkali-kali dalam 1 giliran), jadi kalau tamu menyebut LEBIH DARI SATU tipe kamar sekaligus (mis. "cottage dan standard", "8 cottage + 7 room", "campur beberapa tipe"), JANGAN isi field "tipe" SAMA SEKALI di panggilan ini (kosongkan/hilangkan) - itu otomatis mengembalikan SEMUA tipe kamar sekaligus dalam 1 hasil. Lalu di balasanmu, WAJIB sebutkan SEMUA tipe yang tamu minta (ambil dari hasil tool yang relevan saja, tipe lain yang tidak disebut tamu boleh diabaikan) - jangan cuma sebutkan tipe yang pertama disebut tamu. '
+    'PENTING soal "jam_checkin" (2026-08-01, bug nyata: tamu tanya Day Use BESOK jam 10 pagi dijawab "tersedia banyak" tanpa cek jam sama sekali, padahal SEMUA kamar baru checkout tamu menginap jam 12 siang hari itu - checkin Day Use pagi/siang BISA bentrok dgn checkout tamu menginap sebelumnya walau tanggalnya sama-sama "tersedia" tanpa jam) - untuk Day Use di TANGGAL APA PUN (hari ini atau nanti), begitu tamu sebutkan/menyiratkan jam kedatangan, WAJIB isi "jam_checkin" di panggilan ini. Kalau tamu belum sebutkan jamnya sama sekali, TANYA DULU jam kedatangannya SEBELUM memastikan ketersediaan Day Use - jangan pernah bilang "tersedia" untuk Day Use tanpa tahu jamnya. ATURAN INI BERLAKU DUA ARAH (2026-08-03, bug nyata: tamu tanya jam 10 lalu jam 11, AI menjawab "sudah terisi untuk jam 10 pagi"/"sudah terisi untuk jam 11 pagi" DUA-DUANYA TANPA memanggil tool ini SAMA SEKALI - dicek langsung ke PMS, kenyataannya kamar KOSONG & tidak ada booking apapun, klaim "penuh" itu murni karangan/tebakan pola, bukan data asli) - JANGAN PERNAH bilang kamar "sudah terisi"/"penuh"/"tidak tersedia" untuk jam tertentu juga TANPA memanggil tool ini dulu dgn jam_checkin itu. Menebak kamar TIDAK tersedia sama bahayanya dgn menebak TERSEDIA - keduanya WAJIB berdasar hasil tool ini, bukan pola percakapan sebelumnya. '
     'SAMBUNGAN PERCAKAPAN WAJIB (2026-08-02, bug nyata: tamu ditawari "kamar Standard penuh, tapi diperkirakan kosong lagi jam 12:30", tamu balas "kalau saya checkin jam 2 siang gimana?" - AI cuma jawab generik "itu jam checkin standar kami" lalu tanya ulang tipe kamar/tanggal yang SUDAH DIA SEBUTKAN sebelumnya, tidak pernah benar-benar mengonfirmasi ketersediaan jam itu): begitu tamu menyebutkan jam check-in SETELAH kamu baru saja membahas ketersediaan/estimasi kamar (hari ini ATAU tanggal lain, Menginap ATAU Day Use) di percakapan yang SAMA, WAJIB panggil check_availability LAGI dengan jam_checkin=jam yang baru disebutkan tamu itu (pakai tipe/tanggal/jumlah kamar yang SUDAH diketahui dari konteks - JANGAN tanya ulang data yang sudah ada), lalu jawab dari HASIL PANGGILAN ITU ("kebetulan jam segitu sudah lewat perkiraan checkout, jadi kamar sudah bisa Kak!" atau "jam segitu masih kepakai tamu sebelumnya, coba jam lain?") - JANGAN menjawab dari pengetahuan umum jam check-in standar tanpa benar-benar mengecek ulang.',
     "check_member_status": '- check_member_status : args {"whatsapp":"..."}. Nomor WA SUDAH ADA di konteks - jangan tanya tamu. Panggil PROAKTIF begitu tamu mulai niat booking (bukan sekadar tanya info umum). Hasil: "kedatangan_ke" & "diskon_persen". Kalau diskon_persen>0, WAJIB sampaikan hangat SEBELUM ditanya, mis: "Kak, ini kedatangan ke-{kedatangan_ke} - dapat diskon member {diskon_persen}%! 🎉". Kalau 0 (kedatangan biasa), JANGAN sebut apa pun soal ini ke tamu. Sama dengan diskon_member_persen di create_booking - tidak perlu panggil ulang di percakapan yang sama. '
     'LARANGAN KERAS (2026-08-02, bug nyata ditemukan - tamu I Kadek Ongki: AI bilang "kedatangan ke-2" DI SATU GILIRAN, lalu giliran BERIKUTNYA bilang "kedatangan pertama" TANPA ada booking baru sama sekali di antaranya - tamu sampai protes "ini yang ke-4 kalau ga salah") - JANGAN PERNAH sebutkan kedatangan ke-berapa/status diskon member SAMA SEKALI kecuali tool ini BENAR-BENAR sudah dipanggil & berhasil (ok=true) di percakapan ini - kalau belum pernah dipanggil, JANGAN menebak angkanya sendiri. Begitu sudah dipanggil 1x dan dapat hasil, angka itu SUMBER KEBENARAN SATU-SATUNYA untuk sisa percakapan - jangan sebutkan angka lain yang berbeda tanpa memanggil ulang tool ini. Kalau tamu membantah angkanya ("ini kan udah ke-4x saya"), JANGAN adu argumen atau asal ganti angka - akui ada kemungkinan riwayatnya belum lengkap tercatat sistem & tetap pakai angka dari tool sbg acuan resmi, tawarkan staf yang cek manual kalau tamu yakin.',
@@ -591,6 +592,19 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
         maps_line += (
             " Tutup dengan tawaran bantu kalau tamu nyasar, mis. \"Kalau sempat nyasar, "
             "kabari saya ya Kak, saya bantu arahkan 😊\"\n"
+            "LARANGAN KERAS (2026-08-03, bug nyata ditemukan Agus - tamu tanya \"kalo dari "
+            "Singaraja searah ke Bedugul kak?\" dijawab dengan RUTE MENGEMUDI BUATAN SENDIRI "
+            "langkah demi langkah dari Singaraja - padahal itu KARANGAN, bukan data asli, "
+            "berisiko tamu diarahkan ke jalan yang salah): JANGAN PERNAH mengarang/menyusun "
+            "sendiri rute perjalanan/arah jalan dari kota/titik lain mana pun (Singaraja, "
+            "Denpasar, bandara, dst) - kamu TIDAK punya data rute jalan raya yang bisa "
+            "dipercaya. Untuk PERTANYAAN APA PUN soal cara/rute ke sini dari luar area "
+            f"lokasi kami, JAWAB CUKUP dengan link Maps di atas ({settings['maps_url']}) dan "
+            "suruh tamu masukkan sebagai tujuan di aplikasi Maps/Waze/Google Maps miliknya "
+            "sendiri untuk rute mengemudi - biar aplikasi itu yang hitung rute asli sesuai "
+            "posisi tamu saat itu, JANGAN pernah menebak/menyebutkan nama jalan/arah belok "
+            "sendiri. Arah jalan KAKI dari titik pin (map_directions di atas, kalau ada) BEDA "
+            "- itu data asli dari kami, boleh disampaikan seperti biasa.\n"
         )
     kontak_darurat = settings.get("emergency_phone") or ""
     kontak_darurat_line = ""
@@ -778,6 +792,21 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
                 parts.append(f"- [{kategori}] {m.get('nama','?')} — {harga} ({status})")
             else:
                 parts.append(f"- [{kategori}] {m.get('nama','?')} — {harga}")
+        # (2026-08-03, bug nyata ditemukan Agus - tamu tanya harga laundry, AI sebutkan
+        # "Cuci Kering"/"Cuci Setrika" yang BENAR persis sesuai daftar di atas, TAPI lalu
+        # menambah sendiri baris "Express 6 Jam: Rp 15.000/kg" yang TIDAK ADA sama sekali
+        # di data manapun - murni karangan, sepertinya menebak dari pengetahuan umum "laundry
+        # biasanya ada opsi express") - larangan eksplisit di sini krn instruksi umum
+        # "jangan mengarang" ternyata tidak cukup mencegah AI menambah VARIAN/TIER baru
+        # pada daftar yang SEBAGIAN sudah benar (beda dari mengarang total, lebih halus &
+        # lebih gampang lolos).
+        parts.append(
+            "PENTING: daftar di atas adalah SATU-SATUNYA item & harga yang boleh kamu "
+            "sebutkan - JANGAN PERNAH menambah varian/tingkatan/paket lain (mis. \"express\", "
+            "\"reguler\", ukuran lain, dst) yang TIDAK tertulis persis di daftar ini, walau "
+            "terasa masuk akal/lazim ada di tempat lain. Kalau tamu tanya soal opsi yang tidak "
+            "ada di daftar, jawab jujur item itu tidak tersedia, jangan menebak harganya."
+        )
 
     if kb:
         parts.append("\n# KNOWLEDGE BASE")
@@ -1004,3 +1033,49 @@ def compact_history(messages: List[dict], max_turns: int = 12) -> str:
             role = "AI"
         lines.append(f"{role}: {m.get('content','')}")
     return "\n".join(lines)
+
+
+# Deteksi bahasa tamu di level KODE (2026-08-03) - laporan Agus & dites langsung lewat
+# Chat Simulator: tamu yang menulis 3 pesan berturut-turut full Bahasa Inggris tetap
+# dibalas 100% Bahasa Indonesia SETIAP giliran - instruksi prompt ("KEBIJAKAN BAHASA" di
+# DEFAULT_SYSTEM_PROMPT, sudah diperkuat 2x sebelumnya) TERBUKTI tidak cukup reliable
+# sendirian (sama seperti pola bug lain di server.py yang akhirnya butuh jaring kode,
+# bukan cuma prompt). Heuristik ringan (stopword counting) SENGAJA dipilih drpd library
+# eksternal (langdetect dkk) - pesan WA pendek & sering typo, model besar/ML overkill
+# utk sinyal sesederhana ini, dan tidak nambah dependency baru. Dipanggil oleh server.py
+# tiap giliran chat, hasilnya disimpan `conv["guest_language"]` (persisten - PRD
+# Receptionist Intelligence Engine, "bahasa yang digunakan" sbg bagian Memory Engine)
+# supaya begitu tamu switch ke Inggris SEKALI, itu jadi bahasa acuan tiap giliran
+# berikutnya (bukan dicek ulang per-kata tiap kali, rawan salah pas pesan pendek/ambigu
+# spt "Ok"/"Yes") - kecuali tamu switch balik ke Indonesia (dgn sinyal jelas), lihat
+# `_run_chat_turn_locked`.
+_EN_STOPWORDS = {
+    "the", "is", "are", "you", "your", "have", "has", "do", "does", "for", "this", "that",
+    "with", "and", "or", "what", "when", "where", "how", "much", "many", "room", "rooms",
+    "available", "availability", "tonight", "today", "tomorrow", "thanks", "thank", "please",
+    "yes", "hello", "can", "could", "would", "will", "need", "want", "book", "booking",
+    "price", "rate", "night", "check", "checkin", "checkout", "include", "included",
+    "breakfast", "stay", "guest", "guests", "still", "any", "there", "which", "cost",
+}
+_ID_STOPWORDS = {
+    "yang", "dan", "atau", "ini", "itu", "untuk", "dengan", "ada", "apakah", "apa",
+    "berapa", "kamar", "tersedia", "kak", "kakak", "min", "admin", "boleh", "bisa", "mau",
+    "ingin", "terima", "kasih", "malam", "besok", "hari", "nanti", "gimana", "gmn", "gak",
+    "tidak", "iya", "dong", "deh", "nih", "udah", "sudah", "sama", "juga", "lagi", "masih",
+    "kok", "kalo", "kalau", "saya", "aku", "kami", "nya", "banget", "gitu", "gini",
+}
+
+
+def detect_guest_language(msg: str) -> Optional[str]:
+    """Balikin "en"/"id" kalau cukup yakin, None kalau ambigu (pesan terlalu pendek/campur -
+    JANGAN override bahasa yang sudah tersimpan sebelumnya kalau ambigu, lihat pemanggil)."""
+    words = re.findall(r"[a-zA-Z]+", (msg or "").lower())
+    if not words:
+        return None
+    en = sum(1 for w in words if w in _EN_STOPWORDS)
+    idn = sum(1 for w in words if w in _ID_STOPWORDS)
+    if en >= 2 and en > idn:
+        return "en"
+    if idn >= 1 and idn >= en:
+        return "id"
+    return None

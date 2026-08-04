@@ -10,6 +10,7 @@ import {
 
 const topNav = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true, tid: "nav-dashboard" },
+  { to: "/analytics", label: "Analytics", icon: BarChart3, tid: "nav-analytics" },
   { to: "/conversations", label: "Percakapan", icon: MessagesSquare, tid: "nav-conversations" },
   { to: "/simulator", label: "Chat Simulator", icon: BotMessageSquare, tid: "nav-simulator" },
 ];
@@ -36,7 +37,6 @@ const opsSection = [
 ];
 
 const bottomNav = [
-  { to: "/analytics", label: "Analytics", icon: BarChart3, tid: "nav-analytics" },
   { to: "/pms-integration", label: "Integrasi PMS", icon: Plug, tid: "nav-pms-integration" },
   { to: "/audit-log", label: "Audit Log", icon: ShieldCheck, tid: "nav-audit-log" },
   { to: "/settings", label: "Settings", icon: SettingsIcon, tid: "nav-settings" },
