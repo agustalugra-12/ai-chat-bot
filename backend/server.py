@@ -2051,12 +2051,46 @@ async def _run_chat_turn_locked(
         r"|\d+\s*kamar[^.\n]{0,30}tersedia|tersedia[^.\n]{0,30}(untuk\s+)?day\s*use",
         final_text, re.IGNORECASE,
     )
-    if tool != "check_availability" and _jam_match and _klaim_ketersediaan:
-        jam_tamu = f"{int(_jam_match.group(1)):02d}:00"
-        hasil_asli = await _tool_check_availability({"tipe": "day_use", "jam_checkin": jam_tamu}, conv)
+    # (2026-08-04, bug nyata ditemukan lewat laporan Agus - tamu "Dar") - dulu guard ini
+    # WAJIB ada _jam_match (pola "jam X" literal) di PESAN INI, jadi follow-up singkat
+    # yang tidak mengulang jam sama sekali (mis. "Yg standard ready ya kak?" susulan dari
+    # obrolan "hari Minggu jam 9" beberapa giliran sebelumnya) LOLOS TANPA verifikasi -
+    # kasus nyata: tamu dapat jawaban "Cottage 7, Standard 10 tersedia" (benar), lalu
+    # giliran BERIKUTNYA tanya ulang soal Standard tanpa sebut jam, dapat jawaban
+    # "Standard sudah penuh" (kontradiksi total, tanpa tool call apa pun). Sekarang guard
+    # JUGA trigger kalau ada referensi TANGGAL (bukan cuma jam) di riwayat baru-baru ini -
+    # _tanggal_disebut_ke_target() yang sama dipakai guard besok/lusa/hari-nama - supaya
+    # follow-up yang cuma ganti tipe kamar tanpa ulang jam/tanggal tetap diverifikasi.
+    _recent_text_untuk_tanggal = " ".join(
+        m.get("content", "") for m in conv["messages"][-6:] if m.get("role") == "user"
+    ) + " " + message
+    _tgl_dar = _tanggal_disebut_ke_target(_recent_text_untuk_tanggal)
+    if tool != "check_availability" and _klaim_ketersediaan and (_jam_match or _tgl_dar):
+        jam_tamu = f"{int(_jam_match.group(1)):02d}:00" if _jam_match else None
+        # Guard ini SENDIRI dulu punya DUA bug: (1) sama dgn yang baru diperbaiki di
+        # guard lain hari ini - koreksinya TANPA tanggal_checkin sama sekali, diam-diam
+        # default ke HARI INI walau tamu jelas sedang bahas tanggal lain (sekarang pakai
+        # _tgl_dar, dihitung di atas - kalau ketemu referensi tanggal non-hari-ini di
+        # riwayat, pakai itu; kalau tidak ada sama sekali, baru default hari ini). (2)
+        # BUG LEBIH PARAH ditemukan verifikasi hari ini: "tipe": "day_use" dikirim ke
+        # _tool_check_availability, TAPI param "tipe" di situ artinya TIPE KAMAR
+        # (Cottage/Standard), BUKAN tipe booking - "day_use" bukan nama tipe kamar apa
+        # pun yang ada, jadi query PMS SELALU balik kosong [] apa pun kondisi sebenarnya,
+        # lalu model menyimpulkan "kosong = semua penuh" - inilah PERSIS yang bikin
+        # jawaban ke tamu Dar SELALU "sudah penuh" walau kenyataannya banyak yang
+        # kosong. Dihapus total - jangan kirim filter tipe di guard umum ini (biarkan
+        # semua tipe kamar kembali, sama seperti guard besok/lusa lainnya).
+        args_cek = {}
+        if jam_tamu:
+            args_cek["jam_checkin"] = jam_tamu
+        if _tgl_dar:
+            args_cek["tanggal_checkin"] = _tgl_dar[1]
+        hasil_asli = await _tool_check_availability(args_cek, conv)
         follow_up_koreksi = (
-            f"[SISTEM] Balasanmu SEBELUMNYA menyebut ketersediaan/keterisian kamar Day Use jam "
-            f"{jam_tamu} TANPA benar-benar mengecek data - itu SALAH & TELAH DIBATALKAN. Data ASLI "
+            f"[SISTEM] Balasanmu SEBELUMNYA menyebut ketersediaan/keterisian kamar Day Use"
+            + (f" jam {jam_tamu}" if jam_tamu else "")
+            + (f" untuk {_tgl_dar[0]} ({_tgl_dar[1]})" if _tgl_dar else "") +
+            f" TANPA benar-benar mengecek data - itu SALAH & TELAH DIBATALKAN. Data ASLI "
             f"hasil pengecekan sungguhan ke sistem: {hasil_asli}. Tulis ULANG balasan ke tamu (Bahasa "
             f"Indonesia, sopan, singkat) berdasarkan HANYA data asli ini - jangan sebut kejadian "
             f"koreksi ini ke tamu, langsung jawab natural seolah ini jawaban pertamamu."
@@ -2143,12 +2177,20 @@ async def _run_chat_turn_locked(
     # dicek", jadi hasilnya sama-sama bisa salah info. _tanggal_disebut_ke_target()
     # itu murni aritmatika tanggal Python (deterministik, tidak mungkin salah hitung
     # spt LLM), jadi kalau beda dari yang dipakai model, percaya hitungan kita.
-    if (tool == "check_availability" and args and _tanggal_disebut
-            and args.get("tanggal_checkin") and args["tanggal_checkin"] != _tanggal_disebut[1]):
+    #
+    # Diperluas (2026-08-04, laporan Agus - tamu "Dar"): SEBELUMNYA syarat
+    # `args.get("tanggal_checkin")` bikin guard ini TIDAK trigger kalau field itu HILANG
+    # SAMA SEKALI (bukan cuma salah isi) - kasus nyata: tamu tanya "hari minggu pagi jam
+    # 9" berulang kali, model panggil check_availability TANPA tanggal_checkin sama
+    # sekali (diam-diam default hari ini) - celah ini yang bikin conv Dar dapat balasan
+    # "penuh"/"tersedia" bolak-balik utk hari Minggu yang SAMA. Sekarang HILANG dianggap
+    # sama salahnya dgn SALAH (None != tanggal yang benar), bukan cuma dicek kalau ADA.
+    if (tool == "check_availability" and args is not None and _tanggal_disebut
+            and args.get("tanggal_checkin") != _tanggal_disebut[1]):
         tanggal_label, tanggal_target = _tanggal_disebut
         logging.getLogger("hallucination_guard").warning(
-            f"check_availability dipanggil dgn tanggal SALAH HITUNG - conv {conv.get('_id')}, "
-            f"tamu minta '{tanggal_label}' (harusnya {tanggal_target}), model pakai {args['tanggal_checkin']}"
+            f"check_availability dipanggil dgn tanggal SALAH/HILANG - conv {conv.get('_id')}, "
+            f"tamu minta '{tanggal_label}' (harusnya {tanggal_target}), model pakai {args.get('tanggal_checkin')!r}"
         )
         hasil_asli = await _tool_check_availability({**args, "tanggal_checkin": tanggal_target}, conv)
         follow_up_koreksi = (
