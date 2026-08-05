@@ -1856,6 +1856,7 @@ async def _run_chat_turn_locked(
             "tanggal_checkin": "Tanggal check-in", "tanggal_checkout": "Tanggal check-out",
             "jumlah_kamar": "Jumlah kamar", "jumlah_tamu": "Jumlah tamu",
             "jam_checkin": "Jam check-in (Day Use)", "payment_option": "Metode bayar (dp50/full)",
+            "metode_pembayaran": "Cara transfer (QRIS/VA)",
         }
         known = " | ".join(f"{label[k]}: {v}" for k, v in draft.items() if k in label)
         # "guest_name" WAJIB ikut dicek di sini (2026-08-02, bug nyata ditemukan - laporan
@@ -1931,8 +1932,19 @@ async def _run_chat_turn_locked(
                 # jendela history mentah, AI menanyakannya lagi dari nol. preview_booking
                 # sendiri TIDAK mengirim guest_name (lihat docstringnya) tapi itu tidak
                 # masalah - `if args.get(k)` di bawah otomatis skip key yang tidak ada.
+                # "metode_pembayaran" (2026-08-05, bug nyata - laporan Agus: chat Cynthia
+                # Ranis "macet" di loop konfirmasi yg SAMA berulang, guest jawab "Ya" 2x
+                # tapi create_booking tidak pernah kepanggil sampai percobaan ke-3) - field
+                # ini SEBELUMNYA hilang dari daftar ini (cuma payment_option/dp50-full yg
+                # tersimpan, metode_pembayaran/QRIS-VA TIDAK) - begitu percakapan sempat
+                # jeda/terputus (lihat bug lain di atas soal resume/waiting_admin), AI
+                # kehilangan jejak metode bayar yg SUDAH dikonfirmasi tamu jauh sebelumnya,
+                # jadi berulang kali menampilkan ULANG rincian & minta konfirmasi lagi
+                # drpd langsung eksekusi tool - sama pola persis dgn bug guest_name yg
+                # sudah pernah diperbaiki (lihat catatan di atas).
                 draft_keys = ("guest_name", "tipe", "room_tipe", "tanggal_checkin", "tanggal_checkout",
-                              "jumlah_kamar", "jumlah_tamu", "jam_checkin", "payment_option")
+                              "jumlah_kamar", "jumlah_tamu", "jam_checkin", "payment_option",
+                              "metode_pembayaran")
                 draft = dict(conv.get("booking_draft") or {})
                 draft.update({k: args[k] for k in draft_keys if args.get(k)})
                 conv["booking_draft"] = draft
