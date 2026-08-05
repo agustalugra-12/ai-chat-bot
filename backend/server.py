@@ -2046,6 +2046,62 @@ async def _run_chat_turn_locked(
         except Exception:
             pass
 
+    # Jaring pengaman level KODE (2026-08-05) - insiden nyata ditemukan lewat investigasi
+    # Agus (chat Pelangi tamu "Cynthia Ranis", sesi wa 628563857748): AI bilang "ini
+    # kedatangan Kakak yang pertama di Pelangi Homestay" (frasa itu CUMA muncul dari hasil
+    # create_booking SUNGGUHAN, lihat field kedatangan_ke di _tool_create_booking) PADAHAL
+    # create_booking TIDAK PERNAH dipanggil sepanjang percakapan (booking_created tetap
+    # False, booking_draft tetap kosong) - tamu percaya bookingnya sudah diproses & nunggu
+    # link pembayaran yang tidak akan pernah datang krn memang tidak pernah benar2 dibuat.
+    # Sama pola dgn guard cancel_booking di atas, TAPI BEDA cara koreksi: create_booking
+    # butuh banyak field wajib (nama/tanggal/tipe kamar/cara bayar) yang TIDAK tersimpan
+    # terstruktur kalau tool tidak pernah dipanggil (cuma tersebar di teks chat bebas) -
+    # jadi TIDAK aman auto-dieksekusi spt cancel_booking (kode kosong = PMS auto-cari,
+    # aman krn cuma LOOKUP baca data, bukan tulis data baru dgn args tebakan). Di sini
+    # balasan ditulis ULANG mengakui belum benar2 diproses & minta tamu konfirmasi ulang
+    # detail final, BUKAN coba tebak args lalu paksa create_booking dgn data yg belum
+    # tentu akurat (salah tanggal/tipe kamar lebih parah drpd sekadar minta ulang).
+    if tool != "create_booking" and re.search(
+        r"kedatangan\s+(kak(ak)?\s+)?(anda\s+)?yang\s+(ke-?\s*\d+|pertama)"
+        r"|(booking|pemesanan)[^.]{0,120}(sudah|telah)\s+(saya\s+)?(buat|proses|catat|ajukan)kan?"
+        r"|(sudah|telah)\s+(saya\s+)?(catat|proses)kan\s+(booking|pemesanan)",
+        final_text, re.IGNORECASE,
+    ):
+        wa_guard_booking = conv.get("whatsapp") or whatsapp
+        follow_up_koreksi_booking = (
+            "[SISTEM] Balasanmu SEBELUMNYA menyiratkan/mengklaim booking sudah diproses/dicatat "
+            "PADAHAL tool `create_booking` TIDAK PERNAH benar-benar dipanggil giliran ini - klaim "
+            "itu SALAH & TELAH DIBATALKAN, booking tamu ini BELUM ada sama sekali di sistem. Tulis "
+            "ULANG balasan ke tamu (Bahasa Indonesia, sopan, singkat): akui jujur booking-nya BELUM "
+            "benar-benar diproses, minta tamu konfirmasi ULANG detail lengkap (nama pemesan, tanggal "
+            "check-in, tipe kamar, jumlah kamar, cara bayar DP/lunas) supaya bisa langsung kamu proses "
+            "sungguhan sekarang - JANGAN klaim sudah tercatat/berhasil sama sekali."
+        )
+        history_koreksi_booking = compact_history(
+            conv["messages"] + [{"role": "assistant", "content": final_text}], max_turns=20,
+        )
+        try:
+            raw_koreksi_booking = await ai_reply(
+                session_id, system_prompt, context, history_koreksi_booking,
+                follow_up_koreksi_booking, llm_provider, llm_model,
+            )
+            koreksi_booking_clean, _, _ = parse_tool_call(raw_koreksi_booking)
+            if koreksi_booking_clean:
+                final_text = koreksi_booking_clean
+        except ChatError:
+            pass
+        logging.getLogger("hallucination_guard").warning(
+            f"create_booking hallucination terdeteksi & dikoreksi - conv {conv.get('_id')}, wa {wa_guard_booking}"
+        )
+        try:
+            await _pms_alert_owner(
+                f"⚠️ AI sempat mengklaim booking sudah diproses tanpa memanggil create_booking "
+                f"sungguhan (auto-dikoreksi sistem, tamu diminta konfirmasi ulang) - tamu "
+                f"{wa_guard_booking}, sesi {session_id}."
+            )
+        except Exception:
+            pass
+
     # Jaring pengaman level KODE (2026-08-03) - insiden nyata ditemukan lewat investigasi
     # Agus (chat Harmoni tamu "Suryaadichandra", sesi fon-...-6287846336619): AI mengklaim
     # kamar Cottage "sudah terisi untuk jam 10 pagi" lalu "sudah terisi untuk jam 11 pagi"

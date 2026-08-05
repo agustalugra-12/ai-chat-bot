@@ -843,16 +843,27 @@ def parse_tool_call(response_text: str):
     nyasar setelah JSON (mis. tanda kurung tutup ekstra, ditemukan nyata 2026-07-21 dari
     laporan user: sintaks "[[TOOL: lookup_booking]] {...})" gagal total match gara-gara
     ")" di akhir, tool TIDAK PERNAH dieksekusi dan sintaks mentahnya malah bocor ke tamu
-    apa adanya karena fallback-nya nganggap semua teks itu balasan biasa)."""
-    m = re.search(r"\[\[TOOL:\s*([a-z_]+)\s*\]\]\s*(\{.*?\})", response_text.strip(), re.DOTALL)
+    apa adanya karena fallback-nya nganggap semua teks itu balasan biasa).
+
+    Blok JSON `{...}` SENGAJA OPSIONAL (2026-08-05, insiden nyata - laporan Agus:
+    tamu "Cynthia Ranis" tanya status booking 2x berturut-turut, bot coba panggil
+    lookup_booking tapi model kadang nulis "[[TOOL: lookup_booking]]" TANPA JSON
+    args menyusul (args tool ini memang opsional - lihat _tool_lookup_booking, whatsapp
+    fallback ke conv kalau kosong) - sebelumnya regex WAJIB ada "{...}" jadi match GAGAL
+    TOTAL, tool tidak pernah dieksekusi, teks mentah markernya bocor apa adanya ke tamu
+    (persis mode kegagalan yang sama dgn insiden 2026-07-21 di atas, akar masalah beda -
+    dulu karakter nyasar SETELAH JSON, sekarang JSON-nya sendiri tidak ada)."""
+    m = re.search(r"\[\[TOOL:\s*([a-z_]+)\s*\]\](?:\s*(\{.*?\}))?", response_text.strip(), re.DOTALL)
     if not m:
         return response_text.strip(), None, None
     tool = m.group(1)
     raw = m.group(2)
-    try:
-        args = json.loads(raw)
-    except json.JSONDecodeError:
-        args = {}
+    args = {}
+    if raw:
+        try:
+            args = json.loads(raw)
+        except json.JSONDecodeError:
+            args = {}
     clean = response_text[: m.start()].strip()
     return clean, tool, args
 
