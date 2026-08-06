@@ -62,6 +62,7 @@ from emergentintegrations.llm.chat import ChatError
 from cloudinary_service import upload_image, upload_raw, delete_asset
 from rag_service import extract_text, chunk_text, hybrid_search, build_rag_context, get_embeddings_batch
 from seed import seed_all
+from usage_tracking import register_usage_logging
 
 # ---------------------------------------------------------------------------
 # `client`/`db` diimpor dari db.py (satu-satunya tempat koneksi Mongo dibuat).
@@ -221,6 +222,11 @@ async def on_startup():
     logger.info("Seed complete")
     await db.wa_cloud_dedup.create_index("wamid", unique=True)
     await db.wa_cloud_dedup.create_index("ts", expireAfterSeconds=86400)
+    # Usage tracking (2026-08-06, permintaan Agus - "efisiensi token") - lihat
+    # usage_tracking.py utk alasan lengkap. TTL 90 hari - cukup panjang utk lihat tren
+    # bulanan, tidak menumpuk tanpa batas (1 dokumen per panggilan AI, volume tinggi).
+    await db.llm_usage_log.create_index("ts", expireAfterSeconds=90 * 86400)
+    register_usage_logging(db)
 
 
 @app.on_event("shutdown")
@@ -3639,6 +3645,39 @@ async def analytics_summary(user=Depends(get_current_user)):
         "updated_at": c.get("updated_at"),
     } for c in flagged]
 
+    # Token/biaya usage (2026-08-06, permintaan Agus - "efisiensi token, aku tidak mau
+    # lagi buang buang tokennya") - lihat usage_tracking.py. Tujuannya SUPAYA lonjakan
+    # pemakaian kelihatan DARI DALAM app ini (Analytics.jsx), bukan baru ketahuan dari
+    # dashboard OpenAI sendiri setelah kejadian (spt insiden AI Blog 2026-08-05).
+    today_start_iso = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    seven_days_ago = today_start_iso - timedelta(days=6)
+    usage_today_agg = await db.llm_usage_log.aggregate([
+        {"$match": {"ts": {"$gte": today_start_iso}}},
+        {"$group": {
+            "_id": None,
+            "total_tokens": {"$sum": "$total_tokens"},
+            "cost_usd": {"$sum": "$cost_usd"},
+            "calls": {"$sum": 1},
+        }},
+    ]).to_list(1)
+    usage_today = usage_today_agg[0] if usage_today_agg else {"total_tokens": 0, "cost_usd": 0, "calls": 0}
+
+    usage_by_model_today = await db.llm_usage_log.aggregate([
+        {"$match": {"ts": {"$gte": today_start_iso}}},
+        {"$group": {"_id": "$model", "total_tokens": {"$sum": "$total_tokens"}, "calls": {"$sum": 1}}},
+        {"$sort": {"total_tokens": -1}},
+    ]).to_list(10)
+
+    usage_daily_agg = await db.llm_usage_log.aggregate([
+        {"$match": {"ts": {"$gte": seven_days_ago}}},
+        {"$group": {
+            "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$ts"}},
+            "total_tokens": {"$sum": "$total_tokens"},
+            "cost_usd": {"$sum": "$cost_usd"},
+        }},
+        {"$sort": {"_id": 1}},
+    ]).to_list(7)
+
     return {
         "total_conversations": total_conv,
         "resolution_rate": round(resolution_rate, 1),
@@ -3650,6 +3689,19 @@ async def analytics_summary(user=Depends(get_current_user)):
         "daily_series": daily_series,
         "top_handover_reasons": top_handover_reasons,
         "flagged_conversations": flagged_conversations,
+        "usage_today": {
+            "total_tokens": usage_today.get("total_tokens", 0),
+            "cost_usd": round(usage_today.get("cost_usd") or 0, 4),
+            "calls": usage_today.get("calls", 0),
+        },
+        "usage_by_model_today": [
+            {"model": r["_id"], "total_tokens": r["total_tokens"], "calls": r["calls"]}
+            for r in usage_by_model_today
+        ],
+        "usage_daily_7d": [
+            {"date": r["_id"], "total_tokens": r["total_tokens"], "cost_usd": round(r.get("cost_usd") or 0, 4)}
+            for r in usage_daily_agg
+        ],
     }
 
 

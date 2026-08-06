@@ -149,6 +149,51 @@ export default function Analytics() {
             </div>
           </div>
         </div>
+
+        <div>
+          <div className="font-[Fraunces] font-semibold mb-3">Pemakaian Token AI (hari ini)</div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+            <StatCard tid="a-usage-tokens" label="Total Token" value={(data?.usage_today?.total_tokens ?? 0).toLocaleString("id-ID")} />
+            <StatCard tid="a-usage-cost" label="Estimasi Biaya (USD)" value={`$${(data?.usage_today?.cost_usd ?? 0).toFixed(4)}`} />
+            <StatCard tid="a-usage-calls" label="Jumlah Panggilan AI" value={data?.usage_today?.calls ?? 0} />
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="pelangi-panel p-5">
+              <div className="font-[Fraunces] font-semibold mb-4">Token per Hari (7 Hari Terakhir)</div>
+              <div className="h-56">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={data?.usage_daily_7d || []}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+                    <XAxis dataKey="date" stroke="#7D7A73" fontSize={11} />
+                    <YAxis stroke="#7D7A73" fontSize={11} allowDecimals={false} />
+                    <Tooltip />
+                    <Line type="monotone" dataKey="total_tokens" stroke="hsl(24 80% 50%)" strokeWidth={2} dot={{ r: 3 }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div className="pelangi-panel p-5">
+              <div className="font-[Fraunces] font-semibold mb-4">Token per Model (hari ini)</div>
+              <div className="h-56">
+                {(data?.usage_by_model_today || []).length === 0 ? (
+                  <div className="h-full flex items-center justify-center text-sm text-[hsl(var(--muted-foreground))]">
+                    Belum ada pemakaian tercatat hari ini.
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={data.usage_by_model_today}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+                      <XAxis dataKey="model" stroke="#7D7A73" fontSize={11} />
+                      <YAxis stroke="#7D7A73" fontSize={11} allowDecimals={false} />
+                      <Tooltip />
+                      <Bar dataKey="total_tokens" fill="hsl(143 25% 22%)" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
