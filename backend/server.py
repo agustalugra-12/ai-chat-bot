@@ -1588,6 +1588,59 @@ def _janji_eskalasi_sungguhan(text: str) -> bool:
     return False
 
 
+# Jaring pengaman "fitur ingat kamar" (2026-08-06, permintaan Agus - "fitur ingat kamar
+# jika memungkinkan buat saja") - infrastrukturnya (remember_guest_fact tool + guest_
+# profiles.preferensi + disuntik balik ke context tiap giliran berikutnya, lihat
+# _build_context "# PROFIL TAMU") SUDAH ADA & LENGKAP dari sebelumnya - TAPI dites live
+# hari ini, ketemu persis kelas bug yang sama dgn _janji_eskalasi_sungguhan: tamu bilang
+# "tolong dicatat ya kalau aku booking lagi maunya Cottage terus", AI balas "Saya catat ya
+# preferensi Kakak" TAPI TIDAK PERNAH memanggil remember_guest_fact sama sekali (tool_used:
+# null) - klaim mencatat tanpa mencatat beneran, fakta tidak pernah tersimpan walau tamu
+# yakin sudah. Sama root cause-nya dgn bug eskalasi 2026-08-03: TOOL_DOCS sudah eksplisit
+# ("JANGAN bilang 'sudah dicatat' TANPA benar-benar memanggil tool") tapi instruksi prompt
+# saja terbukti tidak 100% reliable, butuh jaring pengaman KODE spt eskalasi.
+_KLAIM_PENCATATAN_PATTERN = re.compile(
+    r"(saya|kami)\s+(catat|simpan|ingat)|(sudah|udah)\s+(saya\s+)?(catat|dicatat|simpan|disimpan)|"
+    r"\bi'?ll\s+(note|remember|save)\b|\bnoted\b",
+    re.IGNORECASE,
+)
+
+
+def _klaim_mencatat_sungguhan(text: str) -> bool:
+    """Sama pola dgn _janji_eskalasi_sungguhan - kalimat DIAWALI 'kalau'/'jika' dianggap
+    tawaran hipotetis ("Kalau ada preferensi lain, nanti saya catat ya"), bukan klaim aksi
+    yang sudah/sedang dilakukan sekarang."""
+    for kalimat in re.split(r"(?<=[.!?\n])\s*", text):
+        if _KLAIM_PENCATATAN_PATTERN.search(kalimat) and not _KONDISIONAL_PATTERN.match(kalimat.strip()):
+            return True
+    return False
+
+
+async def _ekstrak_fakta_tamu(guest_message: str, ai_reply_text: str) -> Optional[str]:
+    """Panggilan kecil KHUSUS dipakai jaring pengaman klaim-pencatatan di bawah (jarang
+    terpanggil by design - cuma pas AI klaim mencatat tanpa panggil tool, bukan tiap
+    giliran) - ekstrak SATU kalimat fakta ringkas dari apa yang tamu benar-benar sebutkan,
+    BUKAN dari kalimat AI (AI bisa saja merangkai ulang/menambahkan sesuatu yang tidak
+    persis disebut tamu) - sumber kebenaran tetap pesan tamu asli."""
+    try:
+        raw = await ai_reply(
+            session_id="fact-extract",
+            system_prompt=(
+                "Ekstrak SATU fakta/preferensi ringkas (maks 1 kalimat pendek, Bahasa Indonesia) "
+                "yang tamu SECARA EKSPLISIT sebutkan dari pesan ini - JANGAN tambahkan/karang apa "
+                "pun yang tidak benar-benar disebut. Balas HANYA kalimat faktanya saja (tanpa "
+                "tanda kutip/awalan apa pun), atau balas persis 'TIDAK_ADA' kalau pesan ini "
+                "ternyata tidak benar-benar mengandung fakta/preferensi konkret."
+            ),
+            context_block="", history_text="",
+            user_text=f"Pesan tamu: {guest_message}\n\nBalasan asisten (konteks saja, JANGAN dijadikan sumber fakta): {ai_reply_text}",
+        )
+        fact = raw.strip().strip('"')
+        return None if not fact or fact.upper() == "TIDAK_ADA" else fact
+    except Exception:
+        return None
+
+
 # (2026-08-04, permintaan Agus "perbaiki bug otomatis") - generalisasi guard besok/lusa
 # di bawah (3 varian ditemukan & diperbaiki hari yang sama: klaim jam kesiapan, kutip
 # ulang riwayat lama, klaim jumlah kamar - semuanya akar masalah SAMA: blok "HARI INI"
@@ -2611,6 +2664,25 @@ async def _run_chat_turn_locked(
             tool_result = {"ok": True, "tool": "request_handover", "auto_triggered": True}
         except Exception:
             logging.getLogger("hallucination_guard").warning(f"Gagal auto-trigger request_handover utk conv {conv.get('_id')}")
+
+    # Jaring pengaman "fitur ingat kamar"/klaim-pencatatan (2026-08-06) - lihat
+    # _klaim_mencatat_sungguhan/_ekstrak_fakta_tamu utk alasan lengkap. Sama pola persis
+    # dgn guard eskalasi di atas: AI klaim mencatat TANPA panggil remember_guest_fact ->
+    # ekstrak fakta dari pesan tamu ASLI (bukan dari klaim AI) & panggil tool-nya beneran.
+    if tool != "remember_guest_fact" and _klaim_mencatat_sungguhan(final_text) and (conv.get("whatsapp") or whatsapp):
+        fakta = await _ekstrak_fakta_tamu(message, final_text)
+        if fakta:
+            logging.getLogger("hallucination_guard").warning(
+                f"AI menjanjikan mencatat fakta tanpa memanggil remember_guest_fact - dipanggil "
+                f"otomatis oleh sistem. conv {conv.get('_id')}, fakta diekstrak: {fakta!r}"
+            )
+            try:
+                await _tool_remember_guest_fact({"whatsapp": conv.get("whatsapp") or whatsapp, "fact": fakta}, conv)
+                if tool is None:
+                    tool = "remember_guest_fact"
+                    tool_result = {"ok": True, "tool": "remember_guest_fact", "auto_triggered": True}
+            except Exception:
+                logging.getLogger("hallucination_guard").warning(f"Gagal auto-trigger remember_guest_fact utk conv {conv.get('_id')}")
 
     # Jaring pengaman KHUSUS catat_klaim_stamp_member (2026-08-04) - pengecekan lebih detail
     # thd conversation Ajus di atas ternyata mengungkap masalah yang LEBIH mendasar dari
