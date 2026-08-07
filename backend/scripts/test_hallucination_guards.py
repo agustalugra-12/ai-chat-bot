@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from server import (  # noqa: E402
     db, _run_chat_turn, _tool_check_availability, _tool_preview_booking, _cek_kontradiksi_total,
     _deteksi_loop_kirim_beruntun, LOOP_DETECTOR_THRESHOLD, LOOP_DETECTOR_WINDOW_MINUTES,
+    _janji_eskalasi_sungguhan,
 )
 from connectors.pms_connector import _pms_http_retry, _sync_business_rules  # noqa: E402
 
@@ -277,6 +278,40 @@ def test_kontradiksi_total_tanpa_klaim_total_tidak_diubah() -> tuple:
 
 
 # ---------------------------------------------------------------------------
+# Unit test murni - janji eskalasi (bug nyata ditemukan 2026-08-07 lewat sisir chat asli:
+# "menyampaikan"/"meneruskan" - bentuk BER-AWALAN NASAL me-N- - tidak match regex lama)
+# ---------------------------------------------------------------------------
+
+def test_janji_eskalasi_menyampaikan_ke_tim() -> tuple:
+    """Kasus nyata persis: AI balas "akan pastikan menyampaikan pesan ini kepada tim
+    kami" TANPA tool apa pun - guard lama tidak trigger krn "menyampaikan" (nasalisasi
+    me+sampaikan) tidak match literal "sampaikan", dan "tim" tidak ada di daftar target."""
+    teks = "Saya akan pastikan untuk menyampaikan pesan ini kepada tim kami agar semua staff mengingat."
+    hasil = _janji_eskalasi_sungguhan(teks)
+    return ("janji_eskalasi_menyampaikan_ke_tim", "PASS" if hasil is True else f"FAIL - harusnya terdeteksi sbg janji eskalasi, hasil={hasil}")
+
+
+def test_janji_eskalasi_meneruskan_ke_admin() -> tuple:
+    teks = "Baik Kak, saya akan meneruskan keluhan ini ke admin sekarang."
+    hasil = _janji_eskalasi_sungguhan(teks)
+    return ("janji_eskalasi_meneruskan_ke_admin", "PASS" if hasil is True else f"FAIL - harusnya terdeteksi (bentuk 'meneruskan'), hasil={hasil}")
+
+
+def test_janji_eskalasi_kondisional_tidak_terdeteksi() -> tuple:
+    """Tawaran hipotetis ('Kalau...') BUKAN janji aktif - regresi kalau ini malah
+    trigger handover (bug asli 2026-08-03, tamu Leny Savitri macet 3+ jam)."""
+    teks = "Kalau mau info lebih detail, saya bantu teruskan ke staf ya Kak."
+    hasil = _janji_eskalasi_sungguhan(teks)
+    return ("janji_eskalasi_kondisional_tidak_terdeteksi", "PASS" if hasil is False else f"FAIL - tawaran hipotetis salah terdeteksi sbg janji aktif, hasil={hasil}")
+
+
+def test_janji_eskalasi_tanpa_kata_kunci_tidak_terdeteksi() -> tuple:
+    teks = "Baik Kak, kamar Standard masih tersedia untuk tanggal itu."
+    hasil = _janji_eskalasi_sungguhan(teks)
+    return ("janji_eskalasi_tanpa_kata_kunci_tidak_terdeteksi", "PASS" if hasil is False else f"FAIL - salah terdeteksi tanpa kata kunci eskalasi sama sekali, hasil={hasil}")
+
+
+# ---------------------------------------------------------------------------
 # Unit test murni - Loop Detector (Modul 8 PRD ASHB, insiden asli 2026-08-01 bot Pelangi/
 # Harmoni saling kirim pesan tanpa henti)
 # ---------------------------------------------------------------------------
@@ -381,6 +416,10 @@ async def main():
         test_retry_berhasil_setelah_gagal_transient,
         test_retry_menyerah_setelah_max_percobaan,
         test_retry_tidak_retry_error_non_transient,
+        test_janji_eskalasi_menyampaikan_ke_tim,
+        test_janji_eskalasi_meneruskan_ke_admin,
+        test_janji_eskalasi_kondisional_tidak_terdeteksi,
+        test_janji_eskalasi_tanpa_kata_kunci_tidak_terdeteksi,
     ]
     sesi_test = []
     hasil_semua = []

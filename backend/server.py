@@ -1572,7 +1572,16 @@ async def _send_wa_document_smart(conv: Optional[dict], filename: str, mimetype:
 # "menekan biaya" itu sendiri) - kalau nanti Agus laporkan pola kesalahan topik baru,
 # cukup tambahkan kata kuncinya di bawah, tidak perlu ubah arsitektur.
 _ESKALASI_PATTERN = re.compile(
-    r"(teruskan|sampaikan|eskalasi|hubungkan|alihkan).{0,40}(admin|staf|owner|pemilik)",
+    # "eruskan"/"ampaikan" (2026-08-07, bug nyata ditemukan lewat sisir chat: tamu/Agus
+    # kirim pesan operasional "tolong sampaikan ke staff...", AI balas "Saya akan pastikan
+    # menyampaikan pesan ini kepada tim kami" TANPA memanggil tool apa pun sama sekali -
+    # janji kosong lolos guard) - akar "teruskan"/"sampaikan" TIDAK match bentuk
+    # ber-awalan nasal me-N- ("MENeruskan"/"MENYampaikan") krn morfologi Indonesia
+    # melebur konsonan awal (t->n, s->ny) - "teruskan"/"sampaikan" literal TIDAK muncul
+    # sbg substring di "meneruskan"/"menyampaikan". Dipendekkan ke akar bersama
+    # "eruskan"/"ampaikan" (tanpa konsonan awal) supaya cocok utk SEMUA bentuk: sampaikan/
+    # menyampaikan/disampaikan/tersampaikan, teruskan/meneruskan/diteruskan/teruskan.
+    r"(teruskan|eruskan|ampaikan|eskalasi|hubungkan|alihkan).{0,40}(admin|staf|owner|pemilik|tim\b)",
     re.IGNORECASE,
 )
 _KONDISIONAL_PATTERN = re.compile(r"^\s*(kalau|jika)\b", re.IGNORECASE)
