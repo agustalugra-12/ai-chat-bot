@@ -1665,6 +1665,63 @@ def _cek_kontradiksi_total(final_text: str, tool: Optional[str], messages: list,
     return corrected
 
 
+# Loop Detector (2026-08-07, Modul 8 PRD "AI Self-Healing & Bug Prevention" - usulan Agus,
+# diperkuat setelah audit insiden asli 2026-08-01: bot Pelangi & bot Harmoni saling kirim
+# pesan sapaan ~45 pesan dalam 2-3 menit sebelum ketahuan & dihentikan manual, lihat guard
+# `own_whatsapp_number` di fonnte_webhook_receive/whatsapp_cloud_webhook_receive di bawah -
+# guard ITU cuma menutup SATU akar masalah spesifik (nomor pengirim = bot kita sendiri YANG
+# SUDAH terdaftar manual). Guard ini BEDA & lebih umum: circuit-breaker berbasis LAJU kirim,
+# tidak peduli apa akar masalahnya (bot lain yang belum terdaftar, auto-responder tamu,
+# integrasi pihak ketiga yang echo pesan, dll) - kalau balasan OTOMATIS terkirim terlalu
+# cepat berturut-turut di 1 percakapan yang sama, itu BUKAN pola percakapan manusia wajar,
+# hentikan & serahkan ke staf SEBELUM sempat jadi puluhan pesan seperti insiden asli.
+LOOP_DETECTOR_WINDOW_MINUTES = 3
+LOOP_DETECTOR_THRESHOLD = 6  # balasan AI dalam jendela waktu di atas - insiden asli ~45 dalam 2-3 menit, ambang ini jauh lebih rendah supaya kepasang JAUH lebih awal
+
+
+def _deteksi_loop_kirim_beruntun(messages: list, now: Optional[datetime] = None) -> bool:
+    """True kalau balasan AI (role=assistant) dalam percakapan ini sudah melewati
+    LOOP_DETECTOR_THRESHOLD kali dalam LOOP_DETECTOR_WINDOW_MINUTES menit terakhir - sinyal
+    kuat percakapan ini sedang loop (bot-ke-bot, echo, atau sebab lain), bukan tamu manusia
+    biasa. Fungsi murni (cuma butuh daftar pesan + waktu sekarang) supaya bisa di-unit-test
+    tanpa DB/LLM - lihat scripts/test_hallucination_guards.py."""
+    now = now or datetime.now(timezone.utc)
+    batas = now - timedelta(minutes=LOOP_DETECTOR_WINDOW_MINUTES)
+    hitung = 0
+    for m in messages:
+        if m.get("role") != "assistant":
+            continue
+        ts_raw = m.get("timestamp")
+        if not ts_raw:
+            continue
+        try:
+            ts = datetime.fromisoformat(ts_raw)
+        except (ValueError, TypeError):
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if ts >= batas:
+            hitung += 1
+    return hitung >= LOOP_DETECTOR_THRESHOLD
+
+
+async def _adalah_nomor_bot_internal(sender: str, bot_id: str) -> bool:
+    """Guard anti loop-antar-bot (2026-08-01, insiden nyata - lihat catatan
+    LOOP_DETECTOR di atas untuk konteks lengkap). Diekstrak jadi 1 fungsi (2026-08-07,
+    sebelumnya inline terpisah & CUMA dicek di fonnte_webhook_receive - whatsapp_cloud_
+    webhook_receive TIDAK PERNAH punya guard ini sama sekali, celah nyata kalau ada bot
+    dikonfigurasi lewat channel itu) - dipakai KEDUA webhook (Fonnte & WhatsApp Cloud),
+    cek terhadap SEMUA nomor bot kita sendiri lintas channel (bukan cuma channel yang
+    sama), karena akar masalahnya channel-agnostic: nomor itu bot kita, titik."""
+    bot_numbers = {
+        b["own_whatsapp_number"] async for b in db.ai_bots.find(
+            {"own_whatsapp_number": {"$exists": True}, "_id": {"$ne": bot_id}},
+            {"own_whatsapp_number": 1},
+        )
+    }
+    return sender in bot_numbers
+
+
 async def _ekstrak_fakta_tamu(guest_message: str, ai_reply_text: str) -> Optional[str]:
     """Panggilan kecil KHUSUS dipakai jaring pengaman klaim-pencatatan di bawah (jarang
     terpanggil by design - cuma pas AI klaim mencatat tanpa panggil tool, bukan tiap
@@ -1888,6 +1945,35 @@ async def _run_chat_turn_locked(
         await db.conversations.update_one(
             {"_id": conv["_id"]}, {"$set": {"messages": conv["messages"], "updated_at": utc_now_iso()}},
         )
+        return {
+            "session_id": session_id, "conversation_id": conv["_id"], "reply": None,
+            "tool_used": None, "tool_result": None, "response_time_ms": int((time.time() - started) * 1000),
+        }
+
+    # Loop Detector (2026-08-07) - lihat docstring _deteksi_loop_kirim_beruntun() di atas.
+    # Circuit-breaker berbasis LAJU kirim, independen dari akar masalahnya (bot lain yang
+    # belum terdaftar di guard own_whatsapp_number, auto-responder tamu, dll) - kalau balasan
+    # AI di percakapan INI sendiri sudah terlalu sering dalam waktu singkat, hentikan &
+    # serahkan ke staf SEBELUM sempat jadi puluhan pesan seperti insiden asli 2026-08-01.
+    if _deteksi_loop_kirim_beruntun(conv["messages"]):
+        await db.conversations.update_one(
+            {"_id": conv["_id"]},
+            {"$set": {
+                "status": "waiting_admin", "resolution": "loop_detected", "updated_at": utc_now_iso(),
+                "messages": conv["messages"],
+            }},
+        )
+        logging.getLogger("loop_detector").warning(
+            f"Loop kirim beruntun terdeteksi & dihentikan - conv {conv.get('_id')}, "
+            f">= {LOOP_DETECTOR_THRESHOLD} balasan AI dalam {LOOP_DETECTOR_WINDOW_MINUTES} menit terakhir."
+        )
+        try:
+            await _pms_alert_owner(
+                f"🔁 Loop percakapan terdeteksi & DIHENTIKAN OTOMATIS - {conv.get('guest_name') or conv.get('whatsapp') or 'tamu'} "
+                f"({conv.get('whatsapp') or ''}) dialihkan ke Admin. Cek halaman Percakapan - kemungkinan bukan tamu asli."
+            )
+        except Exception:
+            logging.getLogger("loop_detector").warning(f"Gagal kirim alert Telegram utk loop conv {conv.get('_id')}")
         return {
             "session_id": session_id, "conversation_id": conv["_id"], "reply": None,
             "tool_used": None, "tool_result": None, "response_time_ms": int((time.time() - started) * 1000),
@@ -3392,6 +3478,15 @@ async def whatsapp_cloud_webhook_receive(request: Request):
         bot_id = linked_bot["_id"] if linked_bot else None
         session_id = f"wac-{phone_number_id}-{phone}"
 
+        # Guard anti loop-antar-bot - lihat docstring _adalah_nomor_bot_internal() (server.py
+        # bagian atas). SEBELUMNYA (2026-08-07) cuma dicek di fonnte_webhook_receive - celah
+        # nyata kalau ada bot dikonfigurasi lewat channel WhatsApp Cloud, sekarang ditutup.
+        if await _adalah_nomor_bot_internal(phone, bot_id):
+            logging.getLogger("whatsapp_cloud").warning(
+                f"Pesan dari nomor bot kita sendiri ({phone}) ke bot {(linked_bot or {}).get('code')} - diabaikan (anti loop-antar-bot)."
+            )
+            return {"ok": True, "diabaikan": "pengirim adalah nomor bot internal lain"}
+
         hasil = await _run_chat_turn(
             session_id, message_text, guest_name, phone, bot_id, None,
             channel="whatsapp_cloud", cloud_phone_number_id=phone_number_id,
@@ -3601,23 +3696,8 @@ async def fonnte_webhook_receive(bot_id: str, request: Request):
         if not sender or not message_text:
             return {"ok": True, "diabaikan": "tanpa nomor pengirim/isi pesan"}
 
-        # Guard anti loop-antar-bot (2026-08-01, insiden nyata: nomor WA bot Pelangi &
-        # bot Harmoni sempat saling kirim pesan - masing-masing bot menganggap pesan
-        # sapaan bot lain sbg pesan tamu sungguhan, saling balas sapaan berulang tanpa
-        # henti selama ~2 menit / puluhan pesan sebelum ketahuan & dihentikan manual.
-        # Fonnte memang benar meneruskan pesan ini sbg "inbound" (nomor bot lain itu
-        # secara teknis eksternal dari sudut pandang device ini) - PMS-nya sendiri yang
-        # tidak tahu nomor itu adalah bot lain. Cek terhadap SEMUA nomor bot Fonnte aktif
-        # lain (field `own_whatsapp_number`, diisi manual sekali per bot) - kalau
-        # pengirim adalah bot kita sendiri yang lain, jangan proses sama sekali (bukan
-        # cuma waiting_admin - tidak perlu direspons apa pun, ini bukan tamu).
-        bot_numbers = {
-            b["own_whatsapp_number"] async for b in db.ai_bots.find(
-                {"channel_type": "fonnte", "own_whatsapp_number": {"$exists": True}, "_id": {"$ne": bot_id}},
-                {"own_whatsapp_number": 1},
-            )
-        }
-        if sender in bot_numbers:
+        # Guard anti loop-antar-bot - lihat docstring _adalah_nomor_bot_internal() di atas.
+        if await _adalah_nomor_bot_internal(sender, bot_id):
             logging.getLogger("fonnte").warning(
                 f"Pesan dari nomor bot kita sendiri ({sender}) ke bot {bot.get('code')} - diabaikan (anti loop-antar-bot)."
             )

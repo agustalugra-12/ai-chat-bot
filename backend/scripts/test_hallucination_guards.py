@@ -37,7 +37,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from server import (  # noqa: E402
     db, _run_chat_turn, _tool_check_availability, _tool_preview_booking, _cek_kontradiksi_total,
+    _deteksi_loop_kirim_beruntun, LOOP_DETECTOR_THRESHOLD, LOOP_DETECTOR_WINDOW_MINUTES,
 )
+from connectors.pms_connector import _pms_http_retry  # noqa: E402
+
+import httpx
 
 BOT_ID_HARMONI = "d7ca2ed3-e940-4d86-b032-ec5bd203a735"
 BOT_ID_PELANGI = "c063c2bc-4f93-4304-a3f6-6a2b36c7e3c5"
@@ -244,6 +248,88 @@ def test_kontradiksi_total_tanpa_klaim_total_tidak_diubah() -> tuple:
     return ("kontradiksi_total_tanpa_klaim_total_tidak_diubah", "PASS" if hasil == teks else f"FAIL - guard salah trigger padahal tidak ada klaim Total sama sekali: {hasil!r}")
 
 
+# ---------------------------------------------------------------------------
+# Unit test murni - Loop Detector (Modul 8 PRD ASHB, insiden asli 2026-08-01 bot Pelangi/
+# Harmoni saling kirim pesan tanpa henti)
+# ---------------------------------------------------------------------------
+
+def _pesan_assistant(menit_lalu: float) -> dict:
+    ts = (datetime.now(timezone.utc) - timedelta(minutes=menit_lalu)).isoformat()
+    return {"role": "assistant", "content": "halo", "timestamp": ts}
+
+
+def test_loop_terdeteksi_saat_melewati_ambang() -> tuple:
+    messages = [_pesan_assistant(m * 0.1) for m in range(LOOP_DETECTOR_THRESHOLD)]
+    hasil = _deteksi_loop_kirim_beruntun(messages)
+    return ("loop_terdeteksi_saat_melewati_ambang", "PASS" if hasil is True else f"FAIL - {LOOP_DETECTOR_THRESHOLD} balasan dalam jendela waktu harusnya terdeteksi loop, hasil={hasil}")
+
+
+def test_loop_tidak_terdeteksi_di_bawah_ambang() -> tuple:
+    messages = [_pesan_assistant(m * 0.1) for m in range(LOOP_DETECTOR_THRESHOLD - 1)]
+    hasil = _deteksi_loop_kirim_beruntun(messages)
+    return ("loop_tidak_terdeteksi_di_bawah_ambang", "PASS" if hasil is False else f"FAIL - {LOOP_DETECTOR_THRESHOLD - 1} balasan (di bawah ambang) salah terdeteksi loop, hasil={hasil}")
+
+
+def test_loop_tidak_terdeteksi_kalau_pesan_lama() -> tuple:
+    """Percakapan wajar berlangsung LAMA (banyak balasan total) tapi TERSEBAR di luar
+    jendela waktu - bukan loop, jangan salah tangkap."""
+    messages = [_pesan_assistant(LOOP_DETECTOR_WINDOW_MINUTES + 5 + m) for m in range(LOOP_DETECTOR_THRESHOLD + 5)]
+    hasil = _deteksi_loop_kirim_beruntun(messages)
+    return ("loop_tidak_terdeteksi_kalau_pesan_lama", "PASS" if hasil is False else f"FAIL - pesan lama di luar jendela waktu salah terdeteksi loop, hasil={hasil}")
+
+
+def test_loop_mengabaikan_pesan_user() -> tuple:
+    """Pesan role=user (tamu asli membalas cepat) TIDAK BOLEH ikut dihitung - loop
+    detector khusus soal balasan OTOMATIS kita, bukan seberapa aktif tamu chat."""
+    messages = [{"role": "user", "content": "halo", "timestamp": (datetime.now(timezone.utc) - timedelta(seconds=i)).isoformat()} for i in range(20)]
+    hasil = _deteksi_loop_kirim_beruntun(messages)
+    return ("loop_mengabaikan_pesan_user", "PASS" if hasil is False else f"FAIL - pesan tamu (role=user) salah ikut dihitung sbg loop, hasil={hasil}")
+
+
+# ---------------------------------------------------------------------------
+# Unit test murni - Retry Engine (Modul 14 PRD ASHB)
+# ---------------------------------------------------------------------------
+
+async def test_retry_berhasil_setelah_gagal_transient() -> tuple:
+    calls = {"n": 0}
+    async def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise httpx.ConnectTimeout("boom")
+        return "SUCCESS"
+    hasil = await _pms_http_retry(flaky, max_retries=2, backoff_sec=0.01)
+    ok = hasil == "SUCCESS" and calls["n"] == 3
+    return ("retry_berhasil_setelah_gagal_transient", "PASS" if ok else f"FAIL - hasil={hasil!r}, calls={calls['n']}")
+
+
+async def test_retry_menyerah_setelah_max_percobaan() -> tuple:
+    calls = {"n": 0}
+    async def always_fails():
+        calls["n"] += 1
+        raise httpx.ConnectError("down")
+    try:
+        await _pms_http_retry(always_fails, max_retries=2, backoff_sec=0.01)
+        return ("retry_menyerah_setelah_max_percobaan", f"FAIL - harusnya raise httpx.ConnectError, malah sukses (calls={calls['n']})")
+    except httpx.ConnectError:
+        ok = calls["n"] == 3  # 1 percobaan awal + 2 retry
+        return ("retry_menyerah_setelah_max_percobaan", "PASS" if ok else f"FAIL - jumlah percobaan salah, calls={calls['n']} (harusnya 3)")
+
+
+async def test_retry_tidak_retry_error_non_transient() -> tuple:
+    """Error yang BUKAN masalah jaringan (mis. bug parsing respons) tidak boleh di-retry -
+    retry cuma untuk kegagalan transient, mengulang error non-transient cuma buang waktu."""
+    calls = {"n": 0}
+    async def bad_parse():
+        calls["n"] += 1
+        raise ValueError("bukan masalah jaringan")
+    try:
+        await _pms_http_retry(bad_parse, max_retries=2, backoff_sec=0.01)
+        return ("retry_tidak_retry_error_non_transient", f"FAIL - harusnya raise ValueError, malah sukses (calls={calls['n']})")
+    except ValueError:
+        ok = calls["n"] == 1  # TIDAK boleh retry - langsung gagal di percobaan pertama
+        return ("retry_tidak_retry_error_non_transient", "PASS" if ok else f"FAIL - seharusnya TIDAK retry error non-transient, tapi calls={calls['n']}")
+
+
 async def main():
     skenario_list = [
         skenario_besok_jumlah_kamar,
@@ -259,13 +345,21 @@ async def main():
         test_kontradiksi_total_skip_saat_preview_booking,
         test_kontradiksi_total_tanpa_riwayat_tidak_diubah,
         test_kontradiksi_total_tanpa_klaim_total_tidak_diubah,
+        test_loop_terdeteksi_saat_melewati_ambang,
+        test_loop_tidak_terdeteksi_di_bawah_ambang,
+        test_loop_tidak_terdeteksi_kalau_pesan_lama,
+        test_loop_mengabaikan_pesan_user,
+        test_retry_berhasil_setelah_gagal_transient,
+        test_retry_menyerah_setelah_max_percobaan,
+        test_retry_tidak_retry_error_non_transient,
     ]
     sesi_test = []
     hasil_semua = []
 
-    print("--- Unit test (sync, tanpa DB/LLM) ---")
+    print("--- Unit test (tanpa DB/LLM sungguhan - sebagian sync, sebagian async murni) ---")
     for fn in unit_test_list:
-        nama, status = fn()
+        hasil_fn = fn()
+        nama, status = await hasil_fn if asyncio.iscoroutine(hasil_fn) else hasil_fn
         hasil_semua.append((nama, status))
         print(f"[{status.split(' ')[0]}] {nama}: {status}")
 

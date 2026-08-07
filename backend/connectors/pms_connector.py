@@ -9,6 +9,7 @@ Sumber kebenaran ketersediaan/tarif kamar & tujuan booking request (non-binding)
 TIDAK PERNAH menyimpan ketersediaan/booking sungguhan di database sendiri, supaya tidak
 ada data ganda yang bisa menyimpang dari PMS.
 """
+import asyncio
 import logging
 import os
 import secrets
@@ -18,6 +19,38 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from db import db, new_id, utc_now_iso
+
+# Retry Engine (2026-08-07, Modul 14 PRD "AI Self-Healing & Bug Prevention" - usulan Agus)
+# - SEBELUM ini, tiap fungsi _pms_* di file ini (11 titik panggil) langsung menyerah &
+# mengembalikan gagal/kosong begitu 1x panggilan HTTP ke PMS gagal, apa pun sebabnya -
+# termasuk kegagalan TRANSIENT sesaat (PMS restart, jaringan berkedip) yang kemungkinan
+# besar akan berhasil kalau dicoba ulang sedetik kemudian. AI jadi harus jujur "gagal cek
+# ke sistem" ke tamu padahal masalahnya cuma sesaat. Retry HANYA untuk error jaringan
+# transient (timeout/connection refused, subclass httpx.TransportError) - BUKAN untuk
+# respons HTTP non-2xx (itu kegagalan bisnis nyata dari PMS, mis. validasi ditolak - retry
+# tidak akan mengubah hasilnya, cuma buang waktu tamu menunggu tanpa gunanya).
+PMS_HTTP_MAX_RETRIES = 2
+PMS_HTTP_BACKOFF_SEC = 0.6
+
+
+async def _pms_http_retry(fn, max_retries: int = PMS_HTTP_MAX_RETRIES, backoff_sec: float = PMS_HTTP_BACKOFF_SEC):
+    """fn = closure tanpa argumen yang melakukan SATU panggilan httpx & mengembalikan
+    response-nya. Dipanggil ulang identik (max_retries kali) kalau gagal karena error
+    jaringan transient, dengan jeda singkat antar percobaan supaya tidak membanjiri PMS
+    yang mungkin sedang restart. Exception terakhir dilempar ulang kalau semua percobaan
+    habis, ditangkap oleh `except Exception` di masing-masing caller seperti biasa."""
+    last_exc: Optional[Exception] = None
+    for attempt in range(max_retries + 1):
+        try:
+            return await fn()
+        except httpx.TransportError as e:
+            last_exc = e
+            if attempt < max_retries:
+                logging.getLogger("pms").warning(
+                    f"PMS request gagal transient (percobaan {attempt + 1}/{max_retries + 1}): {e} - retry..."
+                )
+                await asyncio.sleep(backoff_sec * (attempt + 1))
+    raise last_exc
 
 PMS_API_BASE_URL = os.environ.get("PMS_API_BASE_URL", "")
 PMS_API_KEY = os.environ.get("PMS_API_KEY", "")
@@ -153,11 +186,13 @@ async def _pms_ketersediaan(tanggal: Optional[str] = None, tipe: Optional[str] =
     path = cfg["endpoints"]["ketersediaan_path"]
     started = time.time()
     try:
-        async with httpx.AsyncClient(timeout=10) as http:
-            resp = await http.get(
-                f"{cfg['pms_base_url'].rstrip('/')}{path}",
-                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, params=params,
-            )
+        async def _do():
+            async with httpx.AsyncClient(timeout=10) as http:
+                return await http.get(
+                    f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                    headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, params=params,
+                )
+        resp = await _pms_http_retry(_do)
         latency_ms = int((time.time() - started) * 1000)
         if resp.status_code >= 400:
             await _pms_log(path, "GET", resp.status_code, latency_ms, False, resp.text)
@@ -189,11 +224,13 @@ async def _pms_menu(api_key_override: Optional[str] = None) -> List[dict]:
     path = cfg["endpoints"].get("menu_path", PMS_DEFAULT_ENDPOINTS["menu_path"])
     started = time.time()
     try:
-        async with httpx.AsyncClient(timeout=10) as http:
-            resp = await http.get(
-                f"{cfg['pms_base_url'].rstrip('/')}{path}",
-                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"},
-            )
+        async def _do():
+            async with httpx.AsyncClient(timeout=10) as http:
+                return await http.get(
+                    f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                    headers={"Authorization": f"Bearer {cfg['pms_api_key']}"},
+                )
+        resp = await _pms_http_retry(_do)
         latency_ms = int((time.time() - started) * 1000)
         if resp.status_code >= 400:
             await _pms_log(path, "GET", resp.status_code, latency_ms, False, resp.text)
@@ -223,11 +260,13 @@ async def _pms_timeline_kamar(api_key_override: Optional[str] = None) -> List[di
     path = cfg["endpoints"].get("timeline_kamar_path", PMS_DEFAULT_ENDPOINTS["timeline_kamar_path"])
     started = time.time()
     try:
-        async with httpx.AsyncClient(timeout=10) as http:
-            resp = await http.get(
-                f"{cfg['pms_base_url'].rstrip('/')}{path}",
-                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"},
-            )
+        async def _do():
+            async with httpx.AsyncClient(timeout=10) as http:
+                return await http.get(
+                    f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                    headers={"Authorization": f"Bearer {cfg['pms_api_key']}"},
+                )
+        resp = await _pms_http_retry(_do)
         latency_ms = int((time.time() - started) * 1000)
         if resp.status_code >= 400:
             await _pms_log(path, "GET", resp.status_code, latency_ms, False, resp.text)
@@ -268,11 +307,13 @@ async def _pms_buat_booking_request(args: dict, api_key_override: Optional[str] 
     path = cfg["endpoints"]["booking_request_path"]
     started = time.time()
     try:
-        async with httpx.AsyncClient(timeout=15) as http:
-            resp = await http.post(
-                f"{cfg['pms_base_url'].rstrip('/')}{path}",
-                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, json=payload,
-            )
+        async def _do():
+            async with httpx.AsyncClient(timeout=15) as http:
+                return await http.post(
+                    f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                    headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, json=payload,
+                )
+        resp = await _pms_http_retry(_do)
         latency_ms = int((time.time() - started) * 1000)
         if resp.status_code >= 400:
             await _pms_log(path, "POST", resp.status_code, latency_ms, False, resp.text)
@@ -305,11 +346,13 @@ async def _pms_preview_harga(args: dict, api_key_override: Optional[str] = None)
     path = cfg["endpoints"].get("preview_harga_path", PMS_DEFAULT_ENDPOINTS["preview_harga_path"])
     started = time.time()
     try:
-        async with httpx.AsyncClient(timeout=15) as http:
-            resp = await http.post(
-                f"{cfg['pms_base_url'].rstrip('/')}{path}",
-                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, json=payload,
-            )
+        async def _do():
+            async with httpx.AsyncClient(timeout=15) as http:
+                return await http.post(
+                    f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                    headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, json=payload,
+                )
+        resp = await _pms_http_retry(_do)
         latency_ms = int((time.time() - started) * 1000)
         if resp.status_code >= 400:
             await _pms_log(path, "POST", resp.status_code, latency_ms, False, resp.text)
@@ -342,11 +385,13 @@ async def _pms_buat_tiket(tipe: str, deskripsi: str, whatsapp: str, guest_name: 
     path = cfg["endpoints"]["tiket_path"]
     started = time.time()
     try:
-        async with httpx.AsyncClient(timeout=15) as http:
-            resp = await http.post(
-                f"{cfg['pms_base_url'].rstrip('/')}{path}",
-                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, json=payload,
-            )
+        async def _do():
+            async with httpx.AsyncClient(timeout=15) as http:
+                return await http.post(
+                    f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                    headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, json=payload,
+                )
+        resp = await _pms_http_retry(_do)
         latency_ms = int((time.time() - started) * 1000)
         if resp.status_code >= 400:
             await _pms_log(path, "POST", resp.status_code, latency_ms, False, resp.text)
@@ -371,11 +416,13 @@ async def _pms_status_booking(whatsapp: str, api_key_override: Optional[str] = N
     path = cfg["endpoints"].get("booking_status_path", PMS_DEFAULT_ENDPOINTS["booking_status_path"])
     started = time.time()
     try:
-        async with httpx.AsyncClient(timeout=10) as http:
-            resp = await http.get(
-                f"{cfg['pms_base_url'].rstrip('/')}{path}",
-                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, params={"no_hp": whatsapp},
-            )
+        async def _do():
+            async with httpx.AsyncClient(timeout=10) as http:
+                return await http.get(
+                    f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                    headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, params={"no_hp": whatsapp},
+                )
+        resp = await _pms_http_retry(_do)
         latency_ms = int((time.time() - started) * 1000)
         if resp.status_code >= 400:
             await _pms_log(path, "GET", resp.status_code, latency_ms, False, resp.text)
@@ -401,11 +448,13 @@ async def _pms_status_member(whatsapp: str, api_key_override: Optional[str] = No
     path = cfg["endpoints"].get("status_member_path", PMS_DEFAULT_ENDPOINTS["status_member_path"])
     started = time.time()
     try:
-        async with httpx.AsyncClient(timeout=10) as http:
-            resp = await http.get(
-                f"{cfg['pms_base_url'].rstrip('/')}{path}",
-                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, params={"no_hp": whatsapp},
-            )
+        async def _do():
+            async with httpx.AsyncClient(timeout=10) as http:
+                return await http.get(
+                    f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                    headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, params={"no_hp": whatsapp},
+                )
+        resp = await _pms_http_retry(_do)
         latency_ms = int((time.time() - started) * 1000)
         if resp.status_code >= 400:
             await _pms_log(path, "GET", resp.status_code, latency_ms, False, resp.text)
@@ -432,11 +481,13 @@ async def _pms_ajukan_pembatalan(kode: str, whatsapp: str, alasan: str = "", api
     path = cfg["endpoints"].get("cancel_request_path", PMS_DEFAULT_ENDPOINTS["cancel_request_path"])
     started = time.time()
     try:
-        async with httpx.AsyncClient(timeout=15) as http:
-            resp = await http.post(
-                f"{cfg['pms_base_url'].rstrip('/')}{path}",
-                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, json=payload,
-            )
+        async def _do():
+            async with httpx.AsyncClient(timeout=15) as http:
+                return await http.post(
+                    f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                    headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, json=payload,
+                )
+        resp = await _pms_http_retry(_do)
         latency_ms = int((time.time() - started) * 1000)
         if resp.status_code >= 400:
             await _pms_log(path, "POST", resp.status_code, latency_ms, False, resp.text)
@@ -467,11 +518,13 @@ async def _sync_business_rules(api_key_override: Optional[str] = None) -> dict:
     path = cfg["endpoints"].get("rules_path", PMS_DEFAULT_ENDPOINTS["rules_path"])
     started = time.time()
     try:
-        async with httpx.AsyncClient(timeout=10) as http:
-            resp = await http.get(
-                f"{cfg['pms_base_url'].rstrip('/')}{path}",
-                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"},
-            )
+        async def _do():
+            async with httpx.AsyncClient(timeout=10) as http:
+                return await http.get(
+                    f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                    headers={"Authorization": f"Bearer {cfg['pms_api_key']}"},
+                )
+        resp = await _pms_http_retry(_do)
         latency_ms = int((time.time() - started) * 1000)
         if resp.status_code >= 400:
             await _pms_log(path, "GET", resp.status_code, latency_ms, False, "sync rule")
@@ -497,11 +550,13 @@ async def _pms_alert_owner(pesan: str) -> bool:
         return False
     path = cfg["endpoints"].get("alert_owner_path", PMS_DEFAULT_ENDPOINTS["alert_owner_path"])
     try:
-        async with httpx.AsyncClient(timeout=10) as http:
-            resp = await http.post(
-                f"{cfg['pms_base_url'].rstrip('/')}{path}",
-                headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, json={"pesan": pesan},
-            )
+        async def _do():
+            async with httpx.AsyncClient(timeout=10) as http:
+                return await http.post(
+                    f"{cfg['pms_base_url'].rstrip('/')}{path}",
+                    headers={"Authorization": f"Bearer {cfg['pms_api_key']}"}, json={"pesan": pesan},
+                )
+        resp = await _pms_http_retry(_do)
         return resp.status_code < 400
     except Exception as e:
         logging.getLogger("pms_connector").warning(f"Gagal kirim alert owner: {e}")
