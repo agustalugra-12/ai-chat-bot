@@ -259,6 +259,11 @@ async def _pms_buat_booking_request(args: dict, api_key_override: Optional[str] 
         "payment_option": args.get("payment_option"),
         "metode_pembayaran": args.get("metode_pembayaran"),
         "diskon_diminta_tamu": bool(args.get("diskon_diminta_tamu")),
+        # Sarapan (2026-08-07, bug nyata - tamu Riyan Sumardika kena tarif tanpa
+        # sarapan padahal minta dengan sarapan) - payload sebelumnya TIDAK PERNAH
+        # menyertakan field ini sama sekali, walau tool create_booking sendiri
+        # sudah dikasih parameter ini (lihat ai_service.py TOOL_DOCS).
+        "dengan_sarapan": bool(args.get("dengan_sarapan")),
     }
     path = cfg["endpoints"]["booking_request_path"]
     started = time.time()
@@ -295,6 +300,7 @@ async def _pms_preview_harga(args: dict, api_key_override: Optional[str] = None)
         "no_hp": args.get("whatsapp"), "tipe": args.get("tipe"), "room_tipe": args.get("room_tipe"),
         "tanggal_checkin": args.get("tanggal_checkin"), "tanggal_checkout": args.get("tanggal_checkout"),
         "jumlah_kamar": args.get("jumlah_kamar"), "diskon_diminta_tamu": bool(args.get("diskon_diminta_tamu")),
+        "dengan_sarapan": bool(args.get("dengan_sarapan")),  # 2026-08-07, sama fix dgn _pms_buat_booking_request
     }
     path = cfg["endpoints"].get("preview_harga_path", PMS_DEFAULT_ENDPOINTS["preview_harga_path"])
     started = time.time()
