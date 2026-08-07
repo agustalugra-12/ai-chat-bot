@@ -159,9 +159,15 @@ async def auto_fix_guardrail_fasilitas(temuan: list, bots: dict) -> list:
 
 async def cek_handover_menggantung() -> list:
     batas = (datetime.now(timezone.utc) - timedelta(hours=AMBANG_HANDOVER_MENGGANTUNG_JAM)).isoformat()
-    return await db.conversations.find({
+    kandidat = await db.conversations.find({
         "status": "waiting_admin", "resolution": "handover", "updated_at": {"$lt": batas},
     }).to_list(100)
+    # Staf SUDAH balas manual TAPI belum klik "Aktifkan AI Lagi" (2026-08-07, bug nyata
+    # SAMA yang dilaporkan Agus di escalate_stale_handovers.py - status "waiting_admin"
+    # tetap nempel SELAMANYA sampai staf resume eksplisit, walau staf sudah benar2
+    # balas). Kalau pesan TERAKHIR di percakapan dari admin (from_admin=True), itu
+    # BUKAN "menggantung" - staf sudah merespons, jangan laporkan sbg belum ditangani.
+    return [c for c in kandidat if not (c.get("messages") and c["messages"][-1].get("from_admin"))]
 
 
 # ---------------------------------------------------------------------------

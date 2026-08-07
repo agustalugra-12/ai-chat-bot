@@ -41,7 +41,25 @@ async def main():
     print(f"[{datetime.now(timezone.utc).isoformat()}] kandidat handover menggantung: {len(kandidat)}")
 
     dieskalasi = 0
+    dilewati_sudah_dibalas = 0
     for conv in kandidat:
+        # Staf SUDAH balas manual TAPI belum klik "Aktifkan AI Lagi" (2026-08-07, bug
+        # nyata dilaporkan Agus - tamu "Ardit" dapat notif "BELUM ditangani" padahal
+        # staf sudah balas langsung kemarin jam 10:42). Akar masalah: status tetap
+        # "waiting_admin" SELAMANYA sampai staf eksplisit resume (by design, lihat
+        # server.py) - script ini sebelumnya cuma cek status, bukan cek APAKAH staf
+        # sudah benar2 merespons. Sekarang: kalau pesan TERAKHIR di percakapan asalnya
+        # dari admin (from_admin=True) - itu tandanya bola ada di pihak tamu/sudah
+        # dijawab, BUKAN diabaikan staf - jangan eskalasi. Kalau tamu kirim pesan LAGI
+        # SETELAH balasan admin itu, pesan terakhir otomatis balik jadi dari tamu lagi
+        # (updated_at ikut maju) - kasus itu TETAP dieskalasi sesuai mestinya (staf blm
+        # lihat follow-up baru itu).
+        messages = conv.get("messages", [])
+        last_message = messages[-1] if messages else None
+        if last_message and last_message.get("from_admin"):
+            dilewati_sudah_dibalas += 1
+            continue
+
         terakhir = conv.get("handover_escalated_at")
         if terakhir and terakhir > batas:
             continue  # sudah dieskalasi dalam AMBANG_MENIT terakhir - jangan spam
@@ -64,7 +82,7 @@ async def main():
         else:
             print(f"  GAGAL kirim eskalasi utk {conv['_id']}")
 
-    print(f"ringkasan: {dieskalasi} eskalasi terkirim dari {len(kandidat)} kandidat")
+    print(f"ringkasan: {dieskalasi} eskalasi terkirim, {dilewati_sudah_dibalas} dilewati (sudah dibalas admin) dari {len(kandidat)} kandidat")
 
 
 if __name__ == "__main__":
