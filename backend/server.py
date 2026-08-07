@@ -1616,6 +1616,55 @@ def _klaim_mencatat_sungguhan(text: str) -> bool:
     return False
 
 
+_TOTAL_RP_PATTERN = re.compile(r"(total\s*:?\s*\*{0,2}rp\s?)([\d.,]+)", re.IGNORECASE)
+
+
+def _cek_kontradiksi_total(final_text: str, tool: Optional[str], messages: list, conv_id=None) -> str:
+    """Contradiction Checker (2026-08-07, Modul 10 PRD "AI Self-Healing & Bug Prevention" -
+    usulan Agus) - jaring pengaman BARU, beda dari guard availability lain di server.py (yang
+    selalu verifikasi ke check_availability ASLI). Ini murni cek KONSISTENSI DIRI: kalau
+    balasan giliran ini menyebut "Total: Rp<N>" yang BEDA dari "Total: Rp<M>" yang PERNAH AI
+    sendiri sebutkan sebelumnya di percakapan yang SAMA, TANPA preview_booking/create_booking
+    dipanggil ulang giliran ini (artinya tidak ada perhitungan baru yang sah - ALUR WAJIB di
+    ai_service.py mewajibkan preview_booking sebelum ringkasan harga apa pun), maka N
+    dianggap tidak tepercaya. M (angka lama) lebih dipercaya karena SAAT PERTAMA ditulis, M
+    sudah melewati gate "preview_booking WAJIB dipanggil" itu - N yang muncul TANPA tool call
+    baru berarti dikarang/diingat salah. Tidak butuh lookup PMS tambahan (beda dari guard
+    kedatangan_ke) - cukup bandingkan balasan AI vs balasan AI sendiri sebelumnya, substitusi
+    paksa N -> M kalau beda.
+
+    Diekstrak jadi fungsi murni (bukan inline seperti guard-guard lain) supaya bisa di-unit-
+    test langsung tanpa panggilan LLM sungguhan - lihat scripts/test_hallucination_guards.py.
+    """
+    if tool in ("preview_booking", "create_booking"):
+        return final_text
+    m_now = _TOTAL_RP_PATTERN.search(final_text)
+    if not m_now:
+        return final_text
+    total_now = int(re.sub(r"[.,]", "", m_now.group(2)) or 0)
+    total_prev_raw = None
+    for m_hist in reversed(messages):
+        if m_hist.get("role") != "assistant":
+            continue
+        m_prev = _TOTAL_RP_PATTERN.search(m_hist.get("content") or "")
+        if m_prev:
+            total_prev_raw = m_prev.group(2)
+            break
+    if total_prev_raw is None:
+        return final_text
+    total_prev = int(re.sub(r"[.,]", "", total_prev_raw) or 0)
+    if not total_prev or not total_now or total_prev == total_now:
+        return final_text
+    corrected = _TOTAL_RP_PATTERN.sub(
+        rf"\g<1>{total_prev:,}".replace(",", "."), final_text, count=1,
+    )
+    logging.getLogger("hallucination_guard").warning(
+        f"kontradiksi Total Rp terdeteksi & dikoreksi (Rp{total_now} -> Rp{total_prev}) "
+        f"tanpa preview_booking/create_booking baru - conv {conv_id}, teks asli: {final_text!r}"
+    )
+    return corrected
+
+
 async def _ekstrak_fakta_tamu(guest_message: str, ai_reply_text: str) -> Optional[str]:
     """Panggilan kecil KHUSUS dipakai jaring pengaman klaim-pencatatan di bawah (jarang
     terpanggil by design - cuma pas AI klaim mencatat tanpa panggil tool, bukan tiap
@@ -2602,6 +2651,13 @@ async def _run_chat_turn_locked(
                     f"wa {wa_guard_kedatangan}, teks asli: {final_text!r}"
                 )
                 final_text = final_text_koreksi_ke
+
+    # Contradiction Checker (2026-08-07, Modul 10 PRD "AI Self-Healing & Bug Prevention" -
+    # usulan Agus) - lihat docstring _cek_kontradiksi_total() di atas untuk penjelasan
+    # lengkap kenapa angka LAMA yang dipercaya, bukan yang baru. Diekstrak jadi fungsi murni
+    # (bukan inline spt guard-guard lain di atas) SUPAYA bisa di-unit-test langsung tanpa
+    # perlu panggilan LLM sungguhan - lihat scripts/test_hallucination_guards.py.
+    final_text = _cek_kontradiksi_total(final_text, tool, conv["messages"], conv_id=conv.get("_id"))
 
     # Jaring pengaman level KODE (2026-07-24) - insiden nyata BERULANG: instruksi prompt
     # "JANGAN ulangi link checkout_url di balasan sendiri" (ditambahkan 2026-07-21 setelah

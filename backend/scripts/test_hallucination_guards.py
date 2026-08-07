@@ -1,18 +1,28 @@
-"""Tes regresi jaring pengaman ketersediaan kamar (2026-08-04, permintaan Agus - "solusi
-terbaik karena guard kadang melakukan kesalahan").
+"""Tes regresi jaring pengaman AI Chat Bot (2026-08-04, permintaan Agus - "solusi terbaik
+karena guard kadang melakukan kesalahan"; diperluas 2026-08-07 jadi gerbang deploy resmi -
+Modul 19 PRD "AI Self-Healing & Bug Prevention" usulan Agus).
 
-Kumpulan skenario yang PERNAH benar-benar bermasalah (ditemukan lewat laporan Agus/audit
-sesi ini), dijalankan lewat Chat Simulator (`_run_chat_turn`, bukan WhatsApp asli) - tiap
-kali salah satu guard di server.py diubah, jalankan skrip ini SEBELUM lapor selesai ke
-Agus, supaya perbaikan baru tidak diam-diam merusak perbaikan lama (persis masalah yang
-baru saja terjadi: guard besok/lusa dibangun hari ini TIDAK sengaja menyentuh guard day-
-use-klaim-ketersediaan yang lebih lama, yang ternyata sudah lama punya bug "tipe":
-"day_use" - baru ketahuan lewat laporan tamu Dar).
+Dua jenis tes di sini, SENGAJA dipisah karena beda kebutuhan:
 
-Tiap skenario mengambil data ASLI langsung dari PMS (ground truth) SEBELUM menjalankan
-chat, lalu bandingkan balasan AKHIR AI dengan angka asli itu - PASS kalau angka yang
-disebut AI cocok, FAIL kalau tidak ada angka sama sekali atau angkanya beda dari data
-asli. Semua percakapan tes dihapus otomatis di akhir (bukan tersisa di database).
+1. **Skenario LIVE** (`skenario_*`, async, lewat Chat Simulator/`_run_chat_turn`) - untuk
+   bug yang akar masalahnya ada di PERILAKU MODEL (prompt tidak selalu dipatuhi), bukan di
+   logika kode murni. Tiap skenario mengambil data ASLI langsung dari PMS (ground truth)
+   SEBELUM menjalankan chat, lalu bandingkan balasan AKHIR AI dengan angka asli itu - PASS
+   kalau cocok, FAIL kalau tidak ada angka sama sekali atau beda dari data asli. Ini genuinely
+   butuh panggilan OpenAI asli (tidak bisa disimulasikan murah), jadi jumlahnya SENGAJA
+   dijaga sedikit & bernilai tinggi - bukan ratusan skenario sintetis (lihat PRD asli Agus
+   Modul 21/22 yang minta 1000-5000 percakapan/malam - ditolak, lihat diskusi 2026-08-07:
+   traffic asli bot ini cuma ~39 percakapan/24 jam, biaya segitu banyak tidak proporsional
+   untuk skala bisnis ini).
+2. **Unit test murni** (`test_*`, sync, tanpa DB/LLM sama sekali) - untuk guard yang berupa
+   LOGIKA KODE murni (regex deteksi + substitusi, spt Contradiction Checker) - lebih cepat,
+   lebih murah, lebih deterministik daripada mencoba memancing LLM berperilaku salah secara
+   konsisten di tiap run. Menguji fungsi guard itu sendiri terhadap regresi (skenario nyata
+   pernah terjadi: guard baru tanpa sengaja merusak guard lama yang sudah ada).
+
+Tiap kali salah satu guard di server.py diubah, jalankan skrip ini SEBELUM lapor selesai ke
+Agus / SEBELUM restart ai-chat-bot-backend.service - WAJIB, bukan opsional (lihat CLAUDE.md
+di root repo ini). Semua percakapan tes LIVE dihapus otomatis di akhir (bukan tersisa di DB).
 
 Jalankan manual: `venv/bin/python -m scripts.test_hallucination_guards`
 """
@@ -25,7 +35,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from server import db, _run_chat_turn, _tool_check_availability  # noqa: E402
+from server import (  # noqa: E402
+    db, _run_chat_turn, _tool_check_availability, _tool_preview_booking, _cek_kontradiksi_total,
+)
 
 BOT_ID_HARMONI = "d7ca2ed3-e940-4d86-b032-ec5bd203a735"
 BOT_ID_PELANGI = "c063c2bc-4f93-4304-a3f6-6a2b36c7e3c5"
@@ -114,14 +126,150 @@ async def skenario_konsistensi_dar() -> tuple:
     return ("konsistensi_dar", session, status)
 
 
+async def skenario_harga_sarapan() -> tuple:
+    """Bug asli (2026-08-07, tamu Riyan Sumardika): tamu minta Menginap "dengan sarapan", AI
+    benar sebut harga termasuk sarapan di kalimat TAPI parameter dengan_sarapan tidak diisi
+    ke tool - booking tersimpan pakai tarif TANPA sarapan yang lebih murah, beda dari yang
+    dijanjikan. Regresi kalau AI tidak menyebut angka tarif+sarapan asli dari PMS sama sekali."""
+    besok = (datetime.now(timezone.utc) + timedelta(hours=7, days=1)).strftime("%Y-%m-%d")
+    lusa = (datetime.now(timezone.utc) + timedelta(hours=7, days=2)).strftime("%Y-%m-%d")
+    wa = _wa_unik()
+    bot = await db.ai_bots.find_one({"_id": BOT_ID_PELANGI})
+    fake_conv = {"_pms_api_key_override": (bot or {}).get("pms_property_api_key"), "whatsapp": wa}
+    asli = await _tool_preview_booking({
+        "whatsapp": wa, "tipe": "menginap", "room_tipe": "Standard",
+        "tanggal_checkin": besok, "tanggal_checkout": lusa, "dengan_sarapan": True,
+    }, fake_conv)
+    if not asli.get("ok") or not asli.get("rincian_harga"):
+        return ("harga_sarapan", None, f"SKIP (preview_booking asli gagal: {asli.get('error')})")
+    rincian = asli["rincian_harga"]
+    # Cocokkan angka mentah ("175000") MAUPUN yang diformat titik-ribuan ala Indonesia
+    # ("175.000") - AI wajar menulis salah satu gaya, bug nyata ditemukan di sini SEBELUM
+    # perbaikan: skenario ini sendiri sempat FALSE FAIL krn cuma cek angka mentah padahal
+    # balasan AI yang BENAR pakai format "Rp175.000".
+    angka_asli = set()
+    for v in (rincian.get("tarif_kamar"), rincian.get("total")):
+        if v:
+            angka_asli.add(str(v))
+            angka_asli.add(f"{v:,}".replace(",", "."))
+
+    session = f"test-sarapan-{uuid.uuid4().hex[:8]}"
+    r = await _run_chat_turn(
+        session, f"kamar standard menginap tanggal {besok} untuk 2 orang, kalau dengan sarapan berapa ya kak?",
+        "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator",
+    )
+    reply = r.get("reply") or ""
+    cocok = any(a in reply for a in angka_asli)
+    return ("harga_sarapan", session, "PASS" if cocok else f"FAIL - balasan: {reply!r}, angka asli (dgn sarapan): {angka_asli}")
+
+
+async def skenario_extra_bed_standard_ditolak() -> tuple:
+    """Bug asli (2026-07-24, ditemukan lewat Chat Simulator): meski prompt tegas "extra bed
+    HANYA Cottage, Standard TIDAK BISA", model tetap mengarang kebijakan & menyetujui extra
+    bed untuk Standard lengkap dengan harga karangan sendiri. Regresi kalau AI menyetujui/
+    memberi harga extra bed untuk kamar Standard alih-alih menolak."""
+    session = f"test-extrabed-std-{uuid.uuid4().hex[:8]}"
+    wa = _wa_unik()
+    r = await _run_chat_turn(session, "kamar standard bisa nambah extra bed ga kak?", "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator")
+    reply = (r.get("reply") or "").lower()
+    menolak = bool(re.search(
+        r"(tidak|nggak|blm|belum|maaf)[^.\n]{0,25}(bisa|boleh|tersedia|ada)[^.\n]{0,20}extra\s*bed"
+        r"|extra\s*bed[^.\n]{0,25}(tidak|nggak|ga)\s*(bisa|boleh|tersedia)"
+        r"|(hanya|cuma)[^.\n]{0,20}cottage[^.\n]{0,20}extra\s*bed"
+        r"|extra\s*bed[^.\n]{0,20}(hanya|cuma)[^.\n]{0,20}cottage",
+        reply,
+    ))
+    menyetujui_dgn_harga = bool(re.search(r"extra\s*bed[^.\n]{0,40}rp\s?[\d.,]+|rp\s?[\d.,]+[^.\n]{0,40}extra\s*bed", reply))
+    status = "PASS" if (menolak and not menyetujui_dgn_harga) else f"FAIL - AI tidak jelas menolak (menolak={menolak}) atau malah kasih harga (menyetujui_dgn_harga={menyetujui_dgn_harga}): {reply!r}"
+    return ("extra_bed_standard_ditolak", session, status)
+
+
+async def skenario_multi_tipe_kamar() -> tuple:
+    """Bug asli: tamu tanya ketersediaan 2 tipe kamar sekaligus dalam 1 pertanyaan, AI cuma
+    jawab 1 dari 2 tipe yang ditanya. Regresi kalau balasan akhir tidak menyebut status
+    KEDUA tipe kamar yang ditanyakan."""
+    besok = (datetime.now(timezone.utc) + timedelta(hours=7, days=1)).strftime("%Y-%m-%d")
+    asli = await _hasil_bersih(BOT_ID_PELANGI, besok)
+    if len(asli) < 2:
+        return ("multi_tipe_kamar", None, "SKIP (properti ini tidak punya >=2 tipe kamar utk dibandingkan)")
+
+    session = f"test-multitipe-{uuid.uuid4().hex[:8]}"
+    wa = _wa_unik()
+    r = await _run_chat_turn(session, "besok ada kamar Standard atau Cottage yang kosong kak?", "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator")
+    reply = (r.get("reply") or "").lower()
+    sebut_standard, sebut_cottage = "standard" in reply, "cottage" in reply
+    status = "PASS" if (sebut_standard and sebut_cottage) else (
+        f"FAIL - balasan cuma sebut sebagian tipe (standard={sebut_standard}, cottage={sebut_cottage}): {reply!r}"
+    )
+    return ("multi_tipe_kamar", session, status)
+
+
+# ---------------------------------------------------------------------------
+# Unit test murni (sync, TANPA DB/LLM) - Contradiction Checker (Modul 10 PRD ASHB)
+# ---------------------------------------------------------------------------
+
+def test_kontradiksi_total_dikoreksi() -> tuple:
+    messages = [{"role": "assistant", "content": "Ringkasan booking:\n💰 Harga kamar: Rp150.000\n💳 Service 3%\n*Total: Rp154.500*"}]
+    hasil = _cek_kontradiksi_total("Baik kak, *Total: Rp200.000* ya untuk booking ini.", "some_other_tool", messages)
+    ok = "Rp154.500" in hasil and "Rp200.000" not in hasil
+    return ("kontradiksi_total_dikoreksi", "PASS" if ok else f"FAIL - hasil: {hasil!r}")
+
+
+def test_kontradiksi_total_sama_tidak_diubah() -> tuple:
+    messages = [{"role": "assistant", "content": "*Total: Rp154.500*"}]
+    teks = "Baik, *Total: Rp154.500* sudah dikonfirmasi."
+    hasil = _cek_kontradiksi_total(teks, None, messages)
+    return ("kontradiksi_total_sama_tidak_diubah", "PASS" if hasil == teks else f"FAIL - hasil berubah padahal totalnya sama: {hasil!r}")
+
+
+def test_kontradiksi_total_skip_saat_preview_booking() -> tuple:
+    """Kalau preview_booking/create_booking BARU dipanggil giliran ini, angka baru itu SAH
+    (mis. tamu tambah extra bed) - guard TIDAK BOLEH menimpanya dengan angka lama."""
+    messages = [{"role": "assistant", "content": "*Total: Rp154.500*"}]
+    teks = "Baik, *Total: Rp200.000* (harga baru setelah tambah extra bed)."
+    hasil = _cek_kontradiksi_total(teks, "preview_booking", messages)
+    return ("kontradiksi_total_skip_saat_preview_booking", "PASS" if hasil == teks else f"FAIL - guard salah trigger padahal preview_booking baru dipanggil: {hasil!r}")
+
+
+def test_kontradiksi_total_tanpa_riwayat_tidak_diubah() -> tuple:
+    teks = "Baik, *Total: Rp200.000* untuk booking Kakak."
+    hasil = _cek_kontradiksi_total(teks, None, [])
+    return ("kontradiksi_total_tanpa_riwayat_tidak_diubah", "PASS" if hasil == teks else f"FAIL - guard salah trigger tanpa riwayat sama sekali: {hasil!r}")
+
+
+def test_kontradiksi_total_tanpa_klaim_total_tidak_diubah() -> tuple:
+    messages = [{"role": "assistant", "content": "*Total: Rp154.500*"}]
+    teks = "Baik kak, kamar Standard masih tersedia untuk tanggal itu."
+    hasil = _cek_kontradiksi_total(teks, None, messages)
+    return ("kontradiksi_total_tanpa_klaim_total_tidak_diubah", "PASS" if hasil == teks else f"FAIL - guard salah trigger padahal tidak ada klaim Total sama sekali: {hasil!r}")
+
+
 async def main():
     skenario_list = [
         skenario_besok_jumlah_kamar,
         skenario_hari_nama_salah_hitung,
         skenario_konsistensi_dar,
+        skenario_harga_sarapan,
+        skenario_extra_bed_standard_ditolak,
+        skenario_multi_tipe_kamar,
+    ]
+    unit_test_list = [
+        test_kontradiksi_total_dikoreksi,
+        test_kontradiksi_total_sama_tidak_diubah,
+        test_kontradiksi_total_skip_saat_preview_booking,
+        test_kontradiksi_total_tanpa_riwayat_tidak_diubah,
+        test_kontradiksi_total_tanpa_klaim_total_tidak_diubah,
     ]
     sesi_test = []
     hasil_semua = []
+
+    print("--- Unit test (sync, tanpa DB/LLM) ---")
+    for fn in unit_test_list:
+        nama, status = fn()
+        hasil_semua.append((nama, status))
+        print(f"[{status.split(' ')[0]}] {nama}: {status}")
+
+    print("\n--- Skenario LIVE (lewat Chat Simulator, panggilan OpenAI asli) ---")
     for fn in skenario_list:
         nama, session, status = await fn()
         if session:
@@ -134,7 +282,9 @@ async def main():
         print(f"\ncleanup: {r.deleted_count} percakapan tes dihapus")
 
     gagal = [h for h in hasil_semua if h[1].startswith("FAIL")]
-    print(f"\n=== RINGKASAN: {len(hasil_semua) - len(gagal)}/{len(hasil_semua)} PASS ===")
+    skip = [h for h in hasil_semua if h[1].startswith("SKIP")]
+    print(f"\n=== RINGKASAN: {len(hasil_semua) - len(gagal) - len(skip)}/{len(hasil_semua)} PASS"
+          + (f", {len(skip)} SKIP" if skip else "") + " ===")
     if gagal:
         print("ADA REGRESI - jangan deploy sebelum ini diperbaiki:")
         for nama, status in gagal:
