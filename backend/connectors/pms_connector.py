@@ -506,12 +506,21 @@ async def _pms_ajukan_pembatalan(kode: str, whatsapp: str, alasan: str = "", api
 SYNC_KINDS = {"rule"}
 
 
-async def _sync_business_rules(api_key_override: Optional[str] = None) -> dict:
+async def _sync_business_rules(api_key_override: Optional[str] = None, property_slug: str = "pelangi") -> dict:
     """Rule Engine tahap 1: PMS = pemilik kebenaran (routes/business_rules.py di repo PMS),
     ai-chat-bot cuma menyimpan CACHE read-only hasil sync ini di `business_rules_cache` -
     dipakai `_build_context` supaya AI menjawab kebijakan bisnis akurat, bukan menghafal
-    teks bebas. Replace-all (bukan merge) supaya rule yang dihapus/dinonaktifkan di PMS
-    ikut hilang dari cache, tidak nyangkut selamanya."""
+    teks bebas. Replace-all PER PROPERTI (bukan merge, bukan global) supaya rule yang
+    dihapus/dinonaktifkan di PMS ikut hilang dari cache properti itu, tidak nyangkut
+    selamanya - TAPI tidak ikut menghapus/menimpa cache properti LAIN.
+
+    `property_slug` (2026-08-07, Modul 7 PRD ASHB "Memory Validator" - bug nyata ditemukan:
+    cache ini sebelumnya SAMA SEKALI tidak diberi tag properti - `delete_many({})` global +
+    `find({})` global di `_build_context` (server.py) berarti sync SATU properti menimpa
+    cache utk SEMUA properti, dan kedua bot Pelangi & Harmoni sama-sama membaca cache yang
+    sama sebagai "ATURAN BISNIS WAJIB DIIKUTI" - DP%, kebijakan pembatalan, jam check-in/out
+    bisa salah properti tanpa ada yang sadar. WAJIB diisi pemanggil (lihat pms_integration_sync
+    di server.py, sekarang loop tiap properti eksplisit, bukan asumsi tunggal)."""
     cfg = await _pms_config(api_key_override)
     if not cfg["pms_base_url"] or not cfg["pms_api_key"]:
         return {"ok": False, "message": "PMS URL / API Key belum diisi", "at": utc_now_iso()}
@@ -531,10 +540,15 @@ async def _sync_business_rules(api_key_override: Optional[str] = None) -> dict:
             return {"ok": False, "message": f"PMS merespons HTTP {resp.status_code}", "at": utc_now_iso()}
         await _pms_log(path, "GET", resp.status_code, latency_ms, True, "sync rule")
         rules = (resp.json().get("rules")) or []
-        await db.business_rules_cache.delete_many({})
+        await db.business_rules_cache.delete_many({"property_slug": property_slug})
         if rules:
-            await db.business_rules_cache.insert_many([{"_id": new_id(), **r, "synced_at": utc_now_iso()} for r in rules])
-        return {"ok": True, "message": f"{len(rules)} business rule disinkronkan dari PMS", "at": utc_now_iso(), "count": len(rules)}
+            await db.business_rules_cache.insert_many([
+                {"_id": new_id(), **r, "property_slug": property_slug, "synced_at": utc_now_iso()} for r in rules
+            ])
+        return {
+            "ok": True, "message": f"{len(rules)} business rule disinkronkan dari PMS ({property_slug})",
+            "at": utc_now_iso(), "count": len(rules), "property_slug": property_slug,
+        }
     except Exception as e:
         await _pms_log(path, "GET", None, int((time.time() - started) * 1000), False, f"sync rule: {e}")
         return {"ok": False, "message": f"Gagal menghubungi PMS: {e}", "at": utc_now_iso()}

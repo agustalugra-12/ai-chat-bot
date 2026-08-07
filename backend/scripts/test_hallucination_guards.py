@@ -39,7 +39,7 @@ from server import (  # noqa: E402
     db, _run_chat_turn, _tool_check_availability, _tool_preview_booking, _cek_kontradiksi_total,
     _deteksi_loop_kirim_beruntun, LOOP_DETECTOR_THRESHOLD, LOOP_DETECTOR_WINDOW_MINUTES,
 )
-from connectors.pms_connector import _pms_http_retry  # noqa: E402
+from connectors.pms_connector import _pms_http_retry, _sync_business_rules  # noqa: E402
 
 import httpx
 
@@ -186,6 +186,34 @@ async def skenario_extra_bed_standard_ditolak() -> tuple:
     menyetujui_dgn_harga = bool(re.search(r"extra\s*bed[^.\n]{0,40}rp\s?[\d.,]+|rp\s?[\d.,]+[^.\n]{0,40}extra\s*bed", reply))
     status = "PASS" if (menolak and not menyetujui_dgn_harga) else f"FAIL - AI tidak jelas menolak (menolak={menolak}) atau malah kasih harga (menyetujui_dgn_harga={menyetujui_dgn_harga}): {reply!r}"
     return ("extra_bed_standard_ditolak", session, status)
+
+
+async def skenario_business_rules_isolasi_properti() -> tuple:
+    """Bug asli (2026-08-07, Modul 7 PRD ASHB "Memory Validator"): `business_rules_cache`
+    sebelumnya SAMA SEKALI tidak ditandai per-properti - sync 1 properti menimpa cache utk
+    SEMUA properti, kedua bot Pelangi & Harmoni sama-sama membaca DP%/kebijakan pembatalan/
+    jam checkout dari properti yang SAMA sebagai "ATURAN BISNIS WAJIB DIIKUTI". Regresi
+    kalau sync 1 properti (test_scope_a) diam-diam menghapus/mengganggu cache properti
+    LAIN (test_scope_b) yang tidak sedang di-sync. Pakai label properti PALSU (bukan
+    "pelangi"/"harmoni" asli) supaya tidak menyentuh data produksi sama sekali."""
+    label_a, label_b = "test_scope_a", "test_scope_b"
+    try:
+        hasil_a = await _sync_business_rules(property_slug=label_a)
+        hasil_b = await _sync_business_rules(property_slug=label_b)
+        if not hasil_a.get("ok") or not hasil_b.get("ok"):
+            return ("business_rules_isolasi_properti", None, f"SKIP (sync asli gagal: a={hasil_a}, b={hasil_b})")
+        count_b_sebelum = await db.business_rules_cache.count_documents({"property_slug": label_b})
+        # Sync ULANG label_a - TIDAK BOLEH mengganggu dokumen label_b sama sekali.
+        await _sync_business_rules(property_slug=label_a)
+        count_b_sesudah = await db.business_rules_cache.count_documents({"property_slug": label_b})
+        count_a = await db.business_rules_cache.count_documents({"property_slug": label_a})
+        ok = count_a > 0 and count_b_sesudah > 0 and count_b_sebelum == count_b_sesudah
+        status = "PASS" if ok else (
+            f"FAIL - isolasi bocor: count_a={count_a}, count_b_sebelum={count_b_sebelum}, count_b_sesudah={count_b_sesudah}"
+        )
+        return ("business_rules_isolasi_properti", None, status)
+    finally:
+        await db.business_rules_cache.delete_many({"property_slug": {"$in": [label_a, label_b]}})
 
 
 async def skenario_multi_tipe_kamar() -> tuple:
@@ -338,6 +366,7 @@ async def main():
         skenario_harga_sarapan,
         skenario_extra_bed_standard_ditolak,
         skenario_multi_tipe_kamar,
+        skenario_business_rules_isolasi_properti,
     ]
     unit_test_list = [
         test_kontradiksi_total_dikoreksi,

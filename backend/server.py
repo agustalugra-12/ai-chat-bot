@@ -886,7 +886,11 @@ async def _build_context(query: Optional[str] = None, bot: Optional[dict] = None
     # Business Rules (Rule Engine tahap 1) - SENGAJA terpisah dari Knowledge Base (KB isinya
     # info umum hotel/wisata/FAQ, ini kebijakan operasional dari PMS: DP/cancellation/
     # checkin/checkout/promo/dll). Cache hasil sync, bukan realtime call per pesan.
-    rules = await db.business_rules_cache.find({}).to_list(200)
+    # `property_slug` filter (2026-08-07, Modul 7 PRD ASHB "Memory Validator" - bug nyata:
+    # sebelumnya query TANPA filter properti sama sekali, kedua bot Pelangi & Harmoni
+    # membaca cache YANG SAMA sebagai "ATURAN BISNIS WAJIB DIIKUTI" - lihat docstring
+    # _sync_business_rules di connectors/pms_connector.py untuk kronologi lengkap).
+    rules = await db.business_rules_cache.find({"property_slug": property_slug}).to_list(200)
     if rules:
         parts = ["\n# ATURAN BISNIS (dari PMS, WAJIB diikuti - jangan mengarang kebijakan sendiri)"]
         for r in rules:
@@ -3185,10 +3189,40 @@ async def guest_profiles_list(search: Optional[str] = None, property_slug: Optio
 async def pms_integration_sync(jenis: str, user=Depends(get_current_user)):
     """Cuma `rule` (Business Rules) yang benar-benar dimiliki PMS - lihat
     connectors/webpelangi_connector.py untuk sync hotel_profile/FAQ (sumbernya web-pelangi,
-    bukan PMS)."""
+    bukan PMS).
+
+    Loop PER PROPERTI (2026-08-07, Modul 7 PRD ASHB "Memory Validator" - bug nyata
+    ditemukan): sebelumnya cuma sync SEKALI pakai API key singleton default (efeknya:
+    property_slug lain ikut kena cache properti yang di-sync duluan - lihat docstring
+    _sync_business_rules di connectors/pms_connector.py). Sekarang sync SEMUA properti yang
+    punya bot terdaftar, masing-masing pakai api_key_override bot itu (kalau ada) & ditag
+    property_slug-nya sendiri di cache - tiap bot cuma baca aturan bisnis propertinya
+    sendiri (lihat _build_context, filter berdasarkan property_slug)."""
     if jenis not in SYNC_KINDS:
         raise HTTPException(404, f"Jenis sync tidak dikenal: {jenis}")
-    result = await _sync_business_rules()
+    bots = await db.ai_bots.find({}, {"property_slug": 1, "pms_property_api_key": 1}).to_list(100)
+    per_property: Dict[str, Optional[str]] = {}
+    for b in bots:
+        slug = b.get("property_slug") or "pelangi"
+        key = b.get("pms_property_api_key")
+        if key and not per_property.get(slug):
+            per_property[slug] = key
+        elif slug not in per_property:
+            per_property[slug] = None
+    if not per_property:
+        per_property = {"pelangi": None}
+
+    results = {}
+    for slug, key in per_property.items():
+        results[slug] = await _sync_business_rules(api_key_override=key, property_slug=slug)
+
+    total_count = sum(r.get("count", 0) for r in results.values() if r.get("ok"))
+    all_ok = all(r.get("ok") for r in results.values())
+    ringkas = "; ".join(f"{slug}: {r.get('message')}" for slug, r in results.items())
+    result = {
+        "ok": all_ok, "message": ringkas, "at": utc_now_iso(),
+        "count": total_count, "per_property": results,
+    }
     await db.pms_integration_config.update_one(
         {"_id": "singleton"}, {"$set": {f"last_sync.{jenis}": result}}, upsert=True,
     )
