@@ -2562,6 +2562,47 @@ async def _run_chat_turn_locked(
                     f"conv {conv.get('_id')}, kedatangan_ke={kedatangan_ke}, diskon={diskon_persen}%"
                 )
 
+    # Jaring pengaman level KODE (2026-08-07) - insiden nyata (laporan Agus, tamu "Deica"):
+    # instruksi prompt LARANGAN KERAS "jangan ganti angka kedatangan_ke cuma krn tamu
+    # membantah, tetap pakai angka dari tool" (ditambahkan 2026-08-02 setelah kasus serupa
+    # "I Kadek Ongki") TERBUKTI tidak selalu dipatuhi - tamu ini cuma py 1 checkin asli
+    # (total_kunjungan=1, kedatangan ke-2 skrg, diskon 10% - SUDAH BENAR di booking_request
+    # yang tersimpan), tapi begitu tamu ngotot "kee 5 kalinya", giliran BERIKUTNYA AI
+    # menulis "Diskon Member: 10% (karena ini adalah kedatangan ke-5 Kakak)" - angka
+    # kedatangan berubah ikut klaim tamu TAPI diskon % tidak ikut diperbarui (utk kedatangan
+    # ke-5 asli seharusnya 30%, bukan 10%) - ringkasan jadi kontradiktif dgn dirinya sendiri
+    # DAN salah dari sumber kebenaran (booking asli tetap kedatangan ke-2/10%, cocok data).
+    # Sama pola dgn service-fee di atas: angka "benar" itu DETERMINISTIK (bisa dicek ulang
+    # murah via _pms_status_member, cuma butuh no WA) - jadi aman dikoreksi paksa di teks,
+    # bukan cuma diminta lewat prompt.
+    _m_kedatangan = re.search(r"kedatangan(?:\s+\w+){0,3}?\s+ke-(\d+)", final_text, re.IGNORECASE)
+    if _m_kedatangan:
+        wa_guard_kedatangan = conv.get("whatsapp") or whatsapp
+        if wa_guard_kedatangan:
+            status_member_real = await _pms_status_member(wa_guard_kedatangan, api_key_override=conv.get("_pms_api_key_override"))
+            ke_asli = status_member_real.get("kedatangan_ke")
+            diskon_asli = status_member_real.get("diskon_persen")
+            ke_di_teks = int(_m_kedatangan.group(1))
+            if ke_asli and ke_di_teks != ke_asli:
+                final_text_koreksi_ke = re.sub(
+                    r"(kedatangan(?:\s+\w+){0,3}?\s+ke-)\d+", rf"\g<1>{ke_asli}", final_text, flags=re.IGNORECASE,
+                )
+                # Ikut koreksi baris "Diskon Member: X%"/"diskon X%" kalau ADA di teks yang
+                # sama (biar tidak jadi kontradiktif: kedatangan sudah dikoreksi tapi %-nya
+                # ketinggalan angka lama) - kalau diskon_asli None/0 & teks tidak sebut %,
+                # tidak ada yang perlu diubah di sini.
+                if diskon_asli is not None:
+                    final_text_koreksi_ke = re.sub(
+                        r"([Dd]iskon(?:\s+[Mm]ember)?\s*:?\s*)\d+(\s*%)", rf"\g<1>{diskon_asli}\g<2>",
+                        final_text_koreksi_ke,
+                    )
+                logging.getLogger("hallucination_guard").warning(
+                    f"kedatangan_ke salah/ikut klaim tamu tanpa verifikasi terdeteksi & "
+                    f"dikoreksi ({ke_di_teks} -> {ke_asli}) - conv {conv.get('_id')}, "
+                    f"wa {wa_guard_kedatangan}, teks asli: {final_text!r}"
+                )
+                final_text = final_text_koreksi_ke
+
     # Jaring pengaman level KODE (2026-07-24) - insiden nyata BERULANG: instruksi prompt
     # "JANGAN ulangi link checkout_url di balasan sendiri" (ditambahkan 2026-07-21 setelah
     # laporan user pertama) TERBUKTI tidak selalu dipatuhi model - tamu tetap dapat link
