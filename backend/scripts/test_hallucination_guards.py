@@ -131,6 +131,31 @@ async def skenario_konsistensi_dar() -> tuple:
     return ("konsistensi_dar", session, status)
 
 
+async def skenario_klaim_penuh_jam_typo() -> tuple:
+    """Bug asli (2026-08-08, tamu "Apasajasudah"): tamu ketik "jam SWGINI ga bisa berarti
+    ya kak" (typo dari "segini"/sekarang, tanpa angka) setelah tanya harga Day Use - AI
+    menjawab "sudah terisi hingga jam 13:30" & mengarang jam siap lagi TANPA PERNAH
+    memanggil check_availability sepanjang percakapan. Guard kode yang seharusnya
+    menangkap ini (jaring pengaman 2026-08-03) SEBELUMNYA mewajibkan _jam_match berupa
+    ANGKA persis setelah kata "jam" - "jam swgini" tidak match sama sekali krn tidak ada
+    digit, jadi guard tidak pernah trigger. Regresi kalau balasan akhir mengklaim kamar
+    penuh/terisi TANPA check_availability benar-benar dipanggil di percakapan ini."""
+    besok = (datetime.now(timezone.utc) + timedelta(hours=7)).strftime("%Y-%m-%d")
+    asli = await _hasil_bersih(BOT_ID_PELANGI, besok)
+    ada_kosong = any(v > 0 for v in asli.values())
+    if not ada_kosong:
+        return ("klaim_penuh_jam_typo", None, "SKIP (kebetulan semua tipe kamar memang penuh hari ini di data asli)")
+
+    session = f"test-jamtypo-{uuid.uuid4().hex[:8]}"
+    wa = _wa_unik()
+    await _run_chat_turn(session, "dayuse brp kak", "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator")
+    r2 = await _run_chat_turn(session, "jam swgini ga bisa berarti ya kak", "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator")
+    reply = (r2.get("reply") or "").lower()
+    klaim_penuh_tanpa_cek = bool(re.search(r"(sudah|telah|masih)\s+(ter)?isi|penuh|tidak\s+tersedia", reply)) and r2.get("tool_used") != "check_availability"
+    status = "PASS" if not klaim_penuh_tanpa_cek else f"FAIL - AI klaim penuh/terisi tanpa check_availability (tool_used={r2.get('tool_used')!r}), padahal data asli ada yg kosong: {asli}, balasan: {reply!r}"
+    return ("klaim_penuh_jam_typo", session, status)
+
+
 async def skenario_harga_sarapan() -> tuple:
     """Bug asli (2026-08-07, tamu Riyan Sumardika): tamu minta Menginap "dengan sarapan", AI
     benar sebut harga termasuk sarapan di kalimat TAPI parameter dengan_sarapan tidak diisi
@@ -457,6 +482,7 @@ async def main():
         skenario_business_rules_isolasi_properti,
         skenario_arrival_time_booking_terkonfirmasi,
         skenario_nomor_rekening_karangan,
+        skenario_klaim_penuh_jam_typo,
     ]
     unit_test_list = [
         test_kontradiksi_total_dikoreksi,

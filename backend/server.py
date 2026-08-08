@@ -2365,6 +2365,18 @@ async def _run_chat_turn_locked(
     _jam_match = re.search(r"jam\s*(\d{1,2})\b", message, re.IGNORECASE) or re.search(
         r"^\s*(\d{1,2})\s*(ada|kak)?\s*\??\s*$", message.strip(), re.IGNORECASE,
     )
+    # (2026-08-08, bug nyata ditemukan Agus - tamu "Apasajasudah" ketik "jam SWGINI" [typo
+    # dari "segini"/sekarang], AI menjawab "sudah terisi hingga jam 13:30" & mengarang jam
+    # siap lagi TANPA pernah memanggil check_availability - guard di atas TIDAK trigger
+    # krn regex jam_match WAJIB ada DIGIT setelah "jam", padahal tamu tidak sebut jam
+    # spesifik, cuma merujuk "sekarang". _jam_trigger DIPISAH dari _jam_match (yang tetap
+    # dipakai utk EKSTRAKSI jam presisi kalau ada) - trigger guard ini SENGAJA lebih
+    # longgar (cukup kata "jam" muncul di mana pun, walau diikuti typo/kata non-angka,
+    # atau kata yg merujuk waktu sekarang) supaya typo & follow-up implisit ("jam segini",
+    # "sekarang", "saat ini") tetap memicu verifikasi sungguhan - _klaim_ketersediaan di
+    # bawah (yg mengecek BALASAN AI, bukan pesan tamu) tetap jadi filter utama yg mencegah
+    # over-triggering ke percakapan yg sama sekali tidak soal ketersediaan.
+    _jam_trigger = _jam_match or re.search(r"\bjam\b|\bsekarang\b|\bsaat\s+ini\b", message, re.IGNORECASE)
     _klaim_ketersediaan = re.search(
         r"(sudah|telah|masih)\s+(ter)?isi|(kamar|cottage)[^.\n]{0,30}\bpenuh\b"
         r"|tidak\s+tersedia|belum\s+tersedia"
@@ -2385,7 +2397,7 @@ async def _run_chat_turn_locked(
         m.get("content", "") for m in conv["messages"][-6:] if m.get("role") == "user"
     ) + " " + message
     _tgl_dar = _tanggal_disebut_ke_target(_recent_text_untuk_tanggal)
-    if tool != "check_availability" and _klaim_ketersediaan and (_jam_match or _tgl_dar):
+    if tool != "check_availability" and _klaim_ketersediaan and (_jam_trigger or _tgl_dar):
         jam_tamu = f"{int(_jam_match.group(1)):02d}:00" if _jam_match else None
         # Guard ini SENDIRI dulu punya DUA bug: (1) sama dgn yang baru diperbaiki di
         # guard lain hari ini - koreksinya TANPA tanggal_checkin sama sekali, diam-diam
