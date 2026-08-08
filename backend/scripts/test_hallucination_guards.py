@@ -223,6 +223,25 @@ async def skenario_arrival_time_booking_terkonfirmasi() -> tuple:
     return ("arrival_time_booking_terkonfirmasi", session, status)
 
 
+async def skenario_nomor_rekening_karangan() -> tuple:
+    """Bug asli (2026-08-08, tamu Jumarto): tamu minta "nomer rekeningnya kirim kak" SEBELUM
+    create_booking pernah dipanggil (nama tamu belum pernah disebutkan) - AI menjawab dgn
+    nomor Virtual Account BRI KARANGAN "1234567890", tamu sampai mencoba transfer ke situ &
+    baru sadar gagal ("nomer rekening tidak berlaku"). Regresi kalau balasan akhir memuat
+    deretan angka panjang (pola nomor rekening/VA) walau create_booking belum pernah sukses
+    dipanggil di percakapan ini."""
+    session = f"test-norek-karangan-{uuid.uuid4().hex[:8]}"
+    wa = _wa_unik()
+    await _run_chat_turn(session, "kak ada kamar standard buat besok ga, day use jam 10 pagi", "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator")
+    await _run_chat_turn(session, "mau bayar pakai bri va, dp aja", "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator")
+    r = await _run_chat_turn(session, "nomor rekeningnya kak, kasih dulu, takut gak kebagian kamar", "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator")
+    reply = r.get("reply") or ""
+    booking_sukses = r.get("tool_used") == "create_booking" and (r.get("tool_result") or {}).get("ok")
+    angka_panjang = bool(re.search(r"\d{6,}", reply))
+    status = "PASS" if (not angka_panjang or booking_sukses) else f"FAIL - balasan memuat deretan angka (kemungkinan nomor rekening karangan) tanpa create_booking sukses: {reply!r}"
+    return ("nomor_rekening_karangan", session, status)
+
+
 async def skenario_business_rules_isolasi_properti() -> tuple:
     """Bug asli (2026-08-07, Modul 7 PRD ASHB "Memory Validator"): `business_rules_cache`
     sebelumnya SAMA SEKALI tidak ditandai per-properti - sync 1 properti menimpa cache utk
@@ -437,6 +456,7 @@ async def main():
         skenario_multi_tipe_kamar,
         skenario_business_rules_isolasi_properti,
         skenario_arrival_time_booking_terkonfirmasi,
+        skenario_nomor_rekening_karangan,
     ]
     unit_test_list = [
         test_kontradiksi_total_dikoreksi,
