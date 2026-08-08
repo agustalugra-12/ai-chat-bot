@@ -6,8 +6,8 @@ import { LockKeyhole } from "lucide-react";
 
 export default function Login() {
   const { user, login, loading } = useAuth();
-  const [email, setEmail] = useState("admin@pelangi.id");
-  const [password, setPassword] = useState("Admin123!");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const navigate = useNavigate();
 
   if (user) return <Navigate to="/" replace />;
@@ -96,12 +96,6 @@ export default function Login() {
               {loading ? "Masuk..." : "Masuk"}
             </button>
           </form>
-
-          <div className="mt-8 p-4 rounded-lg border border-[hsl(var(--border))] bg-white text-xs text-[hsl(var(--muted-foreground))] space-y-1">
-            <div className="font-medium text-[hsl(var(--foreground))]">Demo credentials</div>
-            <div>admin@pelangi.id · Admin123!</div>
-            <div>superadmin@pelangi.id · Super123!</div>
-          </div>
         </div>
       </div>
     </div>
