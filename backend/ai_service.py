@@ -840,6 +840,23 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
             "terasa masuk akal/lazim ada di tempat lain. Kalau tamu tanya soal opsi yang tidak "
             "ada di daftar, jawab jujur item itu tidak tersedia, jangan menebak harganya."
         )
+    else:
+        # (2026-08-08, bug nyata ditemukan Agus - tamu Harmoni Hills "gandiola" tanya menu
+        # makanan, AI mengarang daftar LENGKAP dgn harga spesifik [Nasi Goreng Rp30.000, dst]
+        # padahal db.products properti ini KOSONG total - beda dari bug laundry "Express 6
+        # Jam" di atas [nambah 1 varian ke daftar yang SEBAGIAN benar], ini KOSONG SAMA
+        # SEKALI tapi tetap mengarang SELURUH daftar) - blok "if menu" di atas (termasuk
+        # larangan mengarang varian) SAMA SEKALI TIDAK MUNCUL di konteks kalau menu kosong,
+        # jadi model tidak py instruksi ATAU data sama sekali soal menu utk properti ini -
+        # ternyata itu bukan berarti model diam, model mengarang dari pengetahuan umum
+        # menu warung Indonesia. Instruksi eksplisit WAJIB ada juga utk kasus kosong.
+        parts.append(
+            "\n# MENU RESTORAN & LAYANAN\nBelum ada data menu/harga tersimpan di sistem "
+            "utk properti ini. Kalau tamu tanya menu makanan/minuman/harga, JANGAN "
+            "mengarang nama item atau harga apa pun (walau terasa masuk akal/lazim ada di "
+            "tempat lain) - jawab jujur bahwa daftar menu lengkap belum tersedia lewat "
+            "chat, sarankan tamu tanya langsung ke staf di lobby/resepsionis saat tiba."
+        )
 
     if kb:
         parts.append("\n# KNOWLEDGE BASE")
