@@ -2102,6 +2102,23 @@ async def _run_chat_turn_locked(
             "panggil catat_kedatangan_tamu (lihat TOOL_DOCS-nya), lalu balas hangat mengonfirmasi "
             "jam tersebut dicatat.\n"
         )
+    # Status member persisten (2026-08-08, permintaan Agus - "gpt-4o-mini tidak mudah
+    # lupa", lihat catatan lengkap di dispatch tool di bawah dekat confirmed_kedatangan_ke)
+    # - dulu angka ini cuma ada di tool_result 1 giliran, giliran berikutnya model harus
+    # "ingat" dari scrollback mentah (insiden nyata I Kadek Ongki: sebut kedatangan ke-2,
+    # giliran berikutnya bilang kedatangan pertama). Sekarang jadi FAKTA eksplisit,
+    # selalu ditampilkan begitu pernah diverifikasi - model tinggal baca, tidak perlu
+    # menebak/mengingat dari riwayat.
+    if conv.get("confirmed_kedatangan_ke") is not None:
+        diskon = conv.get("confirmed_diskon_member_persen") or 0
+        context += (
+            "\n\n# STATUS MEMBER TAMU INI (sudah diverifikasi ke sistem, JANGAN sebut angka lain)\n"
+            f"Kedatangan ke-{conv['confirmed_kedatangan_ke']}"
+            + (f", diskon member {diskon}%" if diskon > 0 else ", tidak ada diskon member (kedatangan biasa)")
+            + " - angka ini SUMBER KEBENARAN SATU-SATUNYA utk sisa percakapan ini, jangan "
+            "panggil ulang check_member_status/preview_booking hanya utk info ini kecuali "
+            "tamu benar-benar mulai proses booking BARU.\n"
+        )
     # max_turns=20 (2026-08-02, permintaan eksplisit Agus: "ai bot mengingat konteks chat
     # sebelumnya minimal 20 chat kebelakang setiap tamunya") - sebelumnya 12, terlalu
     # pendek utk percakapan booking panjang (laporan nyata: tamu Frisnanda Maulana, 73
@@ -2191,6 +2208,24 @@ async def _run_chat_turn_locked(
                     conv["confirmed_booking_name"] = args["guest_name"]
             if tool == "create_booking" and tool_result and tool_result.get("ok"):
                 conv["booking_draft"] = {}
+            # Status member persisten (2026-08-08, permintaan Agus - "buatkan fitur agar
+            # gpt-4o-mini tidak mudah lupa", pola SAMA dgn confirmed_booking_name di atas)
+            # - sebelumnya kedatangan_ke/diskon_member_persen dari check_member_status/
+            # preview_booking HANYA ada di tool_result GILIRAN ITU SAJA, giliran-giliran
+            # berikutnya model harus "mengingat sendiri" dari scrollback mentah - guard
+            # kode di bawah (insiden nyata I Kadek Ongki) SUDAH mendeteksi & mengoreksi
+            # kalau modelnya lupa/salah sebut angka lain, TAPI itu REAKTIF (nunggu
+            # kesalahan dulu baru dikoreksi setelah tamu sempat lihat angka salah).
+            # Simpan sbg fakta eksplisit begitu diketahui, disuntik ke context TIAP
+            # giliran (lihat blok "# STATUS MEMBER TAMU INI" di bawah, dekat
+            # confirmed_booking_name) - model tinggal BACA fakta yang sudah pasti benar,
+            # tidak perlu "ingat" apa pun dari riwayat mentah.
+            if tool in ("check_member_status", "preview_booking") and tool_result and tool_result.get("ok"):
+                if tool_result.get("kedatangan_ke") is not None:
+                    conv["confirmed_kedatangan_ke"] = tool_result["kedatangan_ke"]
+                    conv["confirmed_diskon_member_persen"] = (
+                        tool_result.get("diskon_member_persen") or tool_result.get("diskon_persen") or 0
+                    )
             # give AI a chance to acknowledge tool result with a second turn
             # PENGETATAN 2026-07-21 (insiden nyata berulang: AI narasikan "pembatalan sudah
             # diajukan" padahal tool yang barusan dipanggil cuma lookup_booking, cancel_booking
@@ -3101,6 +3136,9 @@ async def _run_chat_turn_locked(
     update["booking_draft"] = conv.get("booking_draft") or {}
     if conv.get("confirmed_booking_name"):
         update["confirmed_booking_name"] = conv["confirmed_booking_name"]
+    if conv.get("confirmed_kedatangan_ke") is not None:
+        update["confirmed_kedatangan_ke"] = conv["confirmed_kedatangan_ke"]
+        update["confirmed_diskon_member_persen"] = conv.get("confirmed_diskon_member_persen") or 0
     if tool == "request_handover":
         update["status"] = "waiting_admin"
         update["resolution"] = "handover"
