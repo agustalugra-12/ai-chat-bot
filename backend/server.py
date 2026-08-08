@@ -2577,6 +2577,48 @@ async def _run_chat_turn_locked(
         except ChatError:
             pass
 
+    # Jaring pengaman level KODE (2026-08-08) - insiden nyata BERBAHAYA (tamu Jumarto):
+    # AI menjawab "nomer rekeningnya kirim kak" dgn nomor Virtual Account BRI KARANGAN
+    # "1234567890" TANPA create_booking pernah dipanggil sama sekali - tamu sampai
+    # mencoba transfer ke situ & baru sadar gagal ("nomer rekening tidak berlaku").
+    # Prompt sudah dikasih larangan keras (ai_service.py, TOOL_DOCS create_booking) tapi
+    # TERBUKTI tidak cukup di gpt-4o-mini - pola sama persis dgn guard-guard prompt-only
+    # lain di atas yg akhirnya butuh jaring kode. TOOL_DOCS create_booking SENDIRI
+    # eksplisit: bahkan SETELAH sukses, AI TIDAK PERNAH menuliskan checkout_url/nomor VA
+    # sendiri (sistem kirim otomatis lewat pesan TERPISAH) - jadi kemunculan pola nomor
+    # VA/rekening di TEKS BALASAN AI itu sendiri SELALU salah, apa pun status tool call
+    # giliran ini, tidak perlu pengecualian utk kasus "tool sukses juga". Beda dari
+    # guard-guard ketersediaan di atas (yang mengoreksi dgn data ASLI hasil tool), di
+    # sini tidak ada "data asli" utk nomor pembayaran yg bisa disisipkan balik dgn aman -
+    # paling aman: buang balasannya, alihkan ke Admin (staf yg proses manual/kirim link
+    # asli), sama pola dgn Loop Detector di atas.
+    _pola_nomor_pembayaran = re.search(
+        r"virtual\s*account[^.\n]{0,40}\d{6,}|nomor\s*va[^.\n]{0,40}\d{6,}"
+        r"|\d{6,}[^.\n]{0,20}virtual\s*account|va\s*(bri|bni|mandiri|permata)[^.\n]{0,30}\d{6,}"
+        r"|tripay\.co\.id/(checkout|qr)/\S+",
+        final_text, re.IGNORECASE,
+    )
+    if _pola_nomor_pembayaran and tool != "create_booking":
+        logging.getLogger("hallucination_guard").warning(
+            f"kemungkinan nomor rekening/VA/link pembayaran ditulis SENDIRI oleh AI (SELALU "
+            f"salah - sistem yang kirim otomatis) - conv {conv.get('_id')}, teks asli: {final_text!r}"
+        )
+        final_text = (
+            "Mohon maaf Kak, untuk detail pembayaran (nomor VA/link) mohon ditunggu sebentar "
+            "ya, staf kami akan bantu kirimkan langsung 🙏"
+        )
+        try:
+            await db.conversations.update_one(
+                {"_id": conv["_id"]}, {"$set": {"status": "waiting_admin"}},
+            )
+            await _pms_alert_owner(
+                f"⚠️ AI sempat menuliskan nomor pembayaran/VA sendiri (BUKAN dari sistem asli, "
+                f"berpotensi SALAH) - auto-dikoreksi & dialihkan ke Admin. Tamu "
+                f"{conv.get('whatsapp') or ''}, sesi {session_id}."
+            )
+        except Exception:
+            pass
+
     # Jaring pengaman level KODE (2026-08-03) - insiden nyata: tamu rombongan besar (Leny
     # Savitri, 8 Cottage + 7 Standard) minta 2 tipe kamar sekaligus dalam 1 pesan, AI
     # panggil check_availability dgn "tipe" TERISI (cuma 1 tipe) & balasannya HANYA sebut
