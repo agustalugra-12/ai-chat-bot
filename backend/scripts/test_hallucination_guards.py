@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from server import (  # noqa: E402
     db, _run_chat_turn, _tool_check_availability, _tool_preview_booking, _cek_kontradiksi_total,
     _deteksi_loop_kirim_beruntun, LOOP_DETECTOR_THRESHOLD, LOOP_DETECTOR_WINDOW_MINUTES,
-    _janji_eskalasi_sungguhan,
+    _janji_eskalasi_sungguhan, utc_now_iso,
 )
 from connectors.pms_connector import _pms_http_retry, _sync_business_rules  # noqa: E402
 
@@ -187,6 +187,40 @@ async def skenario_extra_bed_standard_ditolak() -> tuple:
     menyetujui_dgn_harga = bool(re.search(r"extra\s*bed[^.\n]{0,40}rp\s?[\d.,]+|rp\s?[\d.,]+[^.\n]{0,40}extra\s*bed", reply))
     status = "PASS" if (menolak and not menyetujui_dgn_harga) else f"FAIL - AI tidak jelas menolak (menolak={menolak}) atau malah kasih harga (menyetujui_dgn_harga={menyetujui_dgn_harga}): {reply!r}"
     return ("extra_bed_standard_ditolak", session, status)
+
+
+async def skenario_arrival_time_booking_terkonfirmasi() -> tuple:
+    """Bug asli (2026-08-08, tamu Arie Kusuma Dewi): tamu SUDAH punya booking Day Use
+    terkonfirmasi+lunas, lalu bilang "saya cek in kira2 jam 11an" - AI salah menganggap ini
+    permintaan cek ketersediaan baru (aturan SAMBUNGAN PERCAKAPAN di TOOL_DOCS
+    check_availability salah nangkep), jawab harga & jumlah kamar utk tanggal LAIN alih-alih
+    mencatat jam kedatangan via catat_kedatangan_tamu. Simulasikan state "booking sudah
+    dikonfirmasi" langsung di DB (bukan proses booking sungguhan penuh - lebih murah &
+    deterministik, hanya menguji context block + prompt baru yang jadi fix-nya) lalu kirim
+    pesan jam kedatangan. Regresi kalau AI panggil check_availability atau balasannya
+    menyebut harga/jumlah kamar."""
+    session = f"test-arrival-{uuid.uuid4().hex[:8]}"
+    wa = _wa_unik()
+    besok = (datetime.now(timezone.utc) + timedelta(hours=7, days=1)).strftime("%Y-%m-%d")
+    await db.conversations.insert_one({
+        "_id": str(uuid.uuid4()), "session_id": session, "guest_name": "Test Regresi",
+        "whatsapp": wa, "channel": "simulator", "messages": [], "status": "active",
+        "resolution": "unresolved", "booking_created": True,
+        "last_booking_request": {
+            "tipe": "day_use", "room_tipe": "Cottage", "tanggal_checkin": besok,
+            "kode": "BKO-TEST-ARRIVAL", "status": "waiting_payment",
+        },
+        "last_intent": None, "booking_draft": {}, "confirmed_booking_name": "Test Regresi",
+        "response_time_ms": 0, "created_at": utc_now_iso(), "updated_at": utc_now_iso(),
+    })
+    r = await _run_chat_turn(session, "Maaf kak, saya cek in kira2 jam 11an yaaa", "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator")
+    reply = (r.get("reply") or "").lower()
+    salah_tool = r.get("tool_used") == "check_availability"
+    sebut_harga_kamar = bool(re.search(r"rp\s?[\d.,]+|tersedia\s*\d+\s*kamar|\d+\s*kamar\s*tersedia", reply))
+    status = "PASS" if not (salah_tool or sebut_harga_kamar) else (
+        f"FAIL - tool_used={r.get('tool_used')!r} (harusnya catat_kedatangan_tamu/tanpa tool), balasan: {reply!r}"
+    )
+    return ("arrival_time_booking_terkonfirmasi", session, status)
 
 
 async def skenario_business_rules_isolasi_properti() -> tuple:
@@ -402,6 +436,7 @@ async def main():
         skenario_extra_bed_standard_ditolak,
         skenario_multi_tipe_kamar,
         skenario_business_rules_isolasi_properti,
+        skenario_arrival_time_booking_terkonfirmasi,
     ]
     unit_test_list = [
         test_kontradiksi_total_dikoreksi,

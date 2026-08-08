@@ -2079,6 +2079,29 @@ async def _run_chat_turn_locked(
             f"{known}\n"
             + (f"Yang BELUM diketahui: {', '.join(missing)}\n" if missing else "Semua data wajib sudah lengkap - lanjut ke ringkasan/konfirmasi.\n")
         )
+    # Booking sudah dikonfirmasi (2026-08-08, bug nyata ditemukan Agus - tamu Arie Kusuma
+    # Dewi SUDAH punya booking Day Use terkonfirmasi+lunas, lalu bilang "saya cek in kira2
+    # jam 11an" - AI SALAH menganggap ini permintaan cek ketersediaan baru [SAMBUNGAN
+    # PERCAKAPAN WAJIB di TOOL_DOCS check_availability salah nangkep], jawab harga & jumlah
+    # kamar utk tanggal BESOK yang bahkan bukan tanggal booking tamu, bukannya mencatat jam
+    # kedatangan lewat catat_kedatangan_tamu). Sebelumnya conv["last_booking_request"]
+    # cuma dipakai internal (idempotency create_booking, lihat _tool_create_booking) -
+    # TIDAK PERNAH disuntik ke context, jadi model harus menebak dari scrollback mentah
+    # (compact_history bisa memangkas detail ini begitu percakapan panjang) - sekarang jadi
+    # FAKTA eksplisit & selalu terlihat, supaya tidak perlu menebak lagi.
+    last_br = conv.get("last_booking_request")
+    if conv.get("booking_created") and last_br:
+        context += (
+            "\n\n# BOOKING SUDAH DIKONFIRMASI DI PERCAKAPAN INI (jangan cek ketersediaan ulang utk ini)\n"
+            f"Kode: {last_br.get('kode', '-')} | Tipe: {last_br.get('tipe', '-')} | "
+            f"Kamar: {last_br.get('room_tipe', '-')} | Tanggal check-in: {last_br.get('tanggal_checkin', '-')}\n"
+            "Kalau tamu menyebutkan/mengonfirmasi JAM kedatangan/check-in yang jelas soal booking "
+            "INI (bukan minta cek kamar/tanggal LAIN) - itu BUKAN permintaan cek ketersediaan baru, "
+            "itu pemberitahuan jam tiba utk booking yang SUDAH terkunci. JANGAN panggil "
+            "check_availability & JANGAN sebutkan harga/jumlah kamar sama sekali dalam kasus ini - "
+            "panggil catat_kedatangan_tamu (lihat TOOL_DOCS-nya), lalu balas hangat mengonfirmasi "
+            "jam tersebut dicatat.\n"
+        )
     # max_turns=20 (2026-08-02, permintaan eksplisit Agus: "ai bot mengingat konteks chat
     # sebelumnya minimal 20 chat kebelakang setiap tamunya") - sebelumnya 12, terlalu
     # pendek utk percakapan booking panjang (laporan nyata: tamu Frisnanda Maulana, 73
