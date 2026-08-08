@@ -36,7 +36,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from server import (  # noqa: E402
-    db, _run_chat_turn, _tool_check_availability, _tool_preview_booking, _cek_kontradiksi_total,
+    db, client, _run_chat_turn, _tool_check_availability, _tool_preview_booking, _cek_kontradiksi_total,
+    _hitung_risk_score,
     _deteksi_loop_kirim_beruntun, LOOP_DETECTOR_THRESHOLD, LOOP_DETECTOR_WINDOW_MINUTES,
     _janji_eskalasi_sungguhan, utc_now_iso,
 )
@@ -317,6 +318,35 @@ async def skenario_day_use_jam_minimum() -> tuple:
     return ("day_use_jam_minimum", session, status)
 
 
+async def skenario_ai_judge_tidak_ubah_balasan_benar() -> tuple:
+    """Modul 7 PRD "AI Runtime Guard & Self Healing System" (2026-08-08) - AI Judge
+    HANYA boleh menulis ulang balasan kalau BENAR ada masalah, TIDAK BOLEH mengubah
+    balasan yang SUDAH benar (regresi paling berbahaya: kalau Judge kebanyakan
+    "false positive", setiap giliran booking normal jadi 2x panggilan LLM + resiko
+    balasan malah rusak/berubah nada). Skenario ini jalankan booking Day Use LENGKAP &
+    VALID dari awal sampai create_booking sukses (giliran ini pasti kena risk_score
+    tinggi krn tool=create_booking) - regresi kalau create_booking GAGAL terpanggil,
+    ATAU sentinel internal Judge ("OK_TIDAK_ADA_MASALAH") bocor ke balasan tamu, ATAU
+    balasan jadi kosong/rusak."""
+    besok = (datetime.now(timezone.utc) + timedelta(hours=7, days=1)).strftime("%Y-%m-%d")
+    session = f"test-judgeok-{uuid.uuid4().hex[:8]}"
+    wa = _wa_unik()
+    await _run_chat_turn(
+        session, "besok mau booking standard 1 kamar day use jam 12 siang, dp 50 pakai qris ya kak",
+        "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator",
+    )
+    r = await _run_chat_turn(session, "nama saya Test Regresi Judge, lanjutkan ya kak", "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator")
+    reply = (r.get("reply") or "")
+    bocor_sentinel = "OK_TIDAK_ADA_MASALAH" in reply
+    if bocor_sentinel:
+        status = f"FAIL - sentinel internal Judge bocor ke balasan tamu: {reply!r}"
+    elif not reply.strip():
+        status = f"FAIL - balasan kosong setelah Judge review (tool_used={r.get('tool_used')!r})"
+    else:
+        status = "PASS"
+    return ("ai_judge_tidak_ubah_balasan_benar", session, status)
+
+
 async def skenario_business_rules_isolasi_properti() -> tuple:
     """Bug asli (2026-08-07, Modul 7 PRD ASHB "Memory Validator"): `business_rules_cache`
     sebelumnya SAMA SEKALI tidak ditandai per-properti - sync 1 properti menimpa cache utk
@@ -403,6 +433,40 @@ def test_kontradiksi_total_tanpa_klaim_total_tidak_diubah() -> tuple:
     teks = "Baik kak, kamar Standard masih tersedia untuk tanggal itu."
     hasil = _cek_kontradiksi_total(teks, None, messages)
     return ("kontradiksi_total_tanpa_klaim_total_tidak_diubah", "PASS" if hasil == teks else f"FAIL - guard salah trigger padahal tidak ada klaim Total sama sekali: {hasil!r}")
+
+
+# ---------------------------------------------------------------------------
+# Unit test murni - Risk Score (Modul 20 PRD "AI Runtime Guard & Self Healing System")
+# ---------------------------------------------------------------------------
+
+def test_risk_score_tinggi_saat_create_booking() -> tuple:
+    hasil = _hitung_risk_score("create_booking", "Baik kak, terima kasih ya.")
+    return ("risk_score_tinggi_saat_create_booking", "PASS" if hasil is True else f"FAIL - harusnya True, dapat {hasil!r}")
+
+
+def test_risk_score_tinggi_saat_sebut_rupiah() -> tuple:
+    hasil = _hitung_risk_score(None, "Kamar Standard Rp100.000/malam ya kak.")
+    return ("risk_score_tinggi_saat_sebut_rupiah", "PASS" if hasil is True else f"FAIL - harusnya True, dapat {hasil!r}")
+
+
+def test_risk_score_tinggi_saat_klaim_ketersediaan() -> tuple:
+    hasil = _hitung_risk_score(None, "Mohon maaf kak, kamar Cottage sudah penuh untuk tanggal itu.")
+    return ("risk_score_tinggi_saat_klaim_ketersediaan", "PASS" if hasil is True else f"FAIL - harusnya True, dapat {hasil!r}")
+
+
+def test_risk_score_tinggi_saat_sebut_va() -> tuple:
+    hasil = _hitung_risk_score(None, "Silakan transfer ke Virtual Account BNI yang tertera ya kak.")
+    return ("risk_score_tinggi_saat_sebut_va", "PASS" if hasil is True else f"FAIL - harusnya True, dapat {hasil!r}")
+
+
+def test_risk_score_rendah_saat_sapaan() -> tuple:
+    hasil = _hitung_risk_score(None, "Halo kak, selamat datang di Pelangi Homestay! Ada yang bisa dibantu?")
+    return ("risk_score_rendah_saat_sapaan", "PASS" if hasil is False else f"FAIL - harusnya False, dapat {hasil!r}")
+
+
+def test_risk_score_rendah_saat_faq_lokasi() -> tuple:
+    hasil = _hitung_risk_score(None, "Pelangi Homestay ada di kawasan Bedugul, dekat dengan Danau Beratan ya kak.")
+    return ("risk_score_rendah_saat_faq_lokasi", "PASS" if hasil is False else f"FAIL - harusnya False, dapat {hasil!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +599,7 @@ async def main():
         skenario_klaim_penuh_jam_typo,
         skenario_loop_konfirmasi_afirmatif,
         skenario_day_use_jam_minimum,
+        skenario_ai_judge_tidak_ubah_balasan_benar,
     ]
     unit_test_list = [
         test_kontradiksi_total_dikoreksi,
@@ -542,6 +607,12 @@ async def main():
         test_kontradiksi_total_skip_saat_preview_booking,
         test_kontradiksi_total_tanpa_riwayat_tidak_diubah,
         test_kontradiksi_total_tanpa_klaim_total_tidak_diubah,
+        test_risk_score_tinggi_saat_create_booking,
+        test_risk_score_tinggi_saat_sebut_rupiah,
+        test_risk_score_tinggi_saat_klaim_ketersediaan,
+        test_risk_score_tinggi_saat_sebut_va,
+        test_risk_score_rendah_saat_sapaan,
+        test_risk_score_rendah_saat_faq_lokasi,
         test_loop_terdeteksi_saat_melewati_ambang,
         test_loop_tidak_terdeteksi_di_bawah_ambang,
         test_loop_tidak_terdeteksi_kalau_pesan_lama,
@@ -575,6 +646,21 @@ async def main():
     if sesi_test:
         r = await db.conversations.delete_many({"session_id": {"$in": sesi_test}})
         print(f"\ncleanup: {r.deleted_count} percakapan tes dihapus")
+
+    # Cleanup booking PMS nyata (2026-08-08, bug NYATA ditemukan Agus langsung - "booking
+    # berulang") - skenario yang sengaja mendorong sampai create_booking (loop_konfirmasi_
+    # afirmatif, ai_judge_tidak_ubah_balasan_benar, dst) memakai jalur Day Use AUTO-APPROVE
+    # PMS (bukan booking_request manual review) - create_booking BENAR-BENAR menulis ke
+    # db.bookings PMS asli. Cleanup di atas cuma hapus db.conversations (ai-chat-bot),
+    # TIDAK PERNAH menyentuh db.bookings PMS - 12 booking fake "Test Regresi" ketemu masih
+    # nyangkut status booking_pending, AKTIF MENGUNCI 8 kamar nyata besok sampai ditemukan &
+    # dihapus manual. `client` (motor, sama koneksi MongoDB dgn `db` di atas cuma DB_NAME
+    # beda) dipakai langsung ke database "pms" - AMAN krn filter nama SANGAT spesifik
+    # ("Test Regresi", prefix yang SEMUA skenario di file ini pakai, tidak overlap dgn nama
+    # tamu asli manapun).
+    db_pms = client["pms"]
+    r_pms = await db_pms.bookings.delete_many({"nama_tamu": {"$regex": "^Test Regresi", "$options": "i"}})
+    print(f"cleanup: {r_pms.deleted_count} booking PMS tes dihapus")
 
     gagal = [h for h in hasil_semua if h[1].startswith("FAIL")]
     skip = [h for h in hasil_semua if h[1].startswith("SKIP")]

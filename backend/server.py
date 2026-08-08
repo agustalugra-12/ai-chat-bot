@@ -1678,6 +1678,51 @@ def _cek_kontradiksi_total(final_text: str, tool: Optional[str], messages: list,
     return corrected
 
 
+_RISK_RUPIAH_PATTERN = re.compile(r"\brp\s?[\d.,]{3,}", re.IGNORECASE)
+_RISK_KETERSEDIAAN_PATTERN = re.compile(
+    r"(sudah|telah|masih)\s+(ter)?isi|(kamar|cottage|standard)[^.\n]{0,30}\bpenuh\b"
+    r"|tidak\s+tersedia|belum\s+tersedia|\d+\s*kamar[^.\n]{0,30}tersedia|tersedia[^.\n]{0,30}(untuk\s+)?day\s*use",
+    re.IGNORECASE,
+)
+_RISK_PEMBAYARAN_PATTERN = re.compile(
+    r"virtual\s*account|nomor\s*va\b|\bva\s*(bri|bni|mandiri|permata)|qris|tripay\.co\.id", re.IGNORECASE,
+)
+_RISK_DISKON_PATTERN = re.compile(r"diskon|potongan\s*harga|member", re.IGNORECASE)
+_RISK_KEBIJAKAN_PATTERN = re.compile(r"kebijakan\s*(pembatalan|batal)|refund|biaya\s*pembatalan", re.IGNORECASE)
+_RISK_TOOL_TINGGI = ("create_booking", "cancel_booking", "check_member_status", "preview_booking")
+
+
+def _hitung_risk_score(tool: Optional[str], final_text: str) -> bool:
+    """Risk Score (2026-08-08, Modul 20 PRD "AI Runtime Guard & Self Healing System" -
+    usulan Agus, diskusi PRD V4: "masalah utamanya bukan GPT-4o Mini... tapi AI langsung
+    dipercaya untuk menjawab"). Fungsi murni (no LLM/DB) yang menandai giliran chat
+    "berisiko tinggi" - dipakai gate Module 7 "AI Judge" (lihat guard di bawah) supaya
+    review tambahan (LLM call ekstra, ada biaya) HANYA jalan utk giliran yang benar2
+    berpotensi merugikan kalau salah (booking/uang/ketersediaan/kebijakan), bukan tiap
+    giliran (sapaan/FAQ lokasi dst TETAP murah, tidak kena biaya tambahan - lihat
+    batasan skala/biaya di CLAUDE.md, "~39 percakapan/24 jam, ~Rp20rb/hari").
+
+    Sinyal risiko tinggi (OR - satu saja cukup): (1) tool yang dipanggil giliran ini
+    termasuk yang mengubah state booking/uang/status member, (2) balasan menyebut angka
+    rupiah, (3) balasan mengklaim ketersediaan/keterisian kamar, (4) balasan menyebut
+    metode pembayaran/VA/QRIS, (5) balasan menyebut diskon/member, (6) balasan menyebut
+    kebijakan pembatalan/refund. Diekstrak jadi fungsi murni (pola sama dgn
+    _cek_kontradiksi_total di atas) supaya bisa di-unit-test tanpa panggilan LLM."""
+    if tool in _RISK_TOOL_TINGGI:
+        return True
+    if _RISK_RUPIAH_PATTERN.search(final_text):
+        return True
+    if _RISK_KETERSEDIAAN_PATTERN.search(final_text):
+        return True
+    if _RISK_PEMBAYARAN_PATTERN.search(final_text):
+        return True
+    if _RISK_DISKON_PATTERN.search(final_text):
+        return True
+    if _RISK_KEBIJAKAN_PATTERN.search(final_text):
+        return True
+    return False
+
+
 # Loop Detector (2026-08-07, Modul 8 PRD "AI Self-Healing & Bug Prevention" - usulan Agus,
 # diperkuat setelah audit insiden asli 2026-08-01: bot Pelangi & bot Harmoni saling kirim
 # pesan sapaan ~45 pesan dalam 2-3 menit sebelum ketahuan & dihentikan manual, lihat guard
@@ -3245,6 +3290,46 @@ async def _run_chat_turn_locked(
                         tool_result = {"ok": True, "tool": "request_handover", "auto_triggered": True}
                     except Exception:
                         pass
+        except ChatError:
+            pass
+
+    # AI Judge (2026-08-08, Modul 7 PRD "AI Runtime Guard & Self Healing System" -
+    # usulan Agus, diskusi PRD V4: "masalah utamanya bukan GPT-4o Mini... tapi AI
+    # langsung dipercaya untuk menjawab"). Generalisasi dari pola guard-guard SPESIFIK
+    # di atas (VA number, menu kosong, kontradiksi Total, klaim sukses palsu, dst -
+    # masing2 1 regex utk 1 pola bug yang SUDAH PERNAH terjadi nyata) - Judge ini review
+    # SEKALI LAGI giliran yang _hitung_risk_score tandai berisiko tinggi (booking/uang/
+    # ketersediaan/kebijakan), TANPA perlu tahu pola spesifik apa yang mungkin salah -
+    # tujuannya menangkap pola BARU yang belum py guard regex sendiri, bukan menggantikan
+    # guard-guard di atas (tetap jalan semua, defense-in-depth). SENGAJA cuma jalan utk
+    # giliran berisiko tinggi (bukan semua) supaya biaya panggilan LLM tambahan ini tidak
+    # membengkak ke skala di luar batas wajar (lihat CLAUDE.md, "~39 percakapan/24 jam").
+    if _hitung_risk_score(tool, final_text):
+        follow_up_judge = (
+            "[SISTEM - REVIEW INTERNAL, JANGAN kirim kalimat ini ke tamu] Balasanmu barusan "
+            "termasuk topik berisiko (booking/uang/ketersediaan kamar/kebijakan) - sebelum "
+            "benar-benar dikirim, cek ULANG SEKALI LAGI: apakah SEMUA klaim spesifik di "
+            "dalamnya (angka rupiah, ketersediaan kamar, nomor rekening/VA, kebijakan "
+            "pembatalan/diskon/member) BENAR-BENAR didukung oleh hasil tool call giliran ini "
+            "(kalau ada) dan konteks yang kamu terima - BUKAN ditebak/diasumsikan/diingat dari "
+            "giliran lain atau pengetahuan umum? Kalau balasan tadi SUDAH benar semua, balas "
+            "PERSIS satu kata ini tanpa tambahan apa pun: OK_TIDAK_ADA_MASALAH. Kalau ada yang "
+            "salah/tidak didukung data, tulis ULANG balasan yang benar (Bahasa Indonesia, "
+            "sopan, seperti biasa ke tamu, JANGAN jelaskan proses review internal ini ke tamu)."
+        )
+        history_judge = compact_history(
+            conv["messages"] + [{"role": "assistant", "content": final_text}], max_turns=20,
+        )
+        try:
+            raw_judge = await ai_reply(session_id, system_prompt, context, history_judge, follow_up_judge, llm_provider, llm_model)
+            judge_clean, _judge_tool, _judge_args = parse_tool_call(raw_judge)
+            if judge_clean and judge_clean.strip() != "OK_TIDAK_ADA_MASALAH":
+                logging.getLogger("hallucination_guard").warning(
+                    f"AI Judge menemukan masalah pada giliran berisiko tinggi (tool={tool}) & "
+                    f"menulis ulang balasan - conv {conv.get('_id')}, teks asli: {final_text!r}, "
+                    f"teks baru: {judge_clean!r}"
+                )
+                final_text = judge_clean
         except ChatError:
             pass
 
