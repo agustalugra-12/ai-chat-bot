@@ -2863,6 +2863,148 @@ async def _run_chat_turn_locked(
                 )
                 final_text = final_text_koreksi_ke
 
+    # Jaring pengaman level KODE (2026-08-08) - insiden nyata (tamu "Yuyun Bestari"): tamu
+    # jawab "Ok" TIGA KALI berturut-turut utk konfirmasi booking (nama/tipe/tanggal/sarapan
+    # sudah lengkap di booking_draft), tapi AI TERUS mengulang ringkasan booking yang SAMA
+    # tanpa pernah memanggil create_booking - akhirnya memicu Loop Detector (circuit-breaker
+    # LAJU kirim, cuma menangani GEJALA) & tamu frustrasi ("Halo?"). Prompt SUDAH py
+    # larangan keras persis soal ini (LARANGAN KERAS - JANGAN ULANG PERTANYAAN KONFIRMASI
+    # YANG SAMA, 2026-08-05, insiden Cynthia Ranis) tapi TERBUKTI tidak cukup reliable di
+    # gpt-4o-mini - pola sama persis dgn guard-guard lain hari ini yg akhirnya butuh jaring
+    # kode. Deteksi: pesan tamu ini AFIRMATIF SINGKAT (ok/ya/iya/boleh/lanjut/siap/setuju)
+    # DAN balasan tamu SEBELUMNYA (1-2 giliran lalu) JUGA afirmatif serupa (pola "ok" yg
+    # diulang tamu = tanda dia sudah jawab tapi tidak direspons dgn tindakan nyata) DAN tool
+    # yang dipanggil giliran ini BUKAN create_booking, DAN balasan asisten sebelumnya memang
+    # nuansa booking (kamar/DP/lunas/check-in) - bukan cuma FAQ biasa yang ditanggapi "ok".
+    #
+    # PENTING (ditemukan lewat tes regresi 2026-08-08, `skenario_loop_konfirmasi_afirmatif`
+    # awalnya GAGAL): syarat `conv.get("booking_draft")` semula dipakai sbg PRECONDITION
+    # (baru cek loop kalau draft SUDAH terisi) - ternyata draft bisa TETAP KOSONG selamanya
+    # kalau model dari awal tidak pernah benar2 memanggil preview_booking (cuma menulis
+    # ringkasan manual sbg teks biasa, melanggar ALUR WAJIB-nya sendiri) - akibatnya guard
+    # ini TIDAK PERNAH nyala di kasus itu, persis skenario yg gagal. booking_draft sekarang
+    # cuma dipakai utk MENENTUKAN ISI instruksi koreksi (panggil preview_booking dulu kalau
+    # draft masih kosong, else create_booking/tanya field kurang), bukan syarat guard-nya.
+    _afirmatif_singkat = re.compile(r"^\s*(ok(e|ay)?|ya|iya|boleh|lanjut(kan)?|siap|setuju|silah?kan)\s*[.!]?\s*$", re.IGNORECASE)
+    _pesan_user_terakhir = [m for m in conv["messages"] if m.get("role") == "user"]
+    _pesan_asisten_terakhir = [m for m in conv["messages"] if m.get("role") == "assistant"]
+    _konteks_booking = re.search(
+        r"kamar|booking|dp\b|lunas|check.?in|day\s*use|menginap",
+        (_pesan_asisten_terakhir[-1].get("content") or "") if _pesan_asisten_terakhir else "",
+        re.IGNORECASE,
+    )
+    if (
+        tool != "create_booking"
+        and _konteks_booking
+        and _afirmatif_singkat.match(message.strip())
+        and len(_pesan_user_terakhir) >= 2
+        and _afirmatif_singkat.match((_pesan_user_terakhir[-2].get("content") or "").strip())
+    ):
+        draft = conv.get("booking_draft") or {}
+        kurang: list[str] = []
+        if not draft:
+            follow_up_loop = (
+                f"[SISTEM] Tamu SUDAH konfirmasi \"{message.strip()}\" - ini KEDUA KALINYA atau "
+                f"lebih dia menjawab afirmatif tanpa balasanmu benar-benar bertindak. Kamu BELUM "
+                f"PERNAH memanggil preview_booking di sesi ini padahal seharusnya sudah - JANGAN "
+                f"tulis ringkasan sbg teks biasa lagi, JANGAN tanya konfirmasi lagi. Panggil "
+                f"preview_booking SEKARANG JUGA di giliran ini dgn semua data yang sudah diketahui "
+                f"dari percakapan (nama, tipe, tipe kamar, tanggal, jumlah kamar), baru tampilkan "
+                f"ringkasan format baku dari hasilnya."
+            )
+        else:
+            # Ekstraksi deterministik payment_option/metode_pembayaran dari SELURUH pesan
+            # tamu (2026-08-08) - draft cuma kesimpan dari args tool call preview_booking/
+            # create_booking (preview_booking bahkan TIDAK PERNAH membawa 2 field ini sama
+            # sekali, lihat definisinya), jadi tamu yang sebut metode bayar di pesan BEBAS
+            # duluan (mis. "dp 50 pakai qris ya kak" di pesan pertama, sebelum preview_booking
+            # sempat dipanggil) draft-nya tetap kosong utk 2 field ini walau tamu sudah jelas
+            # menjawab - kalau cuma dipercayakan ke LLM "cek riwayat chat dulu" TERBUKTI tidak
+            # reliable di gpt-4o-mini (percobaan pertama guard ini masih salah tanya ulang).
+            # Regex sederhana disini JAUH lebih murah & pasti drpd manggil LLM lagi.
+            _semua_pesan_user = " ".join((m.get("content") or "") for m in conv["messages"] if m.get("role") == "user")
+            if not draft.get("payment_option"):
+                if re.search(r"\bdp\s*50\b|\bdp50\b|\bdp\b", _semua_pesan_user, re.IGNORECASE):
+                    draft["payment_option"] = "dp50"
+                elif re.search(r"\blunas\b", _semua_pesan_user, re.IGNORECASE):
+                    draft["payment_option"] = "full"
+            if not draft.get("metode_pembayaran"):
+                if re.search(r"\bqris\b", _semua_pesan_user, re.IGNORECASE):
+                    draft["metode_pembayaran"] = "QRIS2"
+                elif re.search(r"\bbni\b", _semua_pesan_user, re.IGNORECASE):
+                    draft["metode_pembayaran"] = "BNIVA"
+                elif re.search(r"\bbri\b", _semua_pesan_user, re.IGNORECASE):
+                    draft["metode_pembayaran"] = "BRIVA"
+                elif re.search(r"\bmandiri\b", _semua_pesan_user, re.IGNORECASE):
+                    draft["metode_pembayaran"] = "MANDIRIVA"
+                elif re.search(r"\bpermata\b", _semua_pesan_user, re.IGNORECASE):
+                    draft["metode_pembayaran"] = "PERMATAVA"
+            conv["booking_draft"] = draft
+
+            field_wajib = {
+                "guest_name": "nama lengkap", "tipe": "tipe booking (menginap/day use)",
+                "room_tipe": "tipe kamar", "tanggal_checkin": "tanggal check-in",
+                "jumlah_kamar": "jumlah kamar", "payment_option": "DP 50% atau lunas",
+                "metode_pembayaran": "metode pembayaran (QRIS/VA)",
+            }
+            kurang = [label for k, label in field_wajib.items() if not draft.get(k)]
+            if draft.get("tipe") == "menginap" and not draft.get("tanggal_checkout"):
+                kurang.append("tanggal check-out")
+            follow_up_loop = (
+                f"[SISTEM] Tamu SUDAH konfirmasi \"{message.strip()}\" - ini KEDUA KALINYA atau lebih "
+                f"dia menjawab afirmatif tanpa balasanmu benar-benar bertindak. JANGAN tampilkan ulang "
+                f"ringkasan booking yang sama & JANGAN tanya ulang hal yang sudah pernah tamu jawab "
+                f"DI MANA PUN di percakapan ini (bukan cuma di pesan terakhir). "
+                + (
+                    f"Kandidat data yang MUNGKIN masih kurang: {', '.join(kurang)} - TAPI cek dulu "
+                    f"SELURUH riwayat percakapan di atas, kalau tamu ternyata SUDAH pernah "
+                    f"menyebutkan salah satu itu (di pesan mana pun sebelumnya), anggap SUDAH "
+                    f"terjawab, jangan tanya ulang. Kalau setelah dicek semua field WAJIB "
+                    f"ternyata sudah ada (baik dari draft maupun dari riwayat chat), panggil "
+                    f"create_booking SEKARANG JUGA. Kalau betul masih ada yang belum PERNAH "
+                    f"disebutkan sama sekali, tanya LANGSUNG cuma itu saja (1 kalimat singkat)."
+                    if kurang else
+                    "Semua data booking WAJIB sudah lengkap - panggil create_booking SEKARANG JUGA di "
+                    "giliran ini, jangan tampilkan ringkasan lagi, jangan tanya konfirmasi lagi."
+                )
+            )
+        history_koreksi = compact_history(
+            conv["messages"] + [{"role": "assistant", "content": final_text}], max_turns=20,
+        )
+        try:
+            raw_koreksi = await ai_reply(session_id, system_prompt, context, history_koreksi, follow_up_loop, llm_provider, llm_model)
+            koreksi_clean, koreksi_tool, koreksi_args = parse_tool_call(raw_koreksi)
+            if koreksi_tool == "create_booking" and koreksi_args:
+                for _k in ("payment_option", "metode_pembayaran"):
+                    if not koreksi_args.get(_k) and (conv.get("booking_draft") or {}).get(_k):
+                        koreksi_args[_k] = conv["booking_draft"][_k]
+            if koreksi_tool in ("create_booking", "preview_booking"):
+                koreksi_tool_result = await _handle_tool(koreksi_tool, koreksi_args or {}, conv)
+                if koreksi_tool == "create_booking" and koreksi_tool_result and koreksi_tool_result.get("ok"):
+                    conv["booking_draft"] = {}
+                elif koreksi_tool == "preview_booking" and koreksi_args:
+                    draft_keys = ("guest_name", "tipe", "room_tipe", "tanggal_checkin", "tanggal_checkout",
+                                  "jumlah_kamar", "jumlah_tamu", "jam_checkin", "payment_option",
+                                  "metode_pembayaran")
+                    draft = dict(conv.get("booking_draft") or {})
+                    draft.update({k: koreksi_args[k] for k in draft_keys if koreksi_args.get(k)})
+                    conv["booking_draft"] = draft
+                logging.getLogger("hallucination_guard").warning(
+                    f"loop konfirmasi afirmatif tanpa create_booking terdeteksi & dipaksa eksekusi "
+                    f"({koreksi_tool}) - conv {conv.get('_id')}, hasil: {koreksi_tool_result}"
+                )
+                tool = koreksi_tool
+                tool_result = koreksi_tool_result
+                final_text = koreksi_clean or final_text
+            elif koreksi_clean:
+                logging.getLogger("hallucination_guard").warning(
+                    f"loop konfirmasi afirmatif terdeteksi & balasan ditulis ulang (minta field "
+                    f"kurang: {kurang}) - conv {conv.get('_id')}, teks asli: {final_text!r}"
+                )
+                final_text = koreksi_clean
+        except ChatError:
+            pass
+
     # Contradiction Checker (2026-08-07, Modul 10 PRD "AI Self-Healing & Bug Prevention" -
     # usulan Agus) - lihat docstring _cek_kontradiksi_total() di atas untuk penjelasan
     # lengkap kenapa angka LAMA yang dipercaya, bukan yang baru. Diekstrak jadi fungsi murni

@@ -851,11 +851,14 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
         # ternyata itu bukan berarti model diam, model mengarang dari pengetahuan umum
         # menu warung Indonesia. Instruksi eksplisit WAJIB ada juga utk kasus kosong.
         parts.append(
-            "\n# MENU RESTORAN & LAYANAN\nBelum ada data menu/harga tersimpan di sistem "
-            "utk properti ini. Kalau tamu tanya menu makanan/minuman/harga, JANGAN "
-            "mengarang nama item atau harga apa pun (walau terasa masuk akal/lazim ada di "
-            "tempat lain) - jawab jujur bahwa daftar menu lengkap belum tersedia lewat "
-            "chat, sarankan tamu tanya langsung ke staf di lobby/resepsionis saat tiba."
+            "\n# MENU RESTORAN & LAYANAN\nProperti ini SAAT INI TIDAK MENYEDIAKAN "
+            "pemesanan makanan/minuman (tidak ada data menu tersimpan di sistem - "
+            "dikonfirmasi Agus 2026-08-08, bukan sekadar belum sempat diisi). Kalau tamu "
+            "tanya menu/pesan makanan/harga makanan, JANGAN mengarang nama item atau "
+            "harga apa pun (walau terasa masuk akal/lazim ada di tempat lain) - jawab "
+            "jujur bahwa saat ini belum ada layanan pemesanan makanan di properti ini, "
+            "JANGAN menawarkan 'bisa pesan di lobby/resepsionis' - itu tidak benar utk "
+            "properti ini, cukup sampaikan tidak tersedia."
         )
 
     if kb:

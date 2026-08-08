@@ -267,6 +267,27 @@ async def skenario_nomor_rekening_karangan() -> tuple:
     return ("nomor_rekening_karangan", session, status)
 
 
+async def skenario_loop_konfirmasi_afirmatif() -> tuple:
+    """Bug asli (2026-08-08, tamu "Yuyun Bestari"): tamu jawab "Ok" TIGA KALI berturut-turut
+    utk konfirmasi booking (data sudah lengkap termasuk metode bayar), tapi AI TERUS
+    mengulang ringkasan booking yang SAMA tanpa pernah memanggil create_booking - akhirnya
+    memicu Loop Detector & tamu frustrasi ("Halo?"). Regresi kalau setelah 2x "Ok" berturut
+    dgn data lengkap, create_booking TETAP tidak terpanggil."""
+    besok = (datetime.now(timezone.utc) + timedelta(hours=7, days=1)).strftime("%Y-%m-%d")
+    session = f"test-loopok-{uuid.uuid4().hex[:8]}"
+    wa = _wa_unik()
+    await _run_chat_turn(
+        session, f"besok mau booking standard 1 kamar day use jam 2 siang, dp 50 pakai qris ya kak",
+        "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator",
+    )
+    await _run_chat_turn(session, "nama saya Test Regresi Loop", "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator")
+    await _run_chat_turn(session, "Ok", "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator")
+    await _run_chat_turn(session, "Ok", "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator")
+    r = await _run_chat_turn(session, "Ok", "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator")
+    status = "PASS" if r.get("tool_used") == "create_booking" else f"FAIL - create_booking tidak terpanggil setelah 3x 'Ok' berturut dgn data lengkap (tool_used={r.get('tool_used')!r}), balasan: {(r.get('reply') or '')!r}"
+    return ("loop_konfirmasi_afirmatif", session, status)
+
+
 async def skenario_business_rules_isolasi_properti() -> tuple:
     """Bug asli (2026-08-07, Modul 7 PRD ASHB "Memory Validator"): `business_rules_cache`
     sebelumnya SAMA SEKALI tidak ditandai per-properti - sync 1 properti menimpa cache utk
@@ -483,6 +504,7 @@ async def main():
         skenario_arrival_time_booking_terkonfirmasi,
         skenario_nomor_rekening_karangan,
         skenario_klaim_penuh_jam_typo,
+        skenario_loop_konfirmasi_afirmatif,
     ]
     unit_test_list = [
         test_kontradiksi_total_dikoreksi,
