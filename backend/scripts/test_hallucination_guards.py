@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from server import (  # noqa: E402
     db, client, _run_chat_turn, _tool_check_availability, _tool_preview_booking, _cek_kontradiksi_total,
-    _hitung_risk_score,
+    _hitung_risk_score, _durasi_menginap_tidak_dikonfirmasi,
     _deteksi_loop_kirim_beruntun, LOOP_DETECTOR_THRESHOLD, LOOP_DETECTOR_WINDOW_MINUTES,
     _janji_eskalasi_sungguhan, utc_now_iso,
 )
@@ -347,6 +347,41 @@ async def skenario_ai_judge_tidak_ubah_balasan_benar() -> tuple:
     return ("ai_judge_tidak_ubah_balasan_benar", session, status)
 
 
+async def skenario_menginap_tanpa_malam_tidak_langsung_booking() -> tuple:
+    """Bug asli (2026-08-08, tamu "Jadid abda sabillah"): tamu cuma sebut tanggal checkin
+    ("tanggal 17"), TIDAK PERNAH sebut jumlah malam/tanggal checkout - AI diam-diam
+    menghitung checkout = checkin+1 hari & LANGSUNG create_booking dgn asumsi itu, tanpa
+    pernah bertanya. Booking Menginap 4 kamar diajukan & disetujui staf berdasarkan tebakan
+    yang tidak pernah dikonfirmasi. Regresi kalau create_booking tetap terpanggil dgn
+    tanggal_checkout hasil tebakan tanpa tamu PERNAH sebut jumlah malam/checkout eksplisit."""
+    besok = (datetime.now(timezone.utc) + timedelta(hours=7, days=9)).strftime("%Y-%m-%d")
+    session = f"test-malamok-{uuid.uuid4().hex[:8]}"
+    wa = _wa_unik()
+    await _run_chat_turn(
+        session, f"apakah room cottage untuk tanggal {besok[-2:]} dengan 1 kamar tersedia?",
+        "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator",
+    )
+    await _run_chat_turn(session, "baik saya ambil", "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator")
+    await _run_chat_turn(session, "Test Regresi Malam, 081234567890", "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator")
+    await _run_chat_turn(session, "dp kak", "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator")
+    r = await _run_chat_turn(session, "qris kak", "Test Regresi", wa, BOT_ID_PELANGI, None, channel="simulator")
+    reply = (r.get("reply") or "")
+    # SENGAJA cek tool_result.ok (BUKAN cuma tool_used) - tool_used cuma mencerminkan NAMA
+    # tool yang dicoba dipanggil model giliran ini (lihat "tool_used": tool di return dict
+    # _run_chat_turn_locked), TIDAK PEDULI berhasil/diblokir - guard kode
+    # (_durasi_menginap_tidak_dikonfirmasi) BENAR memblokir dgn set tool_result={"ok":False,
+    # ...} TAPI `tool` sendiri tetap "create_booking" (attempted), jadi cek tool_used SAJA
+    # false-positive menganggap percobaan yang DIBLOKIR sbg kegagalan guard. Properti
+    # keamanan sesungguhnya: booking betulan TIDAK PERNAH tercipta (ok=True) tanpa tamu
+    # sebut malam/checkout eksplisit, di GILIRAN MANA PUN percobaannya.
+    tool_result = r.get("tool_result") or {}
+    if r.get("tool_used") == "create_booking" and tool_result.get("ok") is True:
+        status = f"FAIL - create_booking BERHASIL (ok=True) TANPA tamu pernah sebut jumlah malam/checkout - tanggal_checkout pasti hasil tebakan. balasan: {reply!r}"
+    else:
+        status = "PASS"
+    return ("menginap_tanpa_malam_tidak_langsung_booking", session, status)
+
+
 async def skenario_business_rules_isolasi_properti() -> tuple:
     """Bug asli (2026-08-07, Modul 7 PRD ASHB "Memory Validator"): `business_rules_cache`
     sebelumnya SAMA SEKALI tidak ditandai per-properti - sync 1 properti menimpa cache utk
@@ -467,6 +502,39 @@ def test_risk_score_rendah_saat_sapaan() -> tuple:
 def test_risk_score_rendah_saat_faq_lokasi() -> tuple:
     hasil = _hitung_risk_score(None, "Pelangi Homestay ada di kawasan Bedugul, dekat dengan Danau Beratan ya kak.")
     return ("risk_score_rendah_saat_faq_lokasi", "PASS" if hasil is False else f"FAIL - harusnya False, dapat {hasil!r}")
+
+
+# ---------------------------------------------------------------------------
+# Unit test murni - durasi Menginap tidak dikonfirmasi (bug nyata 2026-08-08, tamu
+# "Jadid abda sabillah": cuma bilang "tanggal 17", checkout diam2 ditebak checkin+1 hari)
+# ---------------------------------------------------------------------------
+
+def test_durasi_menginap_tidak_dikonfirmasi_kasus_asli() -> tuple:
+    msgs = [
+        {"role": "user", "content": "Apakah room cottage untuk tanggal 17 dengan 4 kamar tersedia?"},
+        {"role": "user", "content": "Baik ka saya ambil"},
+        {"role": "user", "content": "qris kak"},
+    ]
+    hasil = _durasi_menginap_tidak_dikonfirmasi("menginap", "2026-08-17", "2026-08-18", msgs)
+    return ("durasi_menginap_tidak_dikonfirmasi_kasus_asli", "PASS" if hasil is True else f"FAIL - harusnya True (tamu tidak pernah sebut malam/checkout), dapat {hasil!r}")
+
+
+def test_durasi_menginap_dikonfirmasi_via_jumlah_malam() -> tuple:
+    msgs = [{"role": "user", "content": "mau booking cottage tanggal 17, nginep 2 malam ya kak"}]
+    hasil = _durasi_menginap_tidak_dikonfirmasi("menginap", "2026-08-17", "2026-08-19", msgs)
+    return ("durasi_menginap_dikonfirmasi_via_jumlah_malam", "PASS" if hasil is False else f"FAIL - harusnya False (tamu sudah sebut 2 malam), dapat {hasil!r}")
+
+
+def test_durasi_menginap_dikonfirmasi_via_tanggal_checkout() -> tuple:
+    msgs = [{"role": "user", "content": "checkin tanggal 17 checkout tanggal 20 ya"}]
+    hasil = _durasi_menginap_tidak_dikonfirmasi("menginap", "2026-08-17", "2026-08-20", msgs)
+    return ("durasi_menginap_dikonfirmasi_via_tanggal_checkout", "PASS" if hasil is False else f"FAIL - harusnya False (tamu sudah sebut checkout), dapat {hasil!r}")
+
+
+def test_durasi_menginap_tidak_relevan_utk_day_use() -> tuple:
+    msgs = [{"role": "user", "content": "Apakah room cottage untuk tanggal 17 dengan 4 kamar tersedia?"}]
+    hasil = _durasi_menginap_tidak_dikonfirmasi("day_use", "2026-08-17", None, msgs)
+    return ("durasi_menginap_tidak_relevan_utk_day_use", "PASS" if hasil is False else f"FAIL - harusnya False (day_use tidak relevan), dapat {hasil!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -600,6 +668,7 @@ async def main():
         skenario_loop_konfirmasi_afirmatif,
         skenario_day_use_jam_minimum,
         skenario_ai_judge_tidak_ubah_balasan_benar,
+        skenario_menginap_tanpa_malam_tidak_langsung_booking,
     ]
     unit_test_list = [
         test_kontradiksi_total_dikoreksi,
@@ -613,6 +682,10 @@ async def main():
         test_risk_score_tinggi_saat_sebut_va,
         test_risk_score_rendah_saat_sapaan,
         test_risk_score_rendah_saat_faq_lokasi,
+        test_durasi_menginap_tidak_dikonfirmasi_kasus_asli,
+        test_durasi_menginap_dikonfirmasi_via_jumlah_malam,
+        test_durasi_menginap_dikonfirmasi_via_tanggal_checkout,
+        test_durasi_menginap_tidak_relevan_utk_day_use,
         test_loop_terdeteksi_saat_melewati_ambang,
         test_loop_tidak_terdeteksi_di_bawah_ambang,
         test_loop_tidak_terdeteksi_kalau_pesan_lama,

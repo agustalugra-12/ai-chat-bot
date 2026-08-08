@@ -1723,6 +1723,38 @@ def _hitung_risk_score(tool: Optional[str], final_text: str) -> bool:
     return False
 
 
+# Guard durasi Menginap TIDAK PERNAH dikonfirmasi tamu (2026-08-08) - insiden nyata: tamu
+# "Jadid abda sabillah" cuma pernah bilang "tanggal 17" (checkin SAJA, TIDAK PERNAH sebut
+# jumlah malam ATAU tanggal checkout eksplisit) - AI diam-diam isi tanggal_checkout =
+# checkin+1 hari (asumsi 1 malam) tanpa PERNAH bertanya, booking_request langsung
+# diajukan & DISETUJUI staf & link pembayaran TERKIRIM berdasarkan asumsi yang tidak
+# pernah dikonfirmasi. Prompt SUDAH py aturan keras persis soal ini (ATURAN WAJIB
+# "tanggal_checkout" utk MENGINAP, 2026-08-07, insiden Lugra Agusta - "Kalau tamu tidak
+# menyebutkan jumlah malam MAUPUN tanggal checkout sama sekali, WAJIB tanya dulu... JANGAN
+# menebak durasi menginap") tapi TERBUKTI tidak dipatuhi lagi utk kasus BARU (tamu Lugra
+# dulu py masalah field KOSONG, tamu Jadid ini beda - field TERISI tapi dari tebakan diam2,
+# pola yang SAMA "prompt-only tidak reliable", gejala beda). Diekstrak jadi fungsi murni
+# (pola sama dgn _hitung_risk_score) supaya bisa di-unit-test tanpa panggilan LLM.
+_MALAM_EKSPLISIT_PATTERN = re.compile(
+    r"\d+\s*malam|malam\s*\d+|check.?out\s*(tanggal\s*)?\d{1,2}|"
+    r"sampai\s*(tanggal\s*)?\d{1,2}|s\.?d\.?\s*(tanggal\s*)?\d{1,2}|hingga\s*(tanggal\s*)?\d{1,2}|"
+    r"\bs/d\b\s*\d{1,2}",
+    re.IGNORECASE,
+)
+
+
+def _durasi_menginap_tidak_dikonfirmasi(tipe: Optional[str], tanggal_checkin: Optional[str],
+                                          tanggal_checkout: Optional[str], user_messages: list) -> bool:
+    """True kalau ini booking Menginap dgn tanggal_checkout TERISI (bukan kosong - kasus
+    field kosong sudah ditangani PMS-side, lihat komentar di atas) TAPI tamu TIDAK PERNAH
+    sebutkan jumlah malam/tanggal checkout eksplisit di pesan mana pun - berarti field itu
+    hasil TEBAKAN diam-diam (paling sering asumsi 1 malam), bukan konfirmasi tamu asli."""
+    if tipe != "menginap" or not tanggal_checkin or not tanggal_checkout:
+        return False
+    gabungan = " ".join((m.get("content") or "") for m in user_messages if m.get("role") == "user")
+    return not _MALAM_EKSPLISIT_PATTERN.search(gabungan)
+
+
 # Loop Detector (2026-08-07, Modul 8 PRD "AI Self-Healing & Bug Prevention" - usulan Agus,
 # diperkuat setelah audit insiden asli 2026-08-01: bot Pelangi & bot Harmoni saling kirim
 # pesan sapaan ~45 pesan dalam 2-3 menit sebelum ketahuan & dihentikan manual, lihat guard
@@ -2206,6 +2238,18 @@ async def _run_chat_turn_locked(
                 tool_result = {"ok": False, "tool": tool, "error": f"tool '{tool}' tidak diizinkan untuk bot ini"}
             elif tool == "create_service_request" and allowed_services and args.get("service_type") not in allowed_services:
                 tool_result = {"ok": False, "tool": tool, "error": f"service_type '{args.get('service_type')}' tidak diizinkan untuk bot ini"}
+            elif tool in ("preview_booking", "create_booking") and _durasi_menginap_tidak_dikonfirmasi(
+                args.get("tipe"), args.get("tanggal_checkin"), args.get("tanggal_checkout"), conv["messages"],
+            ):
+                tool_result = {
+                    "ok": False, "tool": tool,
+                    "error": (
+                        "tanggal_checkout terisi tapi tamu TIDAK PERNAH sebutkan jumlah malam/tanggal "
+                        "checkout eksplisit di percakapan ini - JANGAN lanjutkan dgn tanggal tebakan, "
+                        "TANYA DULU \"berapa malam Kak menginapnya?\" atau \"check-out tanggal berapa?\" "
+                        "sebelum panggil tool ini lagi."
+                    ),
+                }
             else:
                 tool_result = await _handle_tool(tool, args or {}, conv)
             # Slot memory (2026-08-01, permintaan Agus - PRD Natural Conversation Engine
@@ -3023,7 +3067,22 @@ async def _run_chat_turn_locked(
                 for _k in ("payment_option", "metode_pembayaran"):
                     if not koreksi_args.get(_k) and (conv.get("booking_draft") or {}).get(_k):
                         koreksi_args[_k] = conv["booking_draft"][_k]
-            if koreksi_tool in ("create_booking", "preview_booking"):
+            if koreksi_tool in ("create_booking", "preview_booking") and _durasi_menginap_tidak_dikonfirmasi(
+                (koreksi_args or {}).get("tipe"), (koreksi_args or {}).get("tanggal_checkin"),
+                (koreksi_args or {}).get("tanggal_checkout"), conv["messages"],
+            ):
+                # Guard durasi Menginap (2026-08-08) HARUS jg ditegakkan di jalur koreksi
+                # loop ini - jalur ini manggil _handle_tool LANGSUNG (bypass elif-chain
+                # permission-gating utama di atas kalau tidak dicek ulang di sini juga,
+                # lihat catatan lengkap di _durasi_menginap_tidak_dikonfirmasi).
+                logging.getLogger("hallucination_guard").warning(
+                    f"guard durasi menginap MEMBLOKIR eksekusi tool di jalur koreksi loop "
+                    f"(tool={koreksi_tool}, tamu tidak pernah sebut malam/checkout) - "
+                    f"conv {conv.get('_id')}"
+                )
+                if koreksi_clean:
+                    final_text = koreksi_clean
+            elif koreksi_tool in ("create_booking", "preview_booking"):
                 koreksi_tool_result = await _handle_tool(koreksi_tool, koreksi_args or {}, conv)
                 if koreksi_tool == "create_booking" and koreksi_tool_result and koreksi_tool_result.get("ok"):
                     conv["booking_draft"] = {}
@@ -3256,8 +3315,8 @@ async def _run_chat_turn_locked(
     # ada di balasan padahal tool bilang sebaliknya, jadi TIDAK perlu regex per-tool baru
     # tiap kali ada tool baru yang kena pola ini.
     _klaim_sukses_pattern = re.compile(
-        r"sudah\s+(saya\s+)?(catat|proses|buat|kirim|simpan|update|perbarui|laporkan|teruskan)"
-        r"|berhasil\s+(dibuat|diproses|disimpan|dikirim|dicatat|diperbarui|diteruskan)"
+        r"sudah\s+(saya\s+)?(catat|proses|buat|kirim|simpan|update|perbarui|laporkan|teruskan|ajukan)"
+        r"|berhasil\s+(dibuat|diproses|disimpan|dikirim|dicatat|diperbarui|diteruskan|diajukan)"
         r"|(sudah\s+)?tercatat\b",
         re.IGNORECASE,
     )
