@@ -288,6 +288,35 @@ async def skenario_loop_konfirmasi_afirmatif() -> tuple:
     return ("loop_konfirmasi_afirmatif", session, status)
 
 
+async def skenario_day_use_jam_minimum() -> tuple:
+    """Kebijakan baru (2026-08-08, permintaan Agus - insiden nyata: booking Day Use tamu
+    JUMARTO ke kamar 14 tercatat jam 10:00 WITA, harusnya ditolak/dikoreksi ke jam 11:00).
+    SENGAJA membalik rule 2026-08-01 (Day Use dulu TANPA jam minimum - insiden lama AI
+    salah menolak tamu jam 10/11 dgn alasan ngarang "mulai jam 14:00"). Agus konfirmasi
+    eksplisit 2026-08-08 mau jam 11:00 jadi batas bawah TETAP. PMS (buat_booking_request)
+    sudah menolak keras (400) jam < 11:00 - regresi di sini kalau AI tetap MENGAKU booking
+    berhasil/lanjut proses tanpa menyampaikan batas 11:00 ke tamu."""
+    besok = (datetime.now(timezone.utc) + timedelta(hours=7, days=1)).strftime("%Y-%m-%d")
+    session = f"test-jamdu-{uuid.uuid4().hex[:8]}"
+    wa = _wa_unik()
+    r = await _run_chat_turn(
+        session, "besok mau day use standard jam 9 pagi ya kak", "Test Regresi", wa,
+        BOT_ID_PELANGI, None, channel="simulator",
+    )
+    reply = (r.get("reply") or "")
+    sebut_batas_11 = bool(re.search(r"\b11\b|jam\s*11", reply))
+    mengaku_sukses = bool(re.search(r"booking.{0,20}(berhasil|sukses)|sudah\s+(saya\s+)?(buat|proses)kan", reply, re.IGNORECASE))
+    if r.get("tool_used") == "create_booking":
+        status = f"FAIL - create_booking terpanggil utk jam 09:00 (sebelum batas 11:00), harusnya ditolak dulu di level chat. balasan: {reply!r}"
+    elif mengaku_sukses:
+        status = f"FAIL - balasan mengaku booking berhasil/diproses padahal jam 09:00 di bawah batas 11:00. balasan: {reply!r}"
+    elif not sebut_batas_11:
+        status = f"FAIL - balasan tidak menyampaikan batas jam 11:00 ke tamu. balasan: {reply!r}"
+    else:
+        status = "PASS"
+    return ("day_use_jam_minimum", session, status)
+
+
 async def skenario_business_rules_isolasi_properti() -> tuple:
     """Bug asli (2026-08-07, Modul 7 PRD ASHB "Memory Validator"): `business_rules_cache`
     sebelumnya SAMA SEKALI tidak ditandai per-properti - sync 1 properti menimpa cache utk
@@ -505,6 +534,7 @@ async def main():
         skenario_nomor_rekening_karangan,
         skenario_klaim_penuh_jam_typo,
         skenario_loop_konfirmasi_afirmatif,
+        skenario_day_use_jam_minimum,
     ]
     unit_test_list = [
         test_kontradiksi_total_dikoreksi,

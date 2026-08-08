@@ -384,7 +384,7 @@ TOOL_DOCS = {
     'nomornya baru muncul otomatis setelah booking selesai diproses, lalu lanjutkan '
     'mengumpulkan data yang masih kurang. '
     'KALAU TAMU MINTA BAYAR "CASH"/"TUNAI" (2026-08-07, insiden nyata BERULANG - tamu "Deica" Harmoni & 2 tamu lain hari yang sama: tamu jawab "cash" utk metode bayar, "cash" BUKAN salah satu dari 5 kode valid di atas dan BUKAN jawaban "terserah"/vague yang boleh di-default QRIS2 - AI tidak py instruksi utk kasus ini, hasilnya berulang kali mengarang "booking sudah berhasil dibuat" TANPA memanggil create_booking sama sekali; DIPERBARUI 2026-08-07 kedua kalinya - kebijakan Agus: cash TIDAK BISA dipakai utk KUNCI/RESERVASI kamar sama sekali, cash cuma berlaku utk tamu yang datang LANGSUNG ke lokasi sbg walk-in) - JANGAN PERNAH panggil create_booking dgn cash sbg "metode_pembayaran" (tidak ada kode utk itu) dan JANGAN PERNAH menulis balasan yg menyiratkan booking/reservasi berhasil dalam kasus ini. Jelaskan dgn jujur & lengkap (2 bagian, JANGAN cuma salah satu): (1) kalau mau kamarnya PASTI terkunci/direservasi, WAJIB DP 50% dibayar ONLINE dulu (QRIS/VA) - cash TIDAK BISA dipakai sbg DP; (2) kalau tetap mau cash, jelaskan itu artinya TIDAK ADA reservasi/jaminan kamar - tamu boleh datang LANGSUNG ke lokasi sbg walk-in & bayar cash di sana, TAPI risikonya kamar bisa saja penuh/keduluan tamu lain krn tidak dikunci. WAJIB SEKALIAN panggil check_availability (kalau belum dipanggil di percakapan ini utk tanggal/jam yg relevan) & sampaikan hasil ketersediaan TERKINI-nya bersamaan dgn penjelasan di atas - supaya tamu tidak rugi datang jauh-jauh kalau ternyata penuh, mis. "Untuk cash, kamarnya tidak bisa kami kunci dulu ya Kak, jadi Kakak bisa langsung datang ke lokasi sbg walk-in nanti bayar cash di sana - tapi risikonya bisa penuh kalau tidak dipesan dulu. Kalau mau pasti dapat kamar, bisa DP 50% online (QRIS/VA) sekarang. Utk info, saat ini kamar [tipe] masih tersedia [jumlah] kamar ya Kak." JANGAN panggil create_booking sampai tamu benar-benar pilih salah satu opsi (DP online, atau walk-in tanpa reservasi). '
-    'ATURAN WAJIB jam_checkin (Day Use): JANGAN PERNAH menebak/isi sendiri (termasuk "14:00") - HARUS jam yang benar-benar disebutkan tamu (dipakai sistem cek bentrok dengan tamu Menginap yang checkout siang). Kalau belum disebutkan, tanya "jam berapa rencana kedatangannya?" dulu. '
+    'ATURAN WAJIB jam_checkin (Day Use): JANGAN PERNAH menebak/isi sendiri (termasuk "14:00") - HARUS jam yang benar-benar disebutkan tamu (dipakai sistem cek bentrok dengan tamu Menginap yang checkout siang). Kalau belum disebutkan, tanya "jam berapa rencana kedatangannya?" dulu. JAM MINIMUM 11:00 WITA (2026-08-08, kebijakan Agus) - kalau tamu sebut jam SEBELUM 11:00, JANGAN kirim ke create_booking/preview_booking sama sekali, langsung sampaikan "Day Use baru bisa mulai dari jam 11:00 WITA ya Kak" & tanya apakah mau jam 11:00 atau lebih siang - sistem PMS akan MENOLAK KERAS (400 error) kalau tetap dipaksa kirim jam di bawah 11:00, jadi cegah dari sini supaya tamu tidak dapat error mentah. '
     'SETELAH tool ini berhasil, tulis konfirmasi sebagai SATU blok pesan yang mengalir (kode booking, ringkasan kamar/tanggal, total, status pembayaran, semua di pesan yang SAMA) - JANGAN pecah jadi beberapa kalimat pendek terpisah seperti "Booking berhasil!" lalu "Kode booking:" lalu "Status:" satu-satu, itu terasa terpotong-potong. WAJIB baca field "status" - JANGAN asumsi selalu berhasil: '
     '"waiting_payment" = Day Use OTOMATIS terkonfirmasi. Sistem SUDAH OTOMATIS kirim pesan TERPISAH berisi link bayar (field "checkout_url") - JANGAN ulangi/tempel link itu di balasanmu, cukup konfirmasi berhasil & bilang link menyusul (TANPA menulis URL-nya). '
     '"rejected" = kamar BENAR-BENAR PENUH (lihat "rejected_reason"), WAJIB minta maaf jujur & tawarkan tanggal/tipe lain - JANGAN bilang "sudah diproses"/"silakan bayar". '
@@ -661,13 +661,20 @@ def build_context_block(rooms: List[dict], menu: List[dict], kb: List[dict], set
                  f"Alamat: {settings.get('address','-')}\n"
                  f"Check-in: {settings.get('checkin_time','14:00')} | Check-out: {settings.get('checkout_time','12:00')} "
                  "(jam ini KHUSUS tipe Menginap semalam - JANGAN diterapkan ke Day Use). "
-                 "Day Use TIDAK punya jam mulai tetap - tamu boleh minta jam berapa saja, "
-                 "tinggal dicek lewat check_availability/tabel ketersediaan apakah kamar "
-                 "kosong di jam itu (bentrok/tidaknya dengan tamu Menginap lain), BUKAN "
-                 "ditolak duluan gara-gara belum jam 14:00 (insiden nyata 2026-08-01: AI "
-                 "salah menolak tamu Day Use jam 10/11 pagi dengan alasan mengarang "
-                 "\"Day Use mulai dari jam 14:00\" - tamu akhirnya batal booking di tempat "
-                 "lain karena info salah ini - JANGAN PERNAH ulangi kesalahan ini).\n"
+                 "Day Use JAM MINIMUM 11:00 WITA (kebijakan Agus, 2026-08-08 - insiden nyata: "
+                 "booking Day Use tamu Jumarto tercatat jam 10:00, harusnya ditolak/dikoreksi "
+                 "ke 11:00). Kalau tamu Day Use minta jam SEBELUM 11:00, JANGAN diproses - "
+                 "sampaikan jujur \"Day Use baru bisa mulai dari jam 11:00 WITA ya Kak\" & "
+                 "tawarkan jam 11:00 atau lebih siang. Untuk jam 11:00 ke atas, TIDAK ADA jam "
+                 "maksimum tetap - tinggal dicek lewat check_availability/tabel ketersediaan "
+                 "apakah kamar kosong di jam itu (bentrok/tidaknya dengan tamu Menginap lain), "
+                 "BUKAN ditolak duluan tanpa dicek dulu (insiden nyata 2026-08-01: AI salah "
+                 "menolak tamu Day Use jam 11 pagi dengan alasan mengarang \"Day Use mulai dari "
+                 "jam 14:00\" tanpa pernah cek data asli - tamu akhirnya batal booking di tempat "
+                 "lain karena info salah ini - JANGAN PERNAH mengarang jam buka/tutup Day Use, "
+                 "SELALU cek data asli via check_availability untuk jam 11:00 ke atas, aturan "
+                 "11:00 di atas HANYA berlaku sbg batas bawah mutlak, bukan alasan buat menebak "
+                 "kondisi jam-jam lainnya).\n"
                  f"Telepon: {settings.get('phone','-')}\n" + maps_line + kontak_darurat_line)
 
     if rooms:
